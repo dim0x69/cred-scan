@@ -1,0 +1,8 @@
+# Old-style pre-judge regex-search exclusions.
+# Patterns are searched against the canonical credential value before judgment.
+# Matching is not fullmatch; inline regex flags control case behavior.
+#
+# Imported from ../artifactory-cred-scan/prejudge.
+
+# Deterministic reference placeholders.
+(?i).*ref$

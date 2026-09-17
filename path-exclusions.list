@@ -1,0 +1,65 @@
+# Combined Titus and project-specific path exclusions.
+# Patterns are passed to Titus and applied again to Docker provenance paths
+# during report deduplication. Blank lines and full-line comments are ignored.
+#
+# Imported from ../artifactory-cred-scan/scan.ignore.
+
+# Titus built-in defaults: Git packfiles and internal objects.
+**/objects/pack/pack-*.pack
+**/objects/pack/pack-*.idx
+**/packed-refs
+
+# Titus built-in defaults: selected vendored Python and Node packages.
+**/site-packages/botocore/**
+**/site-packages/boto3/**
+**/site-packages/awscli/**
+**/site-packages/moto/**
+**/site-packages/ecdsa/**
+**/site-packages/tornado/test/**
+**/site-packages/flask/testsuite/**
+**/node_modules/@aws-sdk/**
+**/node_modules/aws-sdk/dist/**
+
+# Titus built-in defaults: lockfiles.
+Cargo.lock
+package-lock.json
+Pipfile.lock
+go.sum
+yarn.lock
+pnpm-lock.yaml
+composer.lock
+Gemfile.lock
+poetry.lock
+
+# Titus built-in defaults: minified assets, libraries, and test data.
+**/*.min.js
+**/*.min.css
+libgnutls.a
+libgnutls.so.*
+**/openssl*/test/recipes/**/evppkey*.txt
+/dev/**
+/proc/**
+/sys/**
+**/botocore/data/**/examples-1.json
+
+# Project-specific dependency, package metadata, and test paths.
+# Upbound-generated Crossplane provider models are supplied dependency code.
+**/models/io/upbound/**
+__tests__/
+dist-packages/
+node_modules/
+site-packages/
+test/
+tests/
+**/.cache/uv/**
+usr/share/doc/
+var/lib/dpkg/
+**/webcontents/bower_components/**
+*.test.*
+*.spec.*
+*testmock*
+**/*.dist-info/RECORD
+usr/share/nmap/
+usr/share/vim/
+usr/share/perl/
+usr/share/perl5/

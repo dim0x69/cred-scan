@@ -1,0 +1,32 @@
+# Artifactory-Docker-first runtime configuration.
+# Relative paths resolve against this file.
+workspace:
+  workspace-dir: ./workspace
+  # results-dir defaults to workspace-dir; an override is optional.
+
+scan_concurrency: 1
+
+titus:
+  executable: ./titus
+  arguments: []
+  internal_workers: 1
+
+judge:
+  provider: azure
+  model: gpt-5.6-luna
+  base_url: https://cytct.services.ai.azure.com/openai/v1
+  api_version: null
+  max_iterations: 10
+  layer_tools:
+    enabled: true
+    max_directory_entries: 100
+
+exclusions:
+  paths: path-exclusions.list
+  credentials: cred-value-exclusions.list
+
+backends:
+  - name: artifactory-primary
+    kind: artifactory
+    base_url: https://rb-artifactory.bosch.com/artifactory
+    platform: linux/amd64

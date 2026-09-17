@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cache_dir=${TITUS_CACHE_DIR:-"$root_dir/.titus-cache"}
+extracted="$cache_dir/titus"
+mkdir -p "$cache_dir"
+if [ ! -x "$extracted" ] || [ "$root_dir/titus.gz" -nt "$extracted" ]; then
+    temporary="$cache_dir/.titus.$$"
+    gzip -dc "$root_dir/titus.gz" > "$temporary"
+    chmod 755 "$temporary"
+    mv -f "$temporary" "$extracted"
+fi
+exec "$extracted" "$@"
