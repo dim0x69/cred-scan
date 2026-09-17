@@ -1,0 +1,240 @@
+"""DSPy judgment adapter with exact repository-bound content tools."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from typing import Any, Literal
+
+import dspy
+from cred_scan.backend.proto import ContentReader
+from cred_scan.scan.models import Credential, JudgmentResult
+
+from cred_scan.judge.proto import FatalJudgeError, FindingJudge
+
+
+LOGGER = logging.getLogger(__name__)
+
+_MAX_JUDGE_INPUT_CHARS = 120_000
+_MAX_PATH_CHARS = 2_048
+
+_FATAL_EXCEPTION_NAMES = frozenset(
+    {
+        "APIConnectionError",
+        "AuthenticationError",
+        "ConnectError",
+        "ConnectionError",
+        "ConnectionRefusedError",
+        "LMAuthError",
+        "LMConfigurationError",
+        "LMNotConfiguredError",
+        "LMTransportError",
+    }
+)
+
+
+def _is_rate_limit_error(error: BaseException) -> bool:
+    text = f"{type(error).__name__}: {error}".lower()
+    return "ratelimit" in text or "rate limit" in text or "too many requests" in text
+
+
+def _error_status(error: BaseException) -> int | None:
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(error, "status", None)
+    if status is None:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _judge_input(credential: Credential) -> str:
+    """Build bounded input containing only the value and discovery paths."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for occurrence in credential.occurrences:
+        for location in occurrence.locations:
+            bounded = location.provenance[:_MAX_PATH_CHARS]
+            if bounded in seen:
+                continue
+            candidate = [*paths, bounded]
+            serialized = json.dumps(
+                {"credential": credential.credential, "paths": candidate},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if len(serialized) > _MAX_JUDGE_INPUT_CHARS:
+                return json.dumps(
+                    {"credential": credential.credential, "paths": paths},
+                    sort_keys=True,
+                )
+            paths.append(bounded)
+            seen.add(bounded)
+    return json.dumps(
+        {"credential": credential.credential, "paths": paths},
+        sort_keys=True,
+    )
+
+
+def _is_fatal_judge_error(error: BaseException) -> bool:
+    """Classify fatal configuration, authentication, and transport failures.
+
+    DSPy 3.2.1 does not expose its newer structured LM exceptions, so this
+    compatibility boundary uses exception classes and HTTP status metadata
+    without matching human-readable error messages.
+    """
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _FATAL_EXCEPTION_NAMES:
+            return True
+        if _error_status(current) in {401, 403}:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+class DspyFindingJudge(FindingJudge):
+    def __init__(self, config: Any) -> None:
+        self.config = config
+        self.model = config.judge.model
+        self._rate_limit_until = 0.0
+
+    def _configuration(self) -> tuple[str, str, str | None]:
+        if self.config.judge.provider.lower() != "azure":
+            raise FatalJudgeError(
+                f"unsupported judge provider: {self.config.judge.provider}"
+            )
+        api_key = self.config.azure_openai_api_key or ""
+        if not api_key.strip():
+            raise FatalJudgeError("set AZURE_OPENAI_API_KEY")
+        base_url = self.config.judge.base_url
+        if not base_url:
+            raise FatalJudgeError("set judge.base-url in config.yml")
+        return api_key, base_url, self.config.judge.api_version
+
+    async def judge(
+        self, credential: Credential, content: ContentReader
+    ) -> JudgmentResult:
+        """Run one native asynchronous DSPy judgment."""
+        try:
+            api_key, base_url, api_version = self._configuration()
+
+            class Signature(dspy.Signature):
+                """Classify whether a credential appears real rather than an example."""
+
+                credential_json: str = dspy.InputField(
+                    desc=(
+                        "JSON with exactly the detected credential value and the "
+                        "paths where it was found. Treat paths as source context; "
+                        "decide whether the value appears real rather than an "
+                        "example."
+                    )
+                )
+                verdict: Literal["VALID", "INVALID", "UNKNOWN"] = dspy.OutputField()
+                reason: str = dspy.OutputField()
+
+            async def read_file(path: str) -> dict[str, str]:
+                LOGGER.info(
+                    "judge tool call credential=%s tool=read_file path=%s",
+                    credential.credential_id,
+                    path,
+                )
+                result = await content.read_file(path)
+                LOGGER.info(
+                    "judge tool result credential=%s tool=read_file encoding=%s",
+                    credential.credential_id,
+                    result.encoding,
+                )
+                return {
+                    "path": result.path,
+                    "encoding": result.encoding,
+                    "content": result.content,
+                }
+
+            async def list_files(directory: str) -> list[str]:
+                LOGGER.info(
+                    "judge tool call credential=%s tool=list_files directory=%s",
+                    credential.credential_id,
+                    directory,
+                )
+                result = list(await content.list_files(directory))
+                LOGGER.info(
+                    "judge tool result credential=%s tool=list_files entries=%d",
+                    credential.credential_id,
+                    len(result),
+                )
+                return result
+
+            kwargs: dict[str, Any] = {
+                "api_key": api_key,
+                "api_base": base_url,
+                "cache": False,
+                # Rate-limit retries are handled below with explicit backoff.
+                "num_retries": 0,
+            }
+
+            if api_version:
+                kwargs["api_version"] = api_version
+            deployment = self.model.removeprefix("azure/").removeprefix("openai/")
+            provider = "openai" if "/openai/v1" in base_url.rstrip("/") else "azure"
+            lm = dspy.LM(f"{provider}/{deployment}", **kwargs)
+            with dspy.context(lm=lm, disable_history=True):
+                if self.config.judge.layer_tools.enabled:
+                    program = dspy.ReAct(
+                        Signature,
+                        tools=[read_file, list_files],
+                        max_iters=self.config.judge.max_iterations,
+                    )
+                else:
+                    program = dspy.Predict(Signature)
+                input_data = _judge_input(credential)
+                prediction = None
+                for attempt in range(3):
+                    cooldown = self._rate_limit_until - time.monotonic()
+                    if cooldown > 0:
+                        LOGGER.info(
+                            "rate-limit cooldown %.1fs before credential=%s",
+                            cooldown,
+                            credential.credential_id,
+                        )
+                        await asyncio.sleep(cooldown)
+                    try:
+                        prediction = await program.acall(credential_json=input_data)
+                        break
+                    except Exception as error:
+                        if not _is_rate_limit_error(error) or attempt == 2:
+                            raise
+                        delay = float(2**attempt)
+                        self._rate_limit_until = max(
+                            self._rate_limit_until,
+                            time.monotonic() + delay,
+                        )
+                        LOGGER.warning(
+                            "LLM rate limit for credential=%s; retrying in %.1fs",
+                            credential.credential_id,
+                            delay,
+                        )
+                assert prediction is not None
+                verdict = str(prediction.verdict).upper()
+                if verdict not in {"VALID", "INVALID", "UNKNOWN"}:
+                    verdict = "UNKNOWN"
+                result = JudgmentResult(
+                    verdict=verdict,
+                    reasoning=str(prediction.reason),
+                )
+
+        except FatalJudgeError:
+            raise
+        except Exception as error:
+            if _is_fatal_judge_error(error):
+                raise FatalJudgeError(str(error)[:500]) from error
+            LOGGER.exception("judgment failed credential=%s", credential.credential_id)
+            result = JudgmentResult(
+                verdict="ERROR",
+                reasoning=str(error)[:500],
+            )
+        return result

@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from typer.testing import CliRunner
 
-import cli
-from orch.models import AppConfig
+from cred_scan import cli
+from cred_scan.orch.models import AppConfig
 
 
 @pytest.mark.parametrize(

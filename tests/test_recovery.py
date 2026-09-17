@@ -6,19 +6,19 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from backend.models import ResolvedProvenance, ScanBoundaryInventory, target_id_for
-from backend.proto import BackendAdapter, ContentReader
-from common.workspace import Workspace, WorkspaceBusyError
-from judge.proto import FindingJudge
-from orch import runtime
-from orch.runtime import LocalRuntime
-from scan.models import (
+from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory, target_id_for
+from cred_scan.backend.proto import BackendAdapter, ContentReader
+from cred_scan.common.workspace import Workspace, WorkspaceBusyError
+from cred_scan.judge.proto import FindingJudge
+from cred_scan.orch import runtime
+from cred_scan.orch.runtime import LocalRuntime
+from cred_scan.scan.models import (
     CredentialsDocument,
     ExclusionPolicy,
     JudgmentResult,
     TitusReport,
 )
-from scan.proto import CredentialScanner
+from cred_scan.scan.proto import CredentialScanner
 
 
 @pytest.fixture

@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from scan.models import CredentialsDocument, credential_source_fingerprint
-from tools import migrate_credentials_schema as migration
-from tools.migrate_credentials_schema import migrate_payload, migrate_results_dir
+from cred_scan.scan.models import CredentialsDocument, credential_source_fingerprint
+from cred_scan.tools import migrate_credentials_schema as migration
+from cred_scan.tools.migrate_credentials_schema import migrate_payload, migrate_results_dir
 
 
 def _raw_finding() -> dict:

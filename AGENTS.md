@@ -20,21 +20,24 @@ for shell commands and non-code files when Serena does not provide an advantage.
 
 ## Module responsibilities
 
-- `backend/`: configured instances, ScanBoundary/ScanScope identities, inventory,
-  and client ports.
-- `scan/`: Titus invocation, datastore export, report conversion, deduplication,
-  exclusions, and pre-judgment credential documents, taking ScanTarget directly.
-- `judge/`: judgment protocols, direct backend tools, persistence, and evidence.
-- `orch/`: scan/judge scheduling, boundary gates, configuration, and coordination.
-- `cli.py`: thin Typer command surface; delegates conceptually to orchestration.
-- `orch/configuration.py`: central config loading implementation; schemas live in
-  `orch/models.py` and the loading port lives in `orch/proto.py`.
-- `common/`: cross-cutting workspace models, protocol, and implementation.
+- `src/cred_scan/backend/`: configured instances, ScanBoundary/ScanScope identities,
+  inventory, and client ports.
+- `src/cred_scan/scan/`: Titus invocation, datastore export, report conversion,
+  deduplication, exclusions, and pre-judgment credential documents, taking
+  ScanTarget directly.
+- `src/cred_scan/judge/`: judgment protocols, direct backend tools, persistence,
+  and evidence.
+- `src/cred_scan/orch/`: scan/judge scheduling, boundary gates, configuration,
+  and coordination.
+- `src/cred_scan/cli.py`: thin Typer command surface; delegates conceptually to orchestration.
+- `src/cred_scan/orch/configuration.py`: central config loading implementation; schemas live in
+  `src/cred_scan/orch/models.py` and the loading port lives in `src/cred_scan/orch/proto.py`.
+- `src/cred_scan/common/`: cross-cutting workspace models, protocol, and implementation.
 
 Avoid circular dependencies. Backend discovery must not import scan or judge;
-scan must not import judge or orchestration. `orch.configuration` owns all
+scan must not import judge or orchestration. `cred_scan.orch.configuration` owns all
 orchestration settings and must not import pipeline/scheduler code.
-`common/` stays independent of orchestration and runtime feature behavior. Its
+`src/cred_scan/common/` stays independent of orchestration and runtime feature behavior. Its
 workspace persistence layer may import the explicitly persisted document models
 used by the current workspace contract, but must not import adapters, service
 implementations, or create circular feature dependencies.

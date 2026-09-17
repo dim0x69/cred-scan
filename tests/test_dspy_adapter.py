@@ -7,15 +7,15 @@ from unittest.mock import AsyncMock, Mock
 import dspy
 import pytest
 
-from judge.dspy_adapter import (
+from cred_scan.judge.dspy_adapter import (
     DspyFindingJudge,
     _is_fatal_judge_error,
     _is_rate_limit_error,
     _judge_input,
 )
-from judge.proto import FatalJudgeError
-from orch.models import AppConfig
-from scan.models import CredentialLocation
+from cred_scan.judge.proto import FatalJudgeError
+from cred_scan.orch.models import AppConfig
+from cred_scan.scan.models import CredentialLocation
 
 
 class APIConnectionError(Exception):

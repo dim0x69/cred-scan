@@ -4,9 +4,9 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from backend.proto import ContentReader
-from judge.evidence import evidence_matches, evidence_path, retain_first_evidence
-from scan.models import ExtractionResult, JudgmentResult
+from cred_scan.backend.proto import ContentReader
+from cred_scan.judge.evidence import evidence_matches, evidence_path, retain_first_evidence
+from cred_scan.scan.models import ExtractionResult, JudgmentResult
 
 
 @pytest.mark.parametrize(

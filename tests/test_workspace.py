@@ -11,11 +11,11 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from backend.models import ScanBoundaryInventory
-from common import workspace as storage
-from common.models import WorkspaceConfig
-from common.workspace import Workspace, WorkspaceBusyError, scratch_dir
-from scan.models import CredentialsDocument, TitusReport
+from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.common import workspace as storage
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import Workspace, WorkspaceBusyError, scratch_dir
+from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 
 @pytest.mark.parametrize("failure", ["serialize", "fsync", "replace"])
@@ -211,8 +211,8 @@ def test_operation_lock_excludes_a_separate_process(tmp_path):
     workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     code = """
 import sys
-from common.models import WorkspaceConfig
-from common.workspace import Workspace, WorkspaceBusyError
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import Workspace, WorkspaceBusyError
 try:
     with Workspace(WorkspaceConfig(workspace_dir=sys.argv[1])).operation_lock():
         print('acquired')

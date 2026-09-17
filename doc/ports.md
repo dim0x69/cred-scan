@@ -2,21 +2,23 @@
 
 ## Backend construction and model ownership
 
-[`BackendAdapter`](../backend/proto.py) remains the runtime contract used by
+[`BackendAdapter`](../src/cred_scan/backend/proto.py) remains the runtime contract used by
 orchestration, scanning, and readers. `ArtifactoryBackend` implements it directly,
 stores the supplied `ArtifactoryBackendConfig`, and returns its current `config.name`
 from `name`. `ArtifactoryDockerBackend` extends that transport with Docker behavior;
 there is no additional config/name-only runtime superclass.
 
-`orch.models` and `orch.inventory` import `ArtifactoryBackendConfig` from
-[`artifactory/models.py`](../backend/adapters/artifactory/models.py). Shared port
-signatures still use the exact classes and unions exported by `backend.models`.
+`cred_scan.orch.models` and `cred_scan.orch.inventory` import `ArtifactoryBackendConfig` from
+[`artifactory/models.py`](../src/cred_scan/backend/adapters/artifactory/models.py). Shared port
+signatures still use the exact classes and unions exported by `cred_scan.backend.models`.
 The concrete scope classes are `DockerImageScanScope`, `GitRepositoryScanScope`,
 and `PackageScanScope`; `ScanScopeRef` remains their union, so `ScanTarget.scope`
 and reader/scanner port signatures keep the same shape.
 The provider model module imports schema-only shared bases, not adapter code.
-Import runtime classes/errors from `artifactory.common` or `artifactory.docker`,
-not the package initializer; that initializer stays free of implementation imports.
+Import runtime classes/errors from
+`cred_scan.backend.adapters.artifactory.common` or
+`cred_scan.backend.adapters.artifactory.docker`, not the package initializer;
+that initializer stays free of implementation imports.
 
 `ArtifactoryError` remains in `artifactory.common`, including HTTP wrapping,
 configuration/response validation, and reader translation into `LayerEvidenceError`.
@@ -134,7 +136,7 @@ input while it is in use.
 
 ## Credential publication
 
-[`orch/credentials.py`](../orch/credentials.py) exposes pure transformations:
+[`src/cred_scan/orch/credentials.py`](../src/cred_scan/orch/credentials.py) exposes pure transformations:
 
 ```python
 merge_scan(previous: CredentialsDocument | None, discovered: CredentialsDocument) -> CredentialsDocument
@@ -166,7 +168,7 @@ a finding is absent from a later report. All occurrences remain in
 `credentials.json` for overview generation.
 
 Before skipping extraction for `RETAINED` metadata, the runtime calls
-`judge.evidence.evidence_matches(boundary_dir, credential_id, extraction)`. If path, size, or hash
+`cred_scan.judge.evidence.evidence_matches(boundary_dir, credential_id, extraction)`. If path, size, or hash
 verification fails, scan/extract raises a visible integrity error rather than
 silently claiming success or deleting/replacing historical evidence. Bytes and
 expected metadata remain untouched; restore the verified artifact offline
@@ -186,7 +188,7 @@ artifact returns false (no new extraction); new RETAINED returns true. Ordinary
 retrieval failures persist ERROR. Integrity failures and checkpoint-write failures
 escape without replacing historical metadata.
 
-`common.workspace.scratch_dir(parent)` is the sole temporary-directory primitive.
+`cred_scan.common.workspace.scratch_dir(parent)` is the sole temporary-directory primitive.
 The caller owns the context through target attempts or the complete content-reader
 session, including immediate evidence extraction. Exit removes only its child and,
 if empty, the parent; it does not guarantee cleanup after SIGKILL.
@@ -208,7 +210,7 @@ still validates/writes only its old formats; it does not upgrade to this runtime
 
 ## Workspace persistence and operation ownership
 
-[`WorkspaceProtocol`](../common/proto.py) is the single common persistence port:
+[`WorkspaceProtocol`](../src/cred_scan/common/proto.py) is the single common persistence port:
 
 ```python
 results_dir: Path

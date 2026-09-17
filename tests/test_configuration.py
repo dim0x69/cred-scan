@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from orch.configuration import YamlConfigLoader
+from cred_scan.orch.configuration import YamlConfigLoader
 
 
 def test_configuration_resolves_backend_and_exclusion_paths(tmp_path: Path) -> None:

@@ -9,23 +9,23 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from backend.adapters.artifactory import docker
-from backend.adapters.artifactory.docker import (
+from cred_scan.backend.adapters.artifactory import docker
+from cred_scan.backend.adapters.artifactory.docker import (
     ArtifactoryDockerReader,
     LayerEvidenceError,
 )
-from backend.inventory import merge_inventory
-from backend.models import (
+from cred_scan.backend.inventory import merge_inventory
+from cred_scan.backend.models import (
     ArtifactoryBackendConfig,
     ArtifactoryRepository,
     DockerImageScanScope,
     ScanBoundaryInventory,
     target_id_for,
 )
-from common.models import WorkspaceConfig
-from common.workspace import Workspace
-from scan.credentials import deduplicate_report
-from scan.models import ExclusionPolicy, TitusReport
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import Workspace
+from cred_scan.scan.credentials import deduplicate_report
+from cred_scan.scan.models import ExclusionPolicy, TitusReport
 
 
 PROVENANCE = (

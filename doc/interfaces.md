@@ -6,13 +6,13 @@ boundary.
 
 ## Model ownership and imports
 
-- [`backend/base_models.py`](../backend/base_models.py) defines the schema-only
+- [`src/cred_scan/backend/base_models.py`](../src/cred_scan/backend/base_models.py) defines the schema-only
   `BackendConfig`, `ScanBoundary`, `ScanScope`, and shared pin-hash helper.
-- [`backend/adapters/artifactory/models.py`](../backend/adapters/artifactory/models.py)
+- [`src/cred_scan/backend/adapters/artifactory/models.py`](../src/cred_scan/backend/adapters/artifactory/models.py)
   defines `ArtifactoryBackendConfig` (name, kind, base URL, platform),
   `ArtifactoryRepository`, and `DockerImageScanScope`. Docker is bound to Artifactory in this
   harness; these schemas remain distinct configuration/boundary/scope levels.
-- [`backend/models.py`](../backend/models.py) is the aggregate schema entry point:
+- [`src/cred_scan/backend/models.py`](../src/cred_scan/backend/models.py) is the aggregate schema entry point:
   it re-exports those exact classes and defines Git/package scopes, typed unions,
   targets, inventories, and content-transfer models. Provider schemas import only
   the shared bases, never the aggregate module, avoiding circular imports.
@@ -34,9 +34,9 @@ ScanBoundary                         Artifactory repository / Git organization
     └── ScanTarget.id                 immutable manifest / commit / artifact
 ```
 
-[`ScanBoundary`](../backend/base_models.py) is the `id`/`name` base for
-[`ArtifactoryRepository`](../backend/adapters/artifactory/models.py) and
-`GitOrganization`. `ScanBoundaryRef` in [`backend.models`](../backend/models.py)
+[`ScanBoundary`](../src/cred_scan/backend/base_models.py) is the `id`/`name` base for
+[`ArtifactoryRepository`](../src/cred_scan/backend/adapters/artifactory/models.py) and
+`GitOrganization`. `ScanBoundaryRef` in [`cred_scan.backend.models`](../src/cred_scan/backend/models.py)
 is their union.
 It identifies the report grouping, not an individual image or Git repository.
 Boundary lifecycle lives on `ScanBoundaryInventory`, not this identity model.
@@ -142,7 +142,7 @@ class Credential(BaseModel):
 It does not identify a logical scan scope; each occurrence reaches that scope
 through its immutable target reference.
 
-Pure transformations in `orch/credentials.py` own append and lifecycle policy;
+Pure transformations in `src/cred_scan/orch/credentials.py` own append and lifecycle policy;
 orchestration persists their results through validated workspace I/O. The document
 schemas do not encode a second publication/lifecycle state machine. Runtime
 `ReportBoundary` holds inventory, workspace/paths, and backend only; scanners and
@@ -163,7 +163,7 @@ mitigation feature may alter the active user view, but scan publication does not
 perform that removal.
 
 Evidence metadata remains in `credentials.json`; evidence bytes live under the
-boundary evidence directory. `judge.evidence` owns safe destinations and integrity
+boundary evidence directory. `cred_scan.judge.evidence` owns safe destinations and integrity
 checks; no evidence workspace object or separate index is persisted. Scan-time historical cleanup is disabled. The
 initial policy retains first-occurrence evidence while all source occurrences
 are retained in the credential document. Its extraction fingerprint records the
@@ -187,13 +187,13 @@ after that operation has unwound; no detached parser may outlive reader scratch.
 
 ## Workspace path value
 
-[`BoundaryPaths`](../common/models.py) is a frozen, nonpersisted Pydantic value
+[`BoundaryPaths`](../src/cred_scan/common/models.py) is a frozen, nonpersisted Pydantic value
 with `boundary_id: str` and `boundary_dir: Path`. Its read-only properties are
 `inventory`, `report`, `credentials`, `datastore`, and `scratch_parent`. They derive
 `inventory.json`, `report.json`, `credentials.json`, `titus.ds`, and `scratch` under
 the same boundary directory; constructing paths creates no files or directories.
 Only `Workspace.boundary(id)` encodes the unchanged boundary ID with
-`quote(id, safe="")`. Evidence destinations are owned by `judge.evidence`.
+`quote(id, safe="")`. Evidence destinations are owned by `cred_scan.judge.evidence`.
 There are no nested document/evidence handles or serialized workspace path models.
 Inventory/report/credential fields, versions, and JSON schemas are unchanged by
 this persistence simplification.

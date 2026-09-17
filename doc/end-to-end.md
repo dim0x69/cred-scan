@@ -24,11 +24,11 @@ The Artifactory integration owns both the repository boundary and Docker scope
 schemas. Model construction uses these imports:
 
 ```python
-from backend.adapters.artifactory.models import ArtifactoryRepository, DockerImageScanScope
-from backend.models import BackendConfig, ScanBoundaryInventory, ScanTarget, target_id_for
+from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository, DockerImageScanScope
+from cred_scan.backend.models import BackendConfig, ScanBoundaryInventory, ScanTarget, target_id_for
 ```
 
-`backend.models` also exports the same provider classes for shared consumers;
+`cred_scan.backend.models` also exports the same provider classes for shared consumers;
 there is only one definition of each model. At runtime, the Artifactory adapter
 owns its config/name directly and satisfies `BackendAdapter` without a separate
 runtime superclass. Model imports themselves neither construct clients nor discover
@@ -207,7 +207,7 @@ following is schematic; actual IDs are constructed with `target_id_for(scope)`):
 ```
 
 Orchestration reads the latest credentials checkpoint, calls
-`orch.credentials.merge_scan(previous, candidates)`, and writes the merged document.
+`cred_scan.orch.credentials.merge_scan(previous, candidates)`, and writes the merged document.
 Only a successful write permits handoff to judgment. A conversion failure keeps
 the newer raw report and the older credential checkpoint for retry. The worker and
 serial consumer use this sequence (schematic; services are supplied per phase):
@@ -258,7 +258,7 @@ Judgment remains separate from user acceptance or mitigation.
 Only `VALID` credentials are eligible for evidence extraction. The current
 implementation retains the first valid occurrence's evidence. Historical
 retained evidence is not deleted when a newer target is scanned or a finding is
-absent from a later report. `judge.evidence.evidence_matches` checks the stored
+absent from a later report. `cred_scan.judge.evidence.evidence_matches` checks the stored
 artifact's path, size, and hash before reuse. If the file is missing or corrupt, scan/extract fails visibly without
 replacing the artifact or its expected metadata. Restore bytes matching that
 metadata before retrying; automatic repair is not part of this workflow.

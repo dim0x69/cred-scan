@@ -49,10 +49,10 @@ boundary-level `ScanScope` is now `ScanBoundary`; the former `Source` is now
 `ScanScope`.
 
 Artifactory endpoint, repository, and Docker scope models live together in
-[`backend/adapters/artifactory/models.py`](backend/adapters/artifactory/models.py).
+[`src/cred_scan/backend/adapters/artifactory/models.py`](src/cred_scan/backend/adapters/artifactory/models.py).
 The concrete logical scopes are `DockerImageScanScope`, `GitRepositoryScanScope`,
-and `PackageScanScope`. Shared schema bases live in `backend/base_models.py`;
-`backend.models` remains the aggregate model entry point. Model imports do not load adapter implementations.
+and `PackageScanScope`. Shared schema bases live in `src/cred_scan/backend/base_models.py`;
+`cred_scan.backend.models` remains the aggregate model entry point. Model imports do not load adapter implementations.
 See [model ownership](doc/interfaces.md#model-ownership-and-imports).
 
 ## Configuration and commands
@@ -113,7 +113,7 @@ Retained evidence is checked against its path, size, and hash before reuse.
 Missing or corrupt evidence fails scan/extract visibly without deleting or
 overwriting bytes or metadata. Restore the verified artifact before retrying.
 
-`orch/runtime.py` contains the `ReportBoundary` lifecycle and the small
+`src/cred_scan/orch/runtime.py` contains the `ReportBoundary` lifecycle and the small
 `LocalRuntime` scheduler. A `ScanBoundaryInventory` carries a serializable
 `BackendConfig` name; the runtime resolves and caches the corresponding
 `BackendAdapter` while constructing the boundary. The same backend is passed to the
@@ -125,8 +125,8 @@ judger only after successful publication, without an additional completion flag.
 One evidence operation serves immediate extraction and recovery. `Workspace` exposes typed
 validated JSON read/write, inventory-path discovery, and the operation lock.
 It returns an immutable `BoundaryPaths` value, not nested document/resource handles.
-`orch/credentials.py` owns pure append/lifecycle transformations; orchestration
-persists each checkpoint explicitly. `judge/evidence.py` owns evidence destinations
+`src/cred_scan/orch/credentials.py` owns pure append/lifecycle transformations; orchestration
+persists each checkpoint explicitly. `src/cred_scan/judge/evidence.py` owns evidence destinations
 and integrity checks. Target scans and backend readers share one scratch context
 primitive, each owning only its temporary child. The scan runtime returns only the completed
 boundary count, which the CLI prints. The judge runtime returns the count of
@@ -148,6 +148,16 @@ no live LLM/Titus integration guarantee is implied.
 ## Layout
 
 ```text
+src/cred_scan/                # installable Python package
+  backend/                    # backend models, adapters, inventory, readers
+  common/                     # workspace persistence and shared ports
+  judge/                      # judgment and evidence ports/adapters
+  orch/                       # configuration and scan/judge coordination
+  scan/                       # Titus, report conversion, exclusions
+  tools/                      # operator/developer utilities
+  cli.py                      # Typer command surface
+
+tests/                        # package-level tests
 workspace/                    # runtime-only; ignored by Git
   <encoded-boundary-id>/
     inventory.json

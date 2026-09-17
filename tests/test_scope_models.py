@@ -6,7 +6,7 @@ from urllib.parse import quote
 import pytest
 from pydantic import ValidationError
 
-from backend.models import (
+from cred_scan.backend.models import (
     ArtifactoryRepository,
     BackendConfig,
     DockerImageScanScope,
@@ -19,9 +19,9 @@ from backend.models import (
     ScanTarget,
     target_id_for,
 )
-from common.models import WorkspaceConfig
-from common.workspace import Workspace
-from scan.models import CredentialsDocument, TitusReport
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import Workspace
+from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 
 @pytest.mark.parametrize("kind", ["docker", "git", "package"])

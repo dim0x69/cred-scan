@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock
 
-from backend.models import (
+from cred_scan.backend.models import (
     ArtifactoryRepository,
     BackendConfig,
     DockerImageScanScope,
@@ -11,8 +11,8 @@ from backend.models import (
     ScanTarget,
     target_id_for,
 )
-from scan.credentials import credential_identity, deduplicate_report
-from scan.models import ExclusionPolicy, TitusReport
+from cred_scan.scan.credentials import credential_identity, deduplicate_report
+from cred_scan.scan.models import ExclusionPolicy, TitusReport
 
 
 def target() -> tuple[ScanBoundaryInventory, ScanTarget]:

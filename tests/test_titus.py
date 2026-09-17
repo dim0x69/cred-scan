@@ -5,11 +5,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from backend.models import ScanBoundaryInventory
-from backend.proto import UnsupportedTitusTargetError
-from orch.models import AppConfig
-from scan.models import ExclusionPolicy
-from scan.titus import TitusCliScanner, _is_permanent_titus_error
+from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.proto import UnsupportedTitusTargetError
+from cred_scan.orch.models import AppConfig
+from cred_scan.scan.models import ExclusionPolicy
+from cred_scan.scan.titus import TitusCliScanner, _is_permanent_titus_error
 
 
 @pytest.mark.parametrize(

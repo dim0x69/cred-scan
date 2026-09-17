@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from pydantic import ValidationError
 
-from backend.inventory import merge_inventory
-from backend.models import (
+from cred_scan.backend.inventory import merge_inventory
+from cred_scan.backend.models import (
     ArtifactoryRepository,
     BackendConfig,
     DockerImageScanScope,
@@ -18,12 +18,12 @@ from backend.models import (
     ScanTarget,
     target_id_for,
 )
-from scan.models import TitusReport
-from common.models import WorkspaceConfig
-from common.workspace import Workspace
-from judge.evidence import evidence_path
-from orch import inventory
-from orch.models import AppConfig
+from cred_scan.scan.models import TitusReport
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import Workspace
+from cred_scan.judge.evidence import evidence_path
+from cred_scan.orch import inventory
+from cred_scan.orch.models import AppConfig
 
 
 def make_workspace(tmp_path):

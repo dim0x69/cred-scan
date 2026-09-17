@@ -5,18 +5,18 @@ import sys
 
 import pytest
 
-from backend import base_models, models
-from backend.adapters.artifactory import models as artifactory_models
+from cred_scan.backend import base_models, models
+from cred_scan.backend.adapters.artifactory import models as artifactory_models
 
 
 @pytest.mark.parametrize(
     "entry",
     [
-        "backend.base_models",
-        "backend.adapters.artifactory.models",
-        "backend.models",
-        "backend.proto",
-        "orch.configuration",
+        "cred_scan.backend.base_models",
+        "cred_scan.backend.adapters.artifactory.models",
+        "cred_scan.backend.models",
+        "cred_scan.backend.proto",
+        "cred_scan.orch.configuration",
     ],
 )
 def test_schema_imports_are_acyclic_and_do_not_load_adapter_implementations(entry):
@@ -28,9 +28,10 @@ import importlib.abc
 import sys
 
 blocked = {
-    'backend.adapters.artifactory.common',
-    'backend.adapters.artifactory.docker',
-    'orch.runtime', 'orch.inventory', 'scan.titus', 'judge.dspy_adapter',
+    'cred_scan.backend.adapters.artifactory.common',
+    'cred_scan.backend.adapters.artifactory.docker',
+    'cred_scan.orch.runtime', 'cred_scan.orch.inventory',
+    'cred_scan.scan.titus', 'cred_scan.judge.dspy_adapter',
 }
 class RejectRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -38,9 +39,9 @@ class RejectRuntime(importlib.abc.MetaPathFinder):
             raise AssertionError(f'schema import loaded runtime module: {fullname}')
 sys.meta_path.insert(0, RejectRuntime())
 importlib.import_module(sys.argv[1])
-from backend.models import ScanBoundaryInventory, DockerImageScanScope
-from backend.adapters.artifactory.models import DockerImageScanScope as OwnedDockerImageScanScope
-from orch.models import AppConfig
+from cred_scan.backend.models import ScanBoundaryInventory, DockerImageScanScope
+from cred_scan.backend.adapters.artifactory.models import DockerImageScanScope as OwnedDockerImageScanScope
+from cred_scan.orch.models import AppConfig
 assert DockerImageScanScope is OwnedDockerImageScanScope
 ScanBoundaryInventory.model_json_schema()
 AppConfig.model_json_schema()
@@ -53,11 +54,11 @@ def test_aggregate_exports_the_defining_models_without_copies():
     for name in ("BackendConfig", "ScanBoundary", "ScanScope"):
         value = getattr(models, name)
         assert value is getattr(base_models, name)
-        assert value.__module__ == "backend.base_models"
+        assert value.__module__ == "cred_scan.backend.base_models"
     for name in ("ArtifactoryBackendConfig", "ArtifactoryRepository", "DockerImageScanScope"):
         value = getattr(models, name)
         assert value is getattr(artifactory_models, name)
-        assert value.__module__ == "backend.adapters.artifactory.models"
+        assert value.__module__ == "cred_scan.backend.adapters.artifactory.models"
 
 
 def test_inventory_roundtrip_uses_provider_models_and_retains_pinned_identity(

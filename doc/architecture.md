@@ -7,16 +7,19 @@ retain historical scan data and never merge credentials across boundaries.
 ## Module ownership
 
 ```text
-backend/
-  backend adapters, ScanBoundary/ScanScope identity, inventory, content readers
-scan/
-  Titus invocation, report conversion, deduplication, exclusions
-judge/
-  judgment ports/adapters, evidence destinations and integrity checks
-orch/
-  boundary lifecycle, pure credential transitions, inventory/scan coordination, configuration
-common/
-  workspace paths, atomic JSON persistence, operation locking, one scratch context
+src/cred_scan/
+  backend/
+    backend adapters, ScanBoundary/ScanScope identity, inventory, content readers
+  scan/
+    Titus invocation, report conversion, deduplication, exclusions
+  judge/
+    judgment ports/adapters, evidence destinations and integrity checks
+  orch/
+    boundary lifecycle, pure credential transitions, inventory/scan coordination, configuration
+  common/
+    workspace paths, atomic JSON persistence, operation locking, one scratch context
+  cli.py
+    thin Typer command surface
 ```
 
 Backend discovery does not import scan or judge. Scan does not import judge or
@@ -26,15 +29,15 @@ targets for content readers.
 Backend schema dependencies are deliberately one-way:
 
 ```text
-backend/models.py (aggregate unions, targets, inventory)
-  -> backend/adapters/artifactory/models.py (endpoint, repository, Docker scope)
-       -> backend/base_models.py (BackendConfig, ScanBoundary, ScanScope, pin hash)
-  -> backend/base_models.py
+src/cred_scan/backend/models.py (aggregate unions, targets, inventory)
+  -> src/cred_scan/backend/adapters/artifactory/models.py (endpoint, repository, Docker scope)
+       -> src/cred_scan/backend/base_models.py (BackendConfig, ScanBoundary, ScanScope, pin hash)
+  -> src/cred_scan/backend/base_models.py
 ```
 
 Docker is part of the Artifactory integration in this harness. Its `DockerImageScanScope`,
 `ArtifactoryRepository`, and `ArtifactoryBackendConfig` live together in that
-integration's model module. `backend.models` imports/re-exports these exact classes
+integration's model module. `cred_scan.backend.models` imports/re-exports these exact classes
 for shared unions and consumers; it does not duplicate them. The schema-only bases
 import no adapters. Artifactory's package initializer imports no implementation,
 so loading models or orchestration settings does not load transport/runtime code.
@@ -196,7 +199,7 @@ For an active boundary:
    fails the operation visibly without deleting/replacing bytes or metadata;
    an operator must restore the verified artifact before retrying.
 
-`orch/credentials.py` owns pure append/judgment/extraction transformations;
+`src/cred_scan/orch/credentials.py` owns pure append/judgment/extraction transformations;
 `ReportBoundary` explicitly reads, transforms, and persists credential checkpoints.
 It saves recovered targets, target claims/completions, the raw report, merged
 credentials, every judgment, and every extraction outcome separately. No per-attempt
@@ -243,9 +246,9 @@ file. `Workspace` owns the resolved results root, typed `read(path, model_type)`
 lock. `boundary(id)` returns an immutable, I/O-free `BoundaryPaths` value, not a
 resource/document handle. `ReportBoundary` retains the root workspace and its
 paths separately. Common persistence imports no feature models or domain policy.
-`common.workspace.scratch_dir(parent)` owns one temporary child, never other live
+`cred_scan.common.workspace.scratch_dir(parent)` owns one temporary child, never other live
 sessions. Backend readers hold it until `aclose()`; scan holds it through every
-target attempt. `judge.evidence` owns retained-file path/integrity helpers, not a
+target attempt. `cred_scan.judge.evidence` owns retained-file path/integrity helpers, not a
 workspace handle, manifest, deletion, or repair service.
 
 JSON writes validate the expected model again, fsync a same-directory temporary

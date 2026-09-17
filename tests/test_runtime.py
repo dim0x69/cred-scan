@@ -5,22 +5,22 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from backend.models import ResolvedProvenance, ScanBoundaryInventory
-from backend.proto import BackendAdapter, ContentReader
-from common.models import WorkspaceConfig
-from common.workspace import Workspace
-from judge.proto import FindingJudge
-from orch import runtime
-from orch.credentials import merge_scan, with_judgment
-from orch.models import AppConfig, TitusConfig
-from orch.runtime import LocalRuntime, ReportBoundary
-from scan.models import (
+from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory
+from cred_scan.backend.proto import BackendAdapter, ContentReader
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import Workspace
+from cred_scan.judge.proto import FindingJudge
+from cred_scan.orch import runtime
+from cred_scan.orch.credentials import merge_scan, with_judgment
+from cred_scan.orch.models import AppConfig, TitusConfig
+from cred_scan.orch.runtime import LocalRuntime, ReportBoundary
+from cred_scan.scan.models import (
     CredentialsDocument,
     ExclusionPolicy,
     JudgmentResult,
     TitusReport,
 )
-from scan.proto import CredentialScanner
+from cred_scan.scan.proto import CredentialScanner
 
 
 def publish(workspace, document):

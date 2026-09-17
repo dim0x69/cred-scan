@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.models import (
+from cred_scan.backend.models import (
     ArtifactoryBackendConfig,
     ArtifactoryRepository,
     BackendConfig,
@@ -12,9 +12,9 @@ from backend.models import (
     ScanTarget,
     target_id_for,
 )
-from common.models import WorkspaceConfig
-from orch.models import AppConfig, TitusConfig
-from scan.models import Credential, CredentialLocation, CredentialOccurrence, ExclusionFiles
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import AppConfig, TitusConfig
+from cred_scan.scan.models import Credential, CredentialLocation, CredentialOccurrence, ExclusionFiles
 
 
 @pytest.fixture(autouse=True)

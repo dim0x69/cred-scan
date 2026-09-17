@@ -3,10 +3,10 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.models import target_id_for
-from orch.credentials import merge_scan, with_extraction, with_judgment
-from scan.exclusions import match_credential_exclusion
-from scan.models import (
+from cred_scan.backend.models import target_id_for
+from cred_scan.orch.credentials import merge_scan, with_extraction, with_judgment
+from cred_scan.scan.exclusions import match_credential_exclusion
+from cred_scan.scan.models import (
     CredentialsDocument,
     ExclusionPolicy,
     ExtractionResult,
