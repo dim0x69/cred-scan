@@ -23,7 +23,7 @@ state the logical source explicitly: `DockerImageScanScope`,
 (`docker`, `git`, `package`), computed identity, and inheritance are unchanged.
 Generated JSON Schema titles and definition references use the new class names;
 persisted JSON does not store Python class names. Inventory 7, report 2,
-credentials 4, and the central configuration shape remain unchanged. No aliases
+credentials 5, and the central configuration shape remain unchanged. No aliases
 for the old class names, legacy persisted fields, or runtime migration are added.
 
 ## Boundary, scope, and target identity
@@ -109,7 +109,7 @@ identity.
 
 ```python
 class CredentialLocation(BaseModel):
-    provenance: str
+    provenance: ContentProvenance
     source_path: str
     filename: str
 
@@ -119,8 +119,21 @@ class CredentialOccurrence(BaseModel):
     finding_ids: tuple[str, ...]
 ```
 
-The target ID identifies the exact source pin. Locations retain raw Titus
-provenance and the resolved path accepted by the backend reader. Occurrences
+The target ID identifies the exact source pin. `ContentProvenance` is a
+backend-owned discriminated union. The current Docker variants are
+`DockerLayerProvenance` and `DockerMetadataProvenance` for layer files,
+`manifest.json`, and `config.json`; future Git/package readers provide their
+own variants. Each provenance retains the raw Titus path plus the immutable
+source fields needed by its reader. Locations retain the typed provenance and
+the resolved path accepted by the backend reader.
+
+The LLM judge is given short session-local location IDs and display paths, not
+backend provenance objects. Its `read_file(location_id)` and
+`list_files(location_id)` tools resolve through a runtime registry and pass the
+typed provenance to the boundary reader. Evidence extraction uses the typed
+provenance directly and is not LLM-controlled.
+
+Occurrences
 from repeated scans are merged idempotently by target, location, and finding
 identity. Both persisted and newly converted documents may contain several
 occurrences for one target. Append publication folds every entry into one
@@ -174,10 +187,10 @@ failure while retaining the expected metadata and any existing artifact.
 
 ## Content reader locators
 
-`ContentReader.list_files(directory)` returns backend-owned locators that can be
-passed unchanged to `read_file()`. A Docker locator retains the exact manifest
-and layer identity. Git and package adapters provide equivalent immutable
-locators.
+`ContentReader.list_files(provenance)` returns backend-owned typed locators
+that can be passed unchanged to `read_file()`. A Docker locator retains the
+exact manifest and either layer identity or metadata kind (`manifest.json` or
+`config.json`). Git and package adapters provide equivalent immutable locators.
 
 `read_file()` returns complete exact file bytes. `extract_file()` writes those
 bytes unchanged to evidence. Callers do not reconstruct provenance from a
@@ -198,6 +211,15 @@ There are no nested document/evidence handles or serialized workspace path model
 Inventory/report/credential fields, versions, and JSON schemas are unchanged by
 this persistence simplification.
 
+## Operation diagnostics
+
+CLI commands log their start, resolved configuration path, and termination.
+Phase owners log exceptions where they occur before re-raising: configuration
+loading, inventory loading, Titus target/report operations, candidate conversion,
+and credential publication include their path, boundary, target, or attempt
+context. `asyncio.TaskGroup` exceptions are not flattened at the CLI; worker
+failure logs retain the originating traceback and context.
+
 ## Persistence and stale state
 
 `inventory.json` persists current and superseded target pins, scope lifecycle,
@@ -214,17 +236,16 @@ lock. Current document versions and field changes are:
 |---|---|---|
 | Inventory | **7** | inventory `scope` → `boundary`; target `scope` → `boundary`, `source` → `scope` |
 | Titus report | **2** | `scope_id` → `boundary_id` |
-| Credentials | **4** | `scope_id` → `boundary_id` |
+| Credentials | **5** | `scope_id` → `boundary_id`; raw provenance → typed ContentProvenance |
 
 Old field names are not runtime aliases. Older versions are rejected; a schema
 number alone cannot upgrade their payloads. This refactor leaves `workspace/`
-untouched. A separately authorized offline migration from inventory 6/report
-1/credentials 3 can rename these keys and versions without changing boundary
-IDs, target IDs, occurrence references, or extraction fingerprints. Report
-wrapper JSON changes, but raw findings and evidence bytes must not change.
-
-The earlier schema-5 workspace additionally requires the previously documented
-child-manifest ID correction, same-child alias reconciliation, and corresponding
-occurrence/fingerprint updates. Preserve originals and history; do not discard
-artifacts. No runtime migration or legacy-ID fallback is provided. The historical
-schema-2→3 credential utility still emits its old format, not this upgrade.
+untouched. The operator-only `cred_scan.tools.migrate_workspace_schema` utility performs
+an authorized offline migration from inventory 5/report 1/credentials 3. It
+preflights all documents, renames these fields and versions, corrects Docker
+child-manifest target IDs, reconciles same-child aliases, and updates occurrence
+references and extraction fingerprints. It preserves raw findings, evidence
+bytes, boundary IDs, and datastore paths. It is read-only unless `--apply` is
+provided, and writes each converted document atomically. No runtime migration
+or legacy-ID fallback is provided. The historical schema-2→3 credential
+utility still emits its old format, not this upgrade.

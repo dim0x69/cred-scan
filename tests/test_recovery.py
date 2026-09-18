@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
+from cred_scan.backend.adapters.artifactory.docker import parse_provenance
 from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory, target_id_for
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.workspace import Workspace, WorkspaceBusyError
@@ -65,9 +66,12 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
 
             async def resolve(raw_path, *, target_id=None):
                 reader.aclose.assert_not_awaited()
+                resolved_target_id = target_id or targets[0].id
                 return ResolvedProvenance(
-                    target_id=target_id or targets[0].id,
-                    provenance=raw_path,
+                    target_id=resolved_target_id,
+                    provenance=parse_provenance(raw_path).model_copy(
+                        update={"target_id": resolved_target_id}
+                    ),
                     source_path="etc/app.env",
                     filename="app.env",
                 )

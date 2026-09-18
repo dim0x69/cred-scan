@@ -35,8 +35,9 @@ Current implemented scope:
 Not included yet: GHES/Git, package scanning, OpenShift, user acceptance and
 mitigation, the former CLI workflow, human review, and training export. The
 existing workspace was previously migrated offline to inventory schema 5 and
-append-only credential behavior. Current schemas are inventory 7, report 2,
-and credentials 4; see the upgrade warning below. `report.json` is the cumulative raw Titus and
+append-only credential behavior. A dedicated offline migration upgrades
+inventory 5/report 1/credentials 3/4 to inventory 7/report 2/credentials 5;
+see the upgrade warning below. `report.json` is the cumulative raw Titus and
 rule-metadata store; `credentials.json` contains append-only normalized
 observations, judgment, and finding references. Future source adapters must use
 the generic backend, ScanScope, content reader, report, and judgment ports.
@@ -58,9 +59,19 @@ See [model ownership](doc/interfaces.md#model-ownership-and-imports).
 ## Configuration and commands
 
 **Existing-workspace warning:** current schemas are inventory **7**, Titus report
-**2**, and credentials **4**. They distinguish report `boundary` from logical
+**2**, and credentials **5**. They distinguish report `boundary` from logical
 `scope` and replace report/workspace `scope_id` with `boundary_id`. Old keys and
-versions are rejected; these changes do **not** migrate `workspace/`.
+versions are rejected by the runtime; migration is never automatic. Stop the
+scanner and back up the workspace before using the operator migration tool:
+
+```sh
+uv run python -m cred_scan.tools.migrate_workspace_schema workspace --dry-run
+uv run python -m cred_scan.tools.migrate_workspace_schema workspace --apply
+```
+
+The tool preflights every inventory, report, and credential document before
+writing atomically. It also rewrites canonical target references and retained
+evidence fingerprints after the schema-5 Docker child-manifest correction.
 
 The naming refactor preserves boundary IDs, canonical target IDs, evidence
 fingerprints, and directory paths. Separately authorize and preflight
@@ -187,12 +198,11 @@ preserve a sanitized source filename.
 - [Ports](doc/ports.md)
 - [End-to-end flow](doc/end-to-end.md)
 
-The historical schema migration utility is an operator/developer utility and
-is not invoked by the CLI or runtime harness. The earlier schema-5 target-pin
-migration was executed offline as a temporary one-shot operation and is not
-retained in the runtime harness. Migration to the current schemas remains a
-separate task. The historical schema-2→3 utility keeps its old output contract
-and does not make that output readable by the current runtime.
+`src/cred_scan/tools/migrate_workspace_schema.py` is an operator-only utility
+and is not imported by the CLI or runtime harness. It defaults to read-only
+preflight and requires `--apply` to write. The historical
+`migrate_credentials_schema.py` utility remains a separate schema-2→3 tool and
+does not make its old output readable by the current runtime.
 The existing `artifactory-cred-scan/` checkout is the behavioral reference for
 Artifactory API behavior, Titus invocation, Docker-layer access, and credential
 deduplication. This project uses direct `httpx` for its asynchronous

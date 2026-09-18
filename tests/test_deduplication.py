@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock
 
+from cred_scan.backend.adapters.artifactory.docker import parse_provenance
 from cred_scan.backend.models import (
     ArtifactoryRepository,
     BackendConfig,
@@ -13,6 +14,17 @@ from cred_scan.backend.models import (
 )
 from cred_scan.scan.credentials import credential_identity, deduplicate_report
 from cred_scan.scan.models import ExclusionPolicy, TitusReport
+
+
+def _resolved(target_id: str, raw_path: str, source_path: str, filename: str):
+    return ResolvedProvenance(
+        target_id=target_id,
+        provenance=parse_provenance(raw_path).model_copy(
+            update={"target_id": target_id}
+        ),
+        source_path=source_path,
+        filename=filename,
+    )
 
 
 def target() -> tuple[ScanBoundaryInventory, ScanTarget]:
@@ -69,17 +81,14 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
     )
     resolver = AsyncMock()
     resolver.resolve_provenance.side_effect = [
-        ResolvedProvenance(
-            target_id=scan_target.id,
-            provenance=raw_path,
-            source_path="etc/app:prod.env",
-            filename="app:prod.env",
+        _resolved(
+            scan_target.id, raw_path, "etc/app:prod.env", "app:prod.env"
         ),
-        ResolvedProvenance(
-            target_id=scan_target.id,
-            provenance=raw[0]["Matches"][1]["file_path"],
-            source_path="site-packages/pkg.py",
-            filename="pkg.py",
+        _resolved(
+            scan_target.id,
+            raw[0]["Matches"][1]["file_path"],
+            "site-packages/pkg.py",
+            "pkg.py",
         ),
     ]
     report = TitusReport(
@@ -115,11 +124,8 @@ def test_dedup_omits_credential_when_all_locations_are_excluded() -> None:
         ),
     )
     resolver = AsyncMock()
-    resolver.resolve_provenance.return_value = ResolvedProvenance(
-        target_id=scan_target.id,
-        provenance=raw_path,
-        source_path="vendor/secret.env",
-        filename="secret.env",
+    resolver.resolve_provenance.return_value = _resolved(
+        scan_target.id, raw_path, "vendor/secret.env", "secret.env"
     )
     policy = ExclusionPolicy(
         path_file="path-exclusions.list", path_patterns=("vendor/",)
@@ -155,11 +161,11 @@ def test_dedup_can_exclude_every_credential_and_return_empty_document() -> None:
     )
     resolver = AsyncMock()
     resolver.resolve_provenance.side_effect = [
-        ResolvedProvenance(
-            target_id=scan_target.id,
-            provenance=path,
-            source_path=path.rsplit("sha256:layer:", 1)[-1],
-            filename=path.rsplit("/", 1)[-1],
+        _resolved(
+            scan_target.id,
+            path,
+            path.rsplit("sha256:layer:", 1)[-1],
+            path.rsplit("/", 1)[-1],
         )
         for path in paths
     ]

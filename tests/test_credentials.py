@@ -55,7 +55,11 @@ def test_source_fingerprint_includes_raw_provenance(credential):
     location = occurrence.locations[0]
     changed_location = location.model_copy(
         update={
-            "provenance": location.provenance.replace("sha256:layer", "sha256:other")
+            "provenance": location.provenance.model_copy(
+                update={"raw_path": location.provenance.raw_path.replace(
+                    "sha256:layer", "sha256:other"
+                )}
+            )
         }
     )
     changed = credential.model_copy(
@@ -154,7 +158,13 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
             "locations": (
                 location.model_copy(
                     update={
-                        "provenance": location.provenance.replace("app.env", "b.env"),
+                        "provenance": location.provenance.model_copy(
+                            update={
+                                "raw_path": location.provenance.raw_path.replace(
+                                    "app.env", "b.env"
+                                )
+                            }
+                        ),
                         "source_path": "etc/b.env",
                         "filename": "b.env",
                     }

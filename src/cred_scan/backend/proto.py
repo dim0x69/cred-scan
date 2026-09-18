@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from cred_scan.backend.models import (
+    ContentProvenance,
     FileContent,
     ResolvedProvenance,
     ScanBoundaryRef,
@@ -49,15 +50,19 @@ class ContentReader(Protocol):
         self, raw_path: str, *, target_id: str | None = None
     ) -> ResolvedProvenance: ...
 
-    async def read_file(self, path: str) -> FileContent:
+    async def read_file(self, provenance: ContentProvenance) -> FileContent:
         """Return the complete bytes of the exact pinned source file."""
         ...
 
-    async def list_files(self, directory: str) -> tuple[str, ...]:
-        """Return locators accepted unchanged by ``read_file``."""
+    async def list_files(
+        self, provenance: ContentProvenance
+    ) -> tuple[ContentProvenance, ...]:
+        """Return typed locators accepted unchanged by ``read_file``."""
         ...
 
-    async def extract_file(self, path: str, destination: Path) -> Path:
+    async def extract_file(
+        self, provenance: ContentProvenance, destination: Path
+    ) -> Path:
         """Write the complete exact source file to ``destination``."""
         ...
 

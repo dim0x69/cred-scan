@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from cred_scan.backend.models import ContentProvenance
+
 
 class ExclusionFiles(BaseModel):
     paths: Path
@@ -24,9 +26,9 @@ class ExclusionPolicy(BaseModel):
 
 
 class CredentialLocation(BaseModel):
-    """One Titus path after source-specific backend resolution."""
+    """One typed source location after backend-specific resolution."""
 
-    provenance: str
+    provenance: ContentProvenance
     source_path: str
     filename: str
 
@@ -68,7 +70,7 @@ class Credential(BaseModel):
     def paths(self) -> tuple[str, ...]:
         """Raw Titus paths retained for the source-aware content reader."""
         return tuple(
-            location.provenance
+            location.provenance.raw_path
             for occurrence in self.occurrences
             for location in occurrence.locations
         )
@@ -94,7 +96,7 @@ def credential_source_fingerprint(credential: Credential) -> str:
             "target_id": occurrence.target_id,
             "locations": tuple(
                 {
-                    "provenance": location.provenance,
+                    "provenance": location.provenance.raw_path,
                     "source_path": location.source_path,
                 }
                 for location in occurrence.locations
@@ -121,7 +123,7 @@ class TitusReport(BaseModel):
 class CredentialsDocument(BaseModel):
     """The append-only ID-indexed credentials document for one boundary."""
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     boundary_id: str
     report_generated_at: str
     incomplete: bool = False

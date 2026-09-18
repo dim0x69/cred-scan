@@ -19,7 +19,7 @@ src/cred_scan/
   common/
     workspace paths, atomic JSON persistence, operation locking, one scratch context
   cli.py
-    thin Typer command surface
+    thin Typer command surface and operation diagnostics
 ```
 
 Backend discovery does not import scan or judge. Scan does not import judge or
@@ -54,6 +54,12 @@ The normal operator workflow is:
 ```text
 inventory  ->  scan
 ```
+
+The CLI logs command start, configuration path, and command termination. Errors
+are logged with `LOGGER.exception` at the phase where they occur: configuration
+loading, inventory loading, Titus target/report operations, candidate conversion,
+and credential publication. Nested `asyncio.TaskGroup` failures preserve normal
+cancellation and propagation; the CLI does not flatten or reinterpret them.
 
 `inventory` is manual. It discovers logical scan scopes and immutable pins, adds
 new targets, retains old targets, and marks scopes or boundaries stale when an
@@ -266,8 +272,10 @@ values, canonical target IDs, datastore paths, and evidence fingerprints do not
 change merely because these fields were renamed.
 
 Earlier documents are rejected rather than interpreted via legacy aliases.
-`workspace/` was not modified. Reusing it requires a separately authorized
-offline migration; [the interface contract](interfaces.md#persistence-and-stale-state)
-lists the field changes and the additional ID correction needed for schema 5.
-Preserve raw findings, evidence bytes, and execution history. The historical
-schema-2→3 utility retains its old output and does not perform this upgrade.
+`cred_scan.tools.migrate_workspace_schema` is the separate operator-only
+migration for the previous inventory 5/report 1/credentials 3/4 workspace. It
+preflights every document, corrects schema-5 Docker target IDs and aliases, and
+updates all dependent occurrence/fingerprint references before optional atomic
+writes with `--apply`. Preserve raw findings, evidence bytes, and execution
+history. The historical schema-2→3 utility retains its old output and does not
+perform this upgrade.

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
+from cred_scan.backend.adapters.artifactory.docker import parse_provenance
 from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.models import WorkspaceConfig
@@ -52,9 +53,12 @@ def make_boundary(tmp_path: Path, inventory: ScanBoundaryInventory, findings=())
 
     async def resolve(raw_path: str, *, target_id=None):
         source_path = raw_path.split("sha256:layer:", 1)[-1]
+        resolved_target_id = target_id or inventory.targets[0].id
         return ResolvedProvenance(
-            target_id=target_id or inventory.targets[0].id,
-            provenance=raw_path,
+            target_id=resolved_target_id,
+            provenance=parse_provenance(raw_path).model_copy(
+                update={"target_id": resolved_target_id}
+            ),
             source_path=source_path,
             filename=source_path.rsplit("/", 1)[-1],
         )

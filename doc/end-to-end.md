@@ -110,15 +110,24 @@ Each boundary owns:
 
 `inventory.json` retains current/superseded pins and scope/boundary lifecycle
 state in schema **7**, validating `target.id == target_id_for(target.scope)`.
-`report.json` uses schema **2** and `credentials.json` schema **4**; both record
+`report.json` uses schema **2** and `credentials.json` schema **5**; both record
 `boundary_id`, not a logical scope ID.
 
-Older field names and schema versions are rejected. This refactor did not
-migrate `workspace/`. Before reuse, separately authorize and preflight
-[the offline field mapping](interfaces.md#persistence-and-stale-state).
-The naming change preserves ID values, occurrence references, and fingerprints;
-starting from schema 5 also needs the earlier Docker child-manifest ID correction.
-Report wrapper keys change, but raw findings and evidence bytes must be preserved.
+Older field names and schema versions are rejected at runtime. To reuse the
+previous workspace, stop the scanner, back it up, and preflight the operator
+migration:
+
+```sh
+uv run python -m cred_scan.tools.migrate_workspace_schema workspace --dry-run
+uv run python -m cred_scan.tools.migrate_workspace_schema workspace --apply
+```
+
+The migration handles inventory 5/report 1/credentials 3/4, including the Docker
+child-manifest target-ID correction, same-child alias reconciliation, occurrence
+references, and extraction fingerprints. It preserves boundary IDs, raw
+findings, evidence bytes, and the Titus datastore; `--apply` is required to
+write. Report wrapper keys change, but raw findings and evidence bytes are
+preserved.
 
 `titus.ds` is the one persistent Titus datastore for the boundary. It survives
 between manual scans and is shared by all target pins in that boundary.
@@ -143,8 +152,14 @@ The operator then runs:
 cred-scan scan
 ```
 
-`scan` does not refresh inventory. It acquires the workspace operation lock and
-skips:
+`scan` does not refresh inventory. It logs the command and config path before
+starting. Each phase logs its own failure with the relevant inventory path,
+report boundary, target and attempt, Titus datastore, raw report, or credential
+checkpoint context before re-raising. `asyncio.TaskGroup` only propagates the
+worker failure; the CLI does not flatten or reinterpret it. The command exits
+nonzero and does not treat the failure as a completed scan.
+
+It acquires the workspace operation lock and skips:
 
 - stale boundaries;
 - stale scopes;

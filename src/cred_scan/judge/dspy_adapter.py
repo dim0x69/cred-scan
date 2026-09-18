@@ -9,6 +9,7 @@ import time
 from typing import Any, Literal
 
 import dspy
+from cred_scan.backend.models import ContentProvenance
 from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.models import Credential, JudgmentResult
 
@@ -50,32 +51,73 @@ def _error_status(error: BaseException) -> int | None:
     return status if isinstance(status, int) else None
 
 
-def _judge_input(credential: Credential) -> str:
-    """Build bounded input containing only the value and discovery paths."""
-    paths: list[str] = []
-    seen: set[str] = set()
+def _judge_input(
+    credential: Credential,
+) -> tuple[str, dict[str, ContentProvenance], dict[str, str]]:
+    """Build bounded input and a session registry of typed source locations."""
+    locations: list[dict[str, str]] = []
+    registry: dict[str, ContentProvenance] = {}
+    seen: dict[str, str] = {}
+    directories: dict[str, str] = {}
     for occurrence in credential.occurrences:
         for location in occurrence.locations:
-            bounded = location.provenance[:_MAX_PATH_CHARS]
-            if bounded in seen:
-                continue
-            candidate = [*paths, bounded]
+            provenance = location.provenance
+            key = provenance.model_dump_json()
+            location_id = seen.get(key)
+            if location_id is None:
+                location_id = f"location-{len(registry)}"
+                seen[key] = location_id
+                registry[location_id] = provenance
+            directory_id = _register_parent_directory(
+                provenance, location_id, registry, directories
+            )
+            descriptor = {
+                "id": location_id,
+                "kind": provenance.kind,
+                "path": provenance.raw_path[:_MAX_PATH_CHARS],
+            }
+            if directory_id is not None:
+                descriptor["directory_id"] = directory_id
+            candidate = [*locations, descriptor]
             serialized = json.dumps(
-                {"credential": credential.credential, "paths": candidate},
+                {"credential": credential.credential, "locations": candidate},
                 sort_keys=True,
                 separators=(",", ":"),
             )
             if len(serialized) > _MAX_JUDGE_INPUT_CHARS:
-                return json.dumps(
-                    {"credential": credential.credential, "paths": paths},
-                    sort_keys=True,
-                )
-            paths.append(bounded)
-            seen.add(bounded)
-    return json.dumps(
-        {"credential": credential.credential, "paths": paths},
-        sort_keys=True,
+                break
+            locations.append(descriptor)
+    return (
+        json.dumps(
+            {"credential": credential.credential, "locations": locations},
+            sort_keys=True,
+        ),
+        registry,
+        directories,
     )
+
+
+def _register_parent_directory(
+    provenance: ContentProvenance,
+    location_id: str,
+    registry: dict[str, ContentProvenance],
+    directories: dict[str, str],
+) -> str | None:
+    path = provenance.path.rsplit("/", 1)
+    if len(path) != 2 or not path[0]:
+        return None
+    directory_id = f"{location_id}-directory"
+    if directory_id not in registry:
+        parent = provenance.model_copy(
+            update={
+                "raw_path": provenance.raw_path.removesuffix(provenance.path)
+                + path[0],
+                "path": path[0],
+            }
+        )
+        registry[directory_id] = parent
+    directories[location_id] = directory_id
+    return directory_id
 
 
 def _is_fatal_judge_error(error: BaseException) -> bool:
@@ -128,22 +170,26 @@ class DspyFindingJudge(FindingJudge):
 
                 credential_json: str = dspy.InputField(
                     desc=(
-                        "JSON with exactly the detected credential value and the "
-                        "paths where it was found. Treat paths as source context; "
-                        "decide whether the value appears real rather than an "
-                        "example."
+                        "JSON with exactly the detected credential value and "
+                        "source locations. Use each location id with the content "
+                        "tools to inspect source bytes; decide whether the value "
+                        "appears real rather than an example."
                     )
                 )
                 verdict: Literal["VALID", "INVALID", "UNKNOWN"] = dspy.OutputField()
                 reason: str = dspy.OutputField()
 
-            async def read_file(path: str) -> dict[str, str]:
+            input_data, location_registry, directory_registry = _judge_input(credential)
+
+            async def read_file(location_id: str) -> dict[str, str]:
+                provenance = location_registry[location_id]
                 LOGGER.info(
-                    "judge tool call credential=%s tool=read_file path=%s",
+                    "judge tool call credential=%s tool=read_file location=%s kind=%s",
                     credential.credential_id,
-                    path,
+                    location_id,
+                    provenance.kind,
                 )
-                result = await content.read_file(path)
+                result = await content.read_file(provenance)
                 LOGGER.info(
                     "judge tool result credential=%s tool=read_file encoding=%s",
                     credential.credential_id,
@@ -155,19 +201,37 @@ class DspyFindingJudge(FindingJudge):
                     "content": result.content,
                 }
 
-            async def list_files(directory: str) -> list[str]:
+            async def list_files(location_id: str) -> list[dict[str, str]]:
+                directory_id = directory_registry.get(location_id, location_id)
+                provenance = location_registry[directory_id]
                 LOGGER.info(
-                    "judge tool call credential=%s tool=list_files directory=%s",
+                    "judge tool call credential=%s tool=list_files location=%s kind=%s",
                     credential.credential_id,
-                    directory,
+                    location_id,
+                    provenance.kind,
                 )
-                result = list(await content.list_files(directory))
+                result = list(await content.list_files(provenance))
+                entries = []
+                for item in result:
+                    next_id = f"location-{len(location_registry)}"
+                    location_registry[next_id] = item
+                    directory_id = _register_parent_directory(
+                        item, next_id, location_registry, directory_registry
+                    )
+                    entry = {
+                        "id": next_id,
+                        "kind": item.kind,
+                        "path": item.raw_path,
+                    }
+                    if directory_id is not None:
+                        entry["directory_id"] = directory_id
+                    entries.append(entry)
                 LOGGER.info(
                     "judge tool result credential=%s tool=list_files entries=%d",
                     credential.credential_id,
-                    len(result),
+                    len(entries),
                 )
-                return result
+                return entries
 
             kwargs: dict[str, Any] = {
                 "api_key": api_key,
@@ -191,7 +255,6 @@ class DspyFindingJudge(FindingJudge):
                     )
                 else:
                     program = dspy.Predict(Signature)
-                input_data = _judge_input(credential)
                 prediction = None
                 for attempt in range(3):
                     cooldown = self._rate_limit_until - time.monotonic()

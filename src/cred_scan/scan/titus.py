@@ -75,6 +75,11 @@ class TitusCliScanner(CredentialScanner):
                 self.inventory, target
             )
         except UnsupportedTitusTargetError as error:
+            LOGGER.error(
+                "unsupported Titus target target=%s error=%s",
+                target.id,
+                error,
+            )
             return target.model_copy(
                 update={
                     "result": target.result.model_copy(
@@ -112,6 +117,7 @@ class TitusCliScanner(CredentialScanner):
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as error:
+            LOGGER.exception("Titus process could not start target=%s", target.id)
             return target.model_copy(
                 update={
                     "result": target.result.model_copy(
@@ -151,6 +157,13 @@ class TitusCliScanner(CredentialScanner):
             errors = ("Titus succeeded without creating the datastore",)
         if warnings:
             errors = errors + (f"suppressed Titus warnings: {warnings}",)
+        if errors:
+            LOGGER.error(
+                "Titus scan failed target=%s return_code=%s errors=%s",
+                target.id,
+                return_code,
+                "; ".join(errors),
+            )
         result = target.result.model_copy(
             update={
                 "status": "scanned" if not errors else "failed",
@@ -164,16 +177,20 @@ class TitusCliScanner(CredentialScanner):
         return target.model_copy(update={"result": result})
 
     async def export_report(self, datastore: Path) -> TitusReport:
-        process = await asyncio.create_subprocess_exec(
-            self.config.executable,
-            "report",
-            "--datastore",
-            str(datastore),
-            "--format",
-            "json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.config.executable,
+                "report",
+                "--datastore",
+                str(datastore),
+                "--format",
+                "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            LOGGER.exception("Titus report process could not start datastore=%s", datastore)
+            raise
         try:
             stdout, stderr = await process.communicate()
         finally:
@@ -182,13 +199,19 @@ class TitusCliScanner(CredentialScanner):
                     process.kill()
                 await process.communicate()
         if process.returncode != 0:
-            raise TitusError(
-                f"Titus report failed: {stderr.decode(errors='replace').strip()[:500]}"
+            detail = stderr.decode(errors="replace").strip()[:500]
+            LOGGER.error(
+                "Titus report failed datastore=%s return_code=%s detail=%s",
+                datastore,
+                process.returncode,
+                detail or "<no stderr>",
             )
+            raise TitusError(f"Titus report failed: {detail}")
         try:
             payload = json.loads(stdout)
-        except json.JSONDecodeError as error:
-            raise TitusError("Titus report was not valid JSON") from error
+        except json.JSONDecodeError:
+            LOGGER.exception("Titus report returned invalid JSON datastore=%s", datastore)
+            raise TitusError("Titus report was not valid JSON") from None
         if not isinstance(payload, list):
             raise TitusError("Titus report was not a JSON array")
         return report_from_export(

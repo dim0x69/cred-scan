@@ -51,7 +51,9 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
         update={
             "locations": tuple(
                 CredentialLocation(
-                    provenance=f"path-{index}",
+                    provenance=credential.occurrences[0].locations[0].provenance.model_copy(
+                        update={"raw_path": f"path-{index}"}
+                    ),
                     source_path=f"path-{index}",
                     filename=f"path-{index}",
                 )
@@ -61,12 +63,13 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
     )
     expanded = credential.model_copy(update={"occurrences": (occurrence,)})
 
-    serialized = _judge_input(expanded)
+    serialized, registry, _directories = _judge_input(expanded)
 
     assert len(serialized) <= 120_000
     payload = json.loads(serialized)
-    assert set(payload) == {"credential", "paths"}
-    assert len(payload["paths"]) == 100
+    assert set(payload) == {"credential", "locations"}
+    assert len(payload["locations"]) == 100
+    assert len(registry) == 200
 
 
 def test_missing_judge_configuration_is_fatal(app_config: AppConfig) -> None:
@@ -91,7 +94,9 @@ def test_judge_uses_native_async_dspy_and_content_tools(
             path="docker://source/file", encoding="utf-8", content="SECRET"
         )
     )
-    content.list_files = AsyncMock(return_value=("etc/app.env",))
+    content.list_files = AsyncMock(
+        return_value=(credential.occurrences[0].locations[0].provenance,)
+    )
     captured: dict[str, object] = {}
 
     class Program:
@@ -100,12 +105,13 @@ def test_judge_uses_native_async_dspy_and_content_tools(
             tools = captured["tools"]
             assert isinstance(tools, (list, tuple))
             read_file, list_files = tools
-            assert await read_file("docker://source/file") == {
+            assert await read_file("location-0") == {
                 "path": "docker://source/file",
                 "encoding": "utf-8",
                 "content": "SECRET",
             }
-            assert await list_files("docker://source/etc") == ["etc/app.env"]
+            listed = await list_files("location-0")
+            assert listed[0]["kind"] == "docker-layer"
             return SimpleNamespace(verdict="VALID", reason="synthetic judgment")
 
     def make_react(_signature, *, tools, max_iters):

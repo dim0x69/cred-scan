@@ -11,7 +11,6 @@ import re
 import tarfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
@@ -30,6 +29,9 @@ from cred_scan.backend.adapters.artifactory.models import (
 )
 from cred_scan.backend.models import (
     BackendConfig,
+    ContentProvenance,
+    DockerLayerProvenance,
+    DockerMetadataProvenance,
     FileContent,
     ResolvedProvenance,
     ScanBoundaryRef,
@@ -50,9 +52,13 @@ MANIFEST_ACCEPT = ", ".join(
     )
 )
 
-_PROVENANCE_RE = re.compile(
+_LAYER_PROVENANCE_RE = re.compile(
     r"^docker://(?P<registry>[^/]+)/(?P<repository>[^/]+)/(?P<image>.+)"
     r"@(?P<manifest>sha256:[^/]+)/(?P<layer>sha256:[^:]+):(?P<path>.+)$"
+)
+_METADATA_PROVENANCE_RE = re.compile(
+    r"^docker://(?P<registry>[^/]+)/(?P<repository>[^/]+)/(?P<image>.+)"
+    r"@(?P<manifest>sha256:[^/]+)/(?P<path>manifest\.json|config\.json)$"
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -74,14 +80,7 @@ class LayerEvidenceError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
-class DockerProvenance:
-    registry: str
-    repository: str
-    image: str
-    manifest: str
-    layer: str
-    path: str
+DockerProvenance = DockerLayerProvenance | DockerMetadataProvenance
 
 
 def safe_member_path(value: str) -> str:
@@ -96,16 +95,34 @@ def safe_member_path(value: str) -> str:
 
 
 def parse_provenance(value: str) -> DockerProvenance:
-    match = _PROVENANCE_RE.fullmatch(value.strip())
-    if match is None:
-        raise LayerEvidenceError("invalid Titus Docker provenance path")
-    return DockerProvenance(
-        registry=match["registry"],
-        repository=match["repository"],
-        image=match["image"],
-        manifest=match["manifest"],
-        layer=match["layer"],
-        path=safe_member_path(match["path"]),
+    raw_path = value.strip()
+    metadata = _METADATA_PROVENANCE_RE.fullmatch(raw_path)
+    if metadata is not None:
+        path = metadata["path"]
+        return DockerMetadataProvenance(
+            kind="docker-manifest" if path == "manifest.json" else "docker-config",
+            raw_path=raw_path,
+            registry=metadata["registry"],
+            repository=metadata["repository"],
+            image=metadata["image"],
+            manifest=metadata["manifest"],
+            path=path,
+        )
+
+    layer = _LAYER_PROVENANCE_RE.fullmatch(raw_path)
+    if layer is not None:
+        return DockerLayerProvenance(
+            raw_path=raw_path,
+            registry=layer["registry"],
+            repository=layer["repository"],
+            image=layer["image"],
+            manifest=layer["manifest"],
+            layer=layer["layer"],
+            path=safe_member_path(layer["path"]),
+        )
+    raise LayerEvidenceError(
+        "invalid Titus Docker provenance path; expected a layer file, "
+        "manifest.json, or config.json provenance"
     )
 
 
@@ -163,9 +180,20 @@ class ArtifactoryDockerReader(ContentReader):
             raise LayerEvidenceError(
                 f"could not retrieve image manifest: {error}"
             ) from error
-        if not isinstance(manifest.get("layers"), list) or not manifest["layers"]:
-            raise LayerEvidenceError("image manifest contains no filesystem layers")
         return manifest
+
+    async def _metadata_bytes(self, provenance: DockerMetadataProvenance) -> bytes:
+        if provenance.path == "manifest.json":
+            _, content, _ = await self.backend._manifest_bytes(
+                provenance.repository, provenance.image, provenance.manifest
+            )
+            return content
+        manifest = await self._manifest(provenance)
+        config = manifest.get("config")
+        if not isinstance(config, dict) or not isinstance(config.get("digest"), str):
+            raise LayerEvidenceError("image manifest has no config blob digest")
+        async with self._response(provenance, config["digest"]) as response:
+            return await response.aread()
 
     @asynccontextmanager
     async def _response(
@@ -184,6 +212,8 @@ class ArtifactoryDockerReader(ContentReader):
     async def _matching_layer(
         self, provenance: DockerProvenance, manifest: dict[str, Any]
     ) -> dict[str, Any]:
+        if not isinstance(provenance, DockerLayerProvenance):
+            raise LayerEvidenceError("image metadata does not have a filesystem layer")
         raw_layers = manifest.get("layers")
         if not isinstance(raw_layers, list) or not raw_layers:
             raise LayerEvidenceError("image manifest contains no filesystem layers")
@@ -314,17 +344,31 @@ class ArtifactoryDockerReader(ContentReader):
                     )
         return None
 
-    async def _find_file(self, provenance_value: str) -> tuple[bytes, dict[str, Any]]:
-        provenance = parse_provenance(provenance_value)
+    async def _find_file(
+        self, provenance: DockerProvenance
+    ) -> tuple[bytes, dict[str, Any]]:
         self._validate_provenance(provenance)
-        cached = self._cache.get(provenance_value)
+        cached = self._cache.get(provenance.raw_path)
         if cached is not None:
             return cached, {
                 "path": provenance.path,
-                "layer": provenance.layer,
-                "requested_provenance": provenance_value,
+                "layer": (
+                    provenance.layer
+                    if isinstance(provenance, DockerLayerProvenance)
+                    else None
+                ),
+                "requested_provenance": provenance.raw_path,
                 "size": len(cached),
             }
+        if isinstance(provenance, DockerMetadataProvenance):
+            content = await self._metadata_bytes(provenance)
+            self._cache[provenance.raw_path] = content
+            return content, {
+                "path": provenance.path,
+                "requested_provenance": provenance.raw_path,
+                "size": len(content),
+            }
+
         manifest = await self._manifest(provenance)
         descriptor = await self._matching_layer(provenance, manifest)
         digest = descriptor.get("digest")
@@ -338,8 +382,8 @@ class ArtifactoryDockerReader(ContentReader):
         if result is None:
             raise LayerEvidenceError(f"file was not found: {provenance.path}")
         content, metadata = result
-        self._cache[provenance_value] = content
-        metadata["requested_provenance"] = provenance_value
+        self._cache[provenance.raw_path] = content
+        metadata["requested_provenance"] = provenance.raw_path
         return content, metadata
 
     def _list_files_in_archive(
@@ -372,7 +416,9 @@ class ArtifactoryDockerReader(ContentReader):
     @staticmethod
     def _file_locator(
         provenance: DockerProvenance, layer_digest: str, member_path: str
-    ) -> str:
+    ) -> DockerLayerProvenance:
+        if not isinstance(provenance, DockerLayerProvenance):
+            raise LayerEvidenceError("image metadata cannot list filesystem files")
         locator = (
             f"docker://{provenance.registry}/{provenance.repository}/"
             f"{provenance.image}@{provenance.manifest}/"
@@ -380,39 +426,53 @@ class ArtifactoryDockerReader(ContentReader):
         )
         # Keep the list/read contract local to the backend and fail closed if
         # malformed manifest data would produce an unreadable locator.
-        parse_provenance(locator)
-        return locator
+        parsed = parse_provenance(locator)
+        assert isinstance(parsed, DockerLayerProvenance)
+        return parsed
 
     async def resolve_provenance(
         self, raw_path: str, *, target_id: str | None = None
     ) -> ResolvedProvenance:
-        provenance = parse_provenance(raw_path)
+        try:
+            provenance = parse_provenance(raw_path)
+        except LayerEvidenceError:
+            LOGGER.exception(
+                "invalid Docker provenance raw_path=%s target_id=%s",
+                raw_path,
+                target_id or "<not supplied>",
+            )
+            raise
         target = self._target_for_provenance(provenance, target_id)
         return ResolvedProvenance(
             target_id=target.id,
-            provenance=raw_path,
+            provenance=provenance,
             source_path=provenance.path,
             filename=PurePosixPath(provenance.path).name,
         )
 
-    async def read_file(self, path: str) -> FileContent:
-        content, _ = await self._find_file(path)
+    async def read_file(self, provenance: ContentProvenance) -> FileContent:
+        if not isinstance(provenance, (DockerLayerProvenance, DockerMetadataProvenance)):
+            raise LayerEvidenceError("unsupported Docker content provenance")
+        content, _ = await self._find_file(provenance)
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             return FileContent(
-                path=path,
+                path=provenance.raw_path,
                 content=base64.b64encode(content).decode("ascii"),
                 encoding="base64",
             )
-        return FileContent(path=path, content=text, encoding="utf-8")
+        return FileContent(path=provenance.raw_path, content=text, encoding="utf-8")
 
-    async def list_files(self, directory: str) -> tuple[str, ...]:
-        provenance = parse_provenance(directory)
+    async def list_files(
+        self, provenance: ContentProvenance
+    ) -> tuple[ContentProvenance, ...]:
+        if not isinstance(provenance, DockerLayerProvenance):
+            raise LayerEvidenceError("cannot list files for Docker metadata")
         self._validate_provenance(provenance)
         prefix = provenance.path.rstrip("/") + "/"
         manifest = await self._manifest(provenance)
-        entries: list[str] = []
+        entries: list[ContentProvenance] = []
         seen: set[str] = set()
         for descriptor in reversed(
             [item for item in manifest.get("layers", []) if isinstance(item, dict)]
@@ -432,8 +492,12 @@ class ArtifactoryDockerReader(ContentReader):
                 return tuple(entries)
         return tuple(entries)
 
-    async def extract_file(self, path: str, destination: Path) -> Path:
-        content, _ = await self._find_file(path)
+    async def extract_file(
+        self, provenance: ContentProvenance, destination: Path
+    ) -> Path:
+        if not isinstance(provenance, (DockerLayerProvenance, DockerMetadataProvenance)):
+            raise LayerEvidenceError("unsupported Docker content provenance")
+        content, _ = await self._find_file(provenance)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.tmp")
         async with aiofiles.open(temporary, mode="wb") as stream:
@@ -466,9 +530,9 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         self.platform = config.platform
         self.max_directory_entries = max_directory_entries
 
-    async def _manifest(
+    async def _manifest_bytes(
         self, repository: str, image: str, reference: str
-    ) -> tuple[str, dict[str, Any], datetime | None]:
+    ) -> tuple[str, bytes, datetime | None]:
         url = (
             f"{self.base_url}/api/docker/{quote(repository, safe='')}/v2/"
             f"{quote(image, safe='/')}/manifests/{quote(reference, safe=':@')}"
@@ -476,14 +540,26 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         response = await self._get(url, headers={"Accept": MANIFEST_ACCEPT})
         try:
             digest = response.headers.get("Docker-Content-Digest")
+            content = response.content
             if not digest:
-                digest = f"sha256:{hashlib.sha256(response.content).hexdigest()}"
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ArtifactoryError(f"manifest was not an object: {url}")
+                digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
             timestamp = _parse_http_timestamp(response.headers.get("Last-Modified"))
         finally:
             await response.aclose()
+        return digest, content, timestamp
+
+    async def _manifest(
+        self, repository: str, image: str, reference: str
+    ) -> tuple[str, dict[str, Any], datetime | None]:
+        digest, content, timestamp = await self._manifest_bytes(
+            repository, image, reference
+        )
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as error:
+            raise ArtifactoryError("manifest was not valid JSON") from error
+        if not isinstance(payload, dict):
+            raise ArtifactoryError("manifest was not an object")
         return digest, payload, timestamp
 
     @asynccontextmanager

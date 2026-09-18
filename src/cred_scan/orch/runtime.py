@@ -106,9 +106,18 @@ class ReportBoundary:
                         target.id,
                         attempt + 1,
                     )
-                    target = await scanner.scan(
-                        target, work_dir, self.paths.datastore, policy
-                    )
+                    try:
+                        target = await scanner.scan(
+                            target, work_dir, self.paths.datastore, policy
+                        )
+                    except Exception:
+                        LOGGER.exception(
+                            "target scan raised boundary=%s target=%s attempt=%d/3",
+                            self.boundary_id,
+                            target.id,
+                            attempt + 1,
+                        )
+                        raise
                     if target.result.status == "scanned" or attempt == 2:
                         break
                     target.result.status = "running"
@@ -154,7 +163,15 @@ class ReportBoundary:
                 errors=report.errors,
             )
         else:
-            report = await scanner.export_report(self.paths.datastore)
+            try:
+                report = await scanner.export_report(self.paths.datastore)
+            except Exception:
+                LOGGER.exception(
+                    "Titus report export failed boundary=%s datastore=%s",
+                    self.boundary_id,
+                    self.paths.datastore,
+                )
+                raise
             report = report.model_copy(
                 update={
                     "incomplete": report.incomplete or incomplete,
@@ -170,15 +187,32 @@ class ReportBoundary:
                 self.inventory.boundary, self.inventory.targets
             )
             try:
-                document = await deduplicate_report(
-                    report, self.inventory, policy, resolver
-                )
+                try:
+                    document = await deduplicate_report(
+                        report, self.inventory, policy, resolver
+                    )
+                except Exception as error:
+                    LOGGER.error(
+                        "candidate conversion failed boundary=%s report=%s error_type=%s",
+                        self.boundary_id,
+                        self.paths.report,
+                        type(error).__name__,
+                    )
+                    raise
             finally:
                 await resolver.aclose()
-        document = merge_scan(
-            self.workspace.read(self.paths.credentials, CredentialsDocument), document
-        )
-        self.workspace.write(self.paths.credentials, document, CredentialsDocument)
+        try:
+            document = merge_scan(
+                self.workspace.read(self.paths.credentials, CredentialsDocument), document
+            )
+            self.workspace.write(self.paths.credentials, document, CredentialsDocument)
+        except Exception:
+            LOGGER.exception(
+                "credential publication failed boundary=%s path=%s",
+                self.boundary_id,
+                self.paths.credentials,
+            )
+            raise
         LOGGER.info(
             "scan complete boundary=%s candidates=%d incomplete=%s",
             self.boundary_id,
@@ -495,7 +529,11 @@ class LocalRuntime:
 
     def boundaries(self) -> Iterator[ReportBoundary]:
         for paths in self.workspace.inventory_boundaries():
-            inventory = self.workspace.read(paths.inventory, ScanBoundaryInventory)
+            try:
+                inventory = self.workspace.read(paths.inventory, ScanBoundaryInventory)
+            except Exception:
+                LOGGER.exception("failed to load inventory path=%s", paths.inventory)
+                raise
             if inventory is None or inventory.lifecycle == "stale":
                 continue
             if not any(
@@ -550,6 +588,7 @@ class LocalRuntime:
 
                 async def scan_worker() -> None:
                     for boundary in boundaries:
+                        LOGGER.info("starting boundary scan boundary=%s", boundary.boundary_id)
                         document = await boundary.scan(
                             self._make_scanner(boundary), policy
                         )

@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -125,3 +126,26 @@ def test_run_command_displays_returned_count(
     assert "completed 2 report boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
     runtime.run.assert_awaited_once()
+
+
+def test_task_group_error_is_reported_as_command_failure(
+    monkeypatch, app_config: AppConfig, caplog
+) -> None:
+    loader = Mock(load=AsyncMock(return_value=app_config))
+    runtime = Mock(
+        scan=AsyncMock(
+            side_effect=ExceptionGroup(
+                "unhandled errors in a TaskGroup",
+                [RuntimeError("Titus export failed")],
+            )
+        )
+    )
+    monkeypatch.setattr(cli, "YamlConfigLoader", Mock(return_value=loader))
+    monkeypatch.setattr(cli, "LocalRuntime", Mock(return_value=runtime))
+
+    with caplog.at_level(logging.ERROR, logger="cred_scan.cli"):
+        result = CliRunner().invoke(cli.app, ["scan"])
+
+    assert result.exit_code == 1
+    assert "command failed command=scan" in caplog.text
+    assert "command error" not in caplog.text

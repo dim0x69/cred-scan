@@ -24,7 +24,7 @@ app = typer.Typer(
 def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
 
@@ -52,11 +52,12 @@ def inventory(
 
     config = _existing_config(config)
     _configure_logging()
+    LOGGER.info("starting command=inventory config=%s", config)
     try:
         asyncio.run(run())
-    except Exception as error:
-        typer.echo(f"error: {error}", err=True)
-        raise typer.Exit(1) from error
+    except Exception:
+        LOGGER.error("command failed command=inventory config=%s", config)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -74,11 +75,12 @@ def judge(
 
     config = _existing_config(config)
     _configure_logging()
+    LOGGER.info("starting command=judge config=%s", config)
     try:
         asyncio.run(run())
-    except Exception as error:
-        typer.echo(f"error: {error}", err=True)
-        raise typer.Exit(1) from error
+    except Exception:
+        LOGGER.error("command failed command=judge config=%s", config)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -96,11 +98,12 @@ def scan(
 
     config = _existing_config(config)
     _configure_logging()
+    LOGGER.info("starting command=scan config=%s", config)
     try:
         asyncio.run(run())
-    except Exception as error:
-        typer.echo(f"error: {error}", err=True)
-        raise typer.Exit(1) from error
+    except Exception:
+        LOGGER.error("command failed command=scan config=%s", config)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -118,11 +121,12 @@ def extract(
 
     config = _existing_config(config)
     _configure_logging()
+    LOGGER.info("starting command=extract config=%s", config)
     try:
         asyncio.run(run())
-    except Exception as error:
-        typer.echo(f"error: {error}", err=True)
-        raise typer.Exit(1) from error
+    except Exception:
+        LOGGER.error("command failed command=extract config=%s", config)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -140,11 +144,12 @@ def run(
 
     config = _existing_config(config)
     _configure_logging()
+    LOGGER.info("starting command=run config=%s", config)
     try:
         asyncio.run(execute())
-    except Exception as error:
-        typer.echo(f"error: {error}", err=True)
-        raise typer.Exit(1) from error
+    except Exception:
+        LOGGER.error("command failed command=run config=%s", config)
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

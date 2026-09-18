@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
@@ -72,16 +72,70 @@ class GitRepositoryScanScope(ScanScope):
 ScanScopeRef = DockerImageScanScope | PackageScanScope | GitRepositoryScanScope
 
 
+class DockerLayerProvenance(BaseModel):
+    """A Titus location inside one immutable Docker filesystem layer."""
+
+    kind: Literal["docker-layer"] = "docker-layer"
+    raw_path: str
+    registry: str
+    repository: str
+    image: str
+    manifest: str
+    layer: str
+    path: str
+
+
+class DockerMetadataProvenance(BaseModel):
+    """A Titus location for an image manifest or config blob."""
+
+    kind: Literal["docker-manifest", "docker-config"]
+    raw_path: str
+    registry: str
+    repository: str
+    image: str
+    manifest: str
+    path: Literal["manifest.json", "config.json"]
+
+
+class GitFileProvenance(BaseModel):
+    """A future Git file location on one immutable commit."""
+
+    kind: Literal["git-file"] = "git-file"
+    raw_path: str
+    remote: str
+    commit: str
+    path: str
+
+
+class PackageFileProvenance(BaseModel):
+    """A future package-file location on one immutable artifact."""
+
+    kind: Literal["package-file"] = "package-file"
+    raw_path: str
+    uri: str
+    digest: str
+    path: str
+
+
+ContentProvenance = Annotated[
+    DockerLayerProvenance
+    | DockerMetadataProvenance
+    | GitFileProvenance
+    | PackageFileProvenance,
+    Field(discriminator="kind"),
+]
+
+
 def target_id_for(scope: ScanScope) -> str:
     """Return the stable ID for one immutable scan-scope pin."""
     return f"{scope.id}@{scope.pin_id}"
 
 
 class ResolvedProvenance(BaseModel):
-    """Backend-owned interpretation of one raw Titus location."""
+    """Backend-owned typed interpretation of one raw Titus location."""
 
     target_id: str
-    provenance: str
+    provenance: ContentProvenance
     source_path: str
     filename: str
 

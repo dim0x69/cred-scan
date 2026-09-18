@@ -116,15 +116,24 @@ ContentReader.resolve_provenance(
     *,
     target_id: str | None = None,
 ) -> ResolvedProvenance
+
+ContentReader.read_file(provenance: ContentProvenance) -> FileContent
+ContentReader.list_files(
+    provenance: ContentProvenance,
+) -> tuple[ContentProvenance, ...]
+ContentReader.extract_file(
+    provenance: ContentProvenance,
+    destination: Path,
+) -> Path
 ```
 
 The resolver must return a target ID belonging to a retained immutable target
-in the current boundary. Historical report locations must therefore resolve to
-superseded targets as well as current targets.
-
-`list_files()` returns backend locators accepted unchanged by `read_file()`.
-Docker locators retain manifest and exact layer identity. Complete file bytes
-are returned and written for evidence.
+in the current boundary and a typed provenance object. Historical report
+locations must therefore resolve to superseded targets as well as current
+ targets. Docker provenance distinguishes layer files from manifest/config
+metadata. Complete file bytes are returned and written for evidence. The LLM
+judge uses session-local location IDs which the orchestration layer resolves to
+these typed values before invoking the reader.
 
 `FindingJudge.judge(credential, content)` is awaited directly and must propagate
 cancellation and keep all reader use within its awaitable. Ordinary judgment/reader
@@ -193,20 +202,32 @@ The caller owns the context through target attempts or the complete content-read
 session, including immediate evidence extraction. Exit removes only its child and,
 if empty, the parent; it does not guarantee cleanup after SIGKILL.
 
+## Operation diagnostics
+
+The Typer command surface logs command start, config path, and command
+termination. Phase owners log exceptions at the failure site with context:
+configuration paths, inventory paths, report boundaries, target IDs, Titus
+attempts, report paths, and credential checkpoints. `TaskGroup` exceptions are
+not flattened or reinterpreted by the CLI; the originating phase log retains
+its traceback. Commands still return nonzero after logging and do not convert
+failures into successful checkpoints.
+
 ## Persisted inventory precondition
 
-Runtime operations require inventory **7**, report **2**, and credential **4**
+Runtime operations require inventory **7**, report **2**, and credential **5**
 models. Inventory/target `boundary` is the report owner; target `scope` is the
 logical scope snapshot. Reports and credentials carry `boundary_id`.
 `Workspace.boundary(boundary_id)` returns `BoundaryPaths` with that unchanged
 report-boundary ID and directory encoding.
 
 Older keys/versions are rejected with no runtime aliases or automatic migration.
-A separately authorized offline upgrade must apply
-[the documented field mapping](interfaces.md#persistence-and-stale-state) without
-losing findings or evidence. The pre-schema-6 Docker IDs need the additional
-child-manifest reconciliation. The historical schema-2→3 credential utility
-still validates/writes only its old formats; it does not upgrade to this runtime.
+The operator-only `cred_scan.tools.migrate_workspace_schema` utility performs the
+authorized offline upgrade from inventory 5/report 1/credentials 3/4, including
+Docker child-manifest reconciliation and dependent occurrence/fingerprint
+updates. It preflights all documents and writes only with `--apply`, without
+losing findings, evidence, or datastore files. The historical schema-2→3
+credential utility still validates/writes only its old formats; it does not
+upgrade to this runtime.
 
 ## Workspace persistence and operation ownership
 
