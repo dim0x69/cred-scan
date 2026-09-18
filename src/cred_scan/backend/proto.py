@@ -48,14 +48,16 @@ class BackendAdapter(Protocol):
 class ContentReader(Protocol):
     """Resolve and read backend paths for one scan boundary.
 
-    Calls propagate cancellation after settling non-cancellable workers that
-    still use scratch. The owner then closes the reader; adapters must not
+    Implementations cache resolved locations and retrieved reads for the
+    reader lifetime. Calls propagate cancellation after settling
+    non-cancellable workers that still use scratch. The owner then closes the
+    reader; adapters must not
     leave detached workers accessing files that aclose removes.
     """
 
     async def resolve_location(self, raw_path: str) -> ContentLocation: ...
 
-    async def read(self, location: ContentLocation) -> ContentRead:
+    async def read(self, location: ContentLocation | str) -> ContentRead:
         """Return complete exact bytes and metadata for one location."""
         ...
 

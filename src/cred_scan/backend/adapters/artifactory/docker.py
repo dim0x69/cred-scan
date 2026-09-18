@@ -179,12 +179,12 @@ class ArtifactoryDockerReader(ContentReader):
         *,
         scratch_dir: ScratchDirectory,
     ) -> None:
-        if not targets:
-            raise ValueError("a content reader requires at least one target")
         self.backend = backend
         self.boundary = boundary
         self.targets = targets
         self._closed = False
+        self._locations: dict[str, ContentLocation] = {}
+        self._reads: dict[tuple[str, str, str, str], ContentRead] = {}
         self._scratch_context = scratch_dir()
         self._scratch_dir = Path(self._scratch_context.__enter__())
 
@@ -368,21 +368,41 @@ class ArtifactoryDockerReader(ContentReader):
         return content
 
     async def resolve_location(self, raw_path: str) -> ContentLocation:
+        key = raw_path.strip()
+        cached = self._locations.get(key)
+        if cached is not None:
+            return cached
+
         try:
-            provenance = parse_provenance(raw_path)
+            provenance = parse_provenance(key)
         except LayerEvidenceError:
             LOGGER.exception("invalid Docker provenance raw_path=%s", raw_path)
             raise
         target = self._target_for_provenance(provenance)
         source_path = provenance.path
-        return ContentLocation(
+        location = ContentLocation(
             target_id=target.id,
-            locator=raw_path.strip(),
+            locator=key,
             source_path=source_path,
             filename=PurePosixPath(source_path).name,
         )
+        self._locations[key] = location
+        return location
 
-    async def read(self, location: ContentLocation) -> ContentRead:
+    async def read(self, location: ContentLocation | str) -> ContentRead:
+        if isinstance(location, str):
+            location = await self.resolve_location(location)
+
+        key = (
+            location.target_id,
+            location.locator,
+            location.source_path,
+            location.filename,
+        )
+        cached = self._reads.get(key)
+        if cached is not None:
+            return cached
+
         provenance = parse_provenance(location.locator)
         target = self._target_for_provenance(provenance)
         if target.id != location.target_id:
@@ -390,19 +410,28 @@ class ArtifactoryDockerReader(ContentReader):
                 "content location target does not match its locator"
             )
         if location.source_path != provenance.path:
-            raise LayerEvidenceError("content location source path does not match locator")
+            raise LayerEvidenceError(
+                "content location source path does not match locator"
+            )
         if location.filename != PurePosixPath(provenance.path).name:
-            raise LayerEvidenceError("content location filename does not match locator")
-        return ContentRead(
+            raise LayerEvidenceError(
+                "content location filename does not match locator"
+            )
+
+        result = ContentRead(
             content=await self._find_file(provenance),
             source_path=provenance.path,
             filename=PurePosixPath(provenance.path).name,
         )
+        self._reads[key] = result
+        return result
 
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._locations.clear()
+        self._reads.clear()
         self._scratch_context.__exit__(None, None, None)
 
 

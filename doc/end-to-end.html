@@ -356,8 +356,10 @@ deduplicate_report(
 
 ContentReader.resolve_location(raw_path: str)
   → ContentLocation
-ContentReader.read(location: ContentLocation)
+ContentReader.read(location: ContentLocation | str)
   → ContentRead(content, source_path, filename)
+
+<em>reader caches resolved locations and retrieved reads for the Boundary lifecycle</em>
 
 retain_first_evidence(
   content: bytes, destination: Path
@@ -423,7 +425,7 @@ Boundary: one fully loaded inventory/report/credentials aggregate, derived paths
 TitusScannerPool: bounded concurrent Titus processes for one boundary scan
 LocalRuntime: one boundary command at a time</pre>
       <p>Boundary uses the concrete Workspace supplied by its owner; there is no second claim-checkpoint protocol. Backend content readers receive the Boundary's scratch context directly and do not depend on Workspace or BoundaryPaths. Backend discovery never imports orchestration; scan never imports judge/orchestration; configuration loading never imports scheduling. Boundary's type-only Workspace reference avoids a runtime cycle.</p>
-      <p>Workspace owns one configured backend and one backend lifetime. Boundary receives the Titus scanner pool, judge, and exclusion policy. Boundary closes its readers; Workspace closes the backend after the command. Scan concurrency is managed inside <code>TitusScannerPool</code>, not across boundaries.</p>
+      <p>Workspace owns one configured backend and one backend lifetime. Boundary receives the Titus scanner pool, judge, and exclusion policy, and keeps one cached content reader for its lifecycle. The reader caches resolved locations and retrieved file reads, then Boundary closes it before Workspace closes the backend. Scan concurrency is managed inside <code>TitusScannerPool</code>, not across boundaries.</p>
     </div>
     <div class="table-scroll" style="margin-top: 1.25rem" role="region" aria-label="Execution transitions" tabindex="0">
       <table>
@@ -695,7 +697,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
           <tr><td><code>report.json</code></td><td><a href="#model-report">TitusReport</a></td><td>Scan final export</td><td>Latest cumulative raw findings and rule metadata.</td></tr>
           <tr><td><code>credentials.json</code></td><td><a href="#model-credentials">CredentialsDocument</a></td><td>Scan → Judge → Extract</td><td>Append-only observations; per-credential judgment and extraction checkpoints.</td></tr>
           <tr><td><code>evidence/&lt;credential&gt;/&lt;filename&gt;</code></td><td>Bytes, indexed by <a href="#model-extraction">ExtractionResult</a></td><td>Extract</td><td>First-occurrence evidence for VALID credentials. Historical evidence is retained.</td></tr>
-          <tr><td><code>scratch/</code></td><td>None — temporary files</td><td>Scan / content readers</td><td>Each operation owns one temporary child; cleanup after target or judgment + immediate extraction.</td></tr>
+          <tr><td><code>scratch/</code></td><td>None — temporary files</td><td>Boundary reader / Titus workers</td><td>The Boundary reader owns its context across the lifecycle; each Titus worker owns a temporary child; cleanup occurs when their owners close.</td></tr>
         </tbody>
       </table>
     </div>
@@ -714,7 +716,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <h3>Retention and failure rules</h3>
         <ul>
           <li>Append publication preserves old credentials, locator occurrences, judgments, and evidence metadata—even if a later report omits them.</li>
-          <li>One credential-local byte session spans judgment and immediate VALID extraction. Close it and discard scratch afterward; no whole-image/repository or cross-credential cache.</li>
+          <li>One Boundary content reader spans scan, judgment, and extraction. It caches resolved locations and retrieved file reads for reuse, never a whole image/repository/archive, and releases its scratch context when the Boundary closes.</li>
           <li>RETAINED is a completed checkpoint, trusted by scheduling. Normal scan and explicit extract do not audit or reopen those files, even if externally removed or changed. They do not automatically repair or overwrite them.</li>
           <li>A saved VALID judgment survives a later extraction error, so extraction can retry without another LLM judgment.</li>
         </ul>
@@ -732,7 +734,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains a finding at <code>app.env</code>. Conversion retains its complete backend locator as a credential occurrence.</li>
         <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> containing the complete backend locator. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
         <li><strong>Judge.</strong> The judge receives C1 and a pinned content reader. Assume it returns <code>JudgmentResult(verdict="VALID", reasoning=…)</code>. Orchestration saves this result to the latest <code>credentials.json</code>.</li>
-        <li><strong>Extract.</strong> Reuse <code>app.env</code> bytes if judgment already read them; otherwise read through the same session. Retain the file under C1’s evidence directory and save <code>ExtractionResult(status="RETAINED", output_path=…, size=…, sha256=…)</code>. Close the session and discard its scratch.</li>
+        <li><strong>Extract.</strong> Reuse <code>app.env</code> bytes if the Boundary reader already read them; otherwise read through that same reader. Retain the file under C1’s evidence directory and save <code>ExtractionResult(status="RETAINED", output_path=…, size=…, sha256=…)</code>. The Boundary closes the reader at lifecycle end.</li>
         <li><strong>Mixed obligations and recovery.</strong> Suppose another historical credential is ERROR and a third is VALID with extraction ERROR when M2 is discovered. The boundary can have SCAN, JUDGE, and EXTRACT all READY. Normal scan finishes M2's publication first, then uses the same claim for serial judgment and evidence. A crash with all targets scanned but publication still pending resumes export rather than rescanning the pins.</li>
         <li><strong>Next inventory, next scan.</strong> A new child manifest M2 appends a target and supersedes M1; both remain available to the backend. If C1 appears at another locator in M2, append its occurrence without discarding M1 or changing the first evidence location. Keep RETAINED metadata and skip its artifact without automatic auditing. A new missing/error extraction still uses the immutable first occurrence.</li>
       </ol>

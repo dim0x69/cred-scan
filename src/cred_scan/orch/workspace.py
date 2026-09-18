@@ -103,6 +103,10 @@ class Workspace:
             return
 
         self._closed = True
+        if self._boundaries is not None:
+            for boundary in self._boundaries:
+                await boundary.aclose()
+
         cleanup = asyncio.create_task(self.backend.aclose())
         cancelled = False
         while not cleanup.done():

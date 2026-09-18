@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from cred_scan.orch.workspace import Workspace
 
 from cred_scan.backend.inventory import merge_inventory
-from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
+from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.fsync import fsync_directory
 from cred_scan.common.models import BoundaryPaths
@@ -45,72 +45,6 @@ LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
 
 
-@contextmanager
-def _boundary_lock(path: Path) -> Iterator[None]:
-    """Own a boundary with an atomically created sentinel file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write("locked\n")
-
-    try:
-        yield
-    finally:
-        path.unlink(missing_ok=True)
-
-
-class ReadSession:
-    """Reuse bytes for one credential's judgment session."""
-
-    def __init__(self, reader: ContentReader) -> None:
-        self.reader = reader
-        self._cache: dict[tuple[str, str, str, str], ContentRead] = {}
-        self._closed = False
-
-    @property
-    def boundary_id(self) -> str:
-        explicit = getattr(self.reader, "boundary_id", None)
-        if isinstance(explicit, str):
-            return explicit
-        boundary = getattr(self.reader, "boundary", None)
-        if boundary is not None and isinstance(boundary.id, str):
-            return boundary.id
-        raise AttributeError("backend reader does not expose a boundary ID")
-
-    async def resolve_location(self, raw_path: str) -> ContentLocation:
-        return await self.reader.resolve_location(raw_path)
-
-    async def read(self, location: ContentLocation | str) -> ContentRead:
-        if self._closed:
-            raise RuntimeError("content session is closed")
-        if isinstance(location, str):
-            location = await self.resolve_location(location)
-        key = (
-            location.target_id,
-            location.locator,
-            location.source_path,
-            location.filename,
-        )
-        cached = self._cache.get(key)
-        if cached is None:
-            result = await self.reader.read(location)
-            if isinstance(result, bytes):
-                result = ContentRead(
-                    content=result,
-                    source_path=location.source_path,
-                    filename=location.filename,
-                )
-            self._cache[key] = result
-            cached = result
-        return cached
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._cache.clear()
-        await self.reader.aclose()
-
-
 class Boundary:
     """Fully loaded mutable aggregate for one persisted report boundary."""
 
@@ -124,7 +58,7 @@ class Boundary:
 
         # Construction reads one consistent boundary snapshot. The lock is a
         # simple sentinel because Workspace is the sole process owner.
-        with _boundary_lock(self.paths.operation_lock):
+        with self._lock():
             inventory = self._read(
                 self.paths.inventory,
                 ScanBoundaryInventory,
@@ -174,6 +108,11 @@ class Boundary:
 
         self.backend: BackendAdapter = workspace.backend
         self.policy: ExclusionPolicy = workspace.policy
+        self.reader: ContentReader = self.backend.content_reader(
+            self.inventory.boundary,
+            self.inventory.targets,
+            self.scratch_dir,
+        )
         self.judge_service = DspyFindingJudge(workspace.config)
         self.scanners = TitusScannerPool(
             workspace.config.titus,
@@ -188,6 +127,19 @@ class Boundary:
             scratch_dir=self.scratch_dir,
         )
         self._operation_active = False
+
+    @contextmanager
+    def _lock(self) -> Iterator[None]:
+        """Own this boundary with an atomically created sentinel file."""
+        path = self.paths.operation_lock
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write("locked\n")
+
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
 
     @staticmethod
     def _read(
@@ -238,6 +190,10 @@ class Boundary:
             except OSError:
                 pass
 
+    async def aclose(self) -> None:
+        """Close the boundary reader and release its scratch context."""
+        await self.reader.aclose()
+
     @contextmanager
     def scratch_dir(self) -> Iterator[Path]:
         """Own one temporary scratch child for this boundary."""
@@ -260,7 +216,7 @@ class Boundary:
 
         self._operation_active = True
         try:
-            with _boundary_lock(self.paths.operation_lock):
+            with self._lock():
                 yield self
         finally:
             self._operation_active = False
@@ -334,7 +290,13 @@ class Boundary:
             if discovered.boundary.id != self.boundary_id:
                 raise ValueError("backend returned inventory for another boundary")
 
+            await self.reader.aclose()
             self.inventory = merge_inventory(self.inventory, discovered)
+            self.reader = self.backend.content_reader(
+                self.inventory.boundary,
+                self.inventory.targets,
+                self.scratch_dir,
+            )
             self.scanners.inventory = self.inventory
             self.checkpoint()
             return True
@@ -447,20 +409,12 @@ class Boundary:
             self._has_report = True
             self.checkpoint()
 
-            resolver = self.backend.content_reader(
-                self.inventory.boundary,
-                self.inventory.targets,
-                self.scratch_dir,
+            candidates = await deduplicate_report(
+                self.report,
+                self.inventory,
+                self.policy,
+                self.reader,
             )
-            try:
-                candidates = await deduplicate_report(
-                    self.report,
-                    self.inventory,
-                    self.policy,
-                    resolver,
-                )
-            finally:
-                await resolver.aclose()
 
             self.credentials = merge_scan(self.credentials, candidates)
             self._has_credentials = True
@@ -486,38 +440,26 @@ class Boundary:
                 continue
 
             judged += 1
-            reader: ReadSession | None = None
             try:
-                try:
-                    reader = ReadSession(
-                        self.backend.content_reader(
-                            self.inventory.boundary,
-                            self.inventory.targets,
-                            self.scratch_dir,
-                        )
-                    )
-                    result = await self.judge_service.judge(
-                        credential,
-                        reader,
-                    )
-                except FatalJudgeError:
-                    raise
-                except Exception as error:
-                    LOGGER.exception(
-                        "judgment failed boundary=%s credential=%s",
-                        self.boundary_id,
-                        credential.credential_id,
-                    )
-                    result = JudgmentResult(
-                        verdict="ERROR",
-                        reasoning=str(error)[:500],
-                    )
+                result = await self.judge_service.judge(
+                    credential,
+                    self.reader,
+                )
+            except FatalJudgeError:
+                raise
+            except Exception as error:
+                LOGGER.exception(
+                    "judgment failed boundary=%s credential=%s",
+                    self.boundary_id,
+                    credential.credential_id,
+                )
+                result = JudgmentResult(
+                    verdict="ERROR",
+                    reasoning=str(error)[:500],
+                )
 
-                credential.judgment = result
-                self.checkpoint()
-            finally:
-                if reader is not None:
-                    await reader.aclose()
+            credential.judgment = result
+            self.checkpoint()
         return judged
 
     async def extract(self) -> int:
@@ -536,54 +478,42 @@ class Boundary:
             ):
                 continue
 
-            reader: ReadSession | None = None
             try:
-                try:
-                    reader = ReadSession(
-                        self.backend.content_reader(
-                            self.inventory.boundary,
-                            self.inventory.targets,
-                            self.scratch_dir,
-                        )
-                    )
-                    location = await reader.resolve_location(
-                        credential.occurrences[0].locator
-                    )
-                    content = await reader.read(location)
-                    destination = evidence_path(
-                        self.paths.boundary_dir,
-                        credential.credential_id,
-                        content.filename,
-                    )
-                    _, size, sha256 = await retain_first_evidence(
-                        content.content,
-                        destination,
-                    )
-                    extraction = ExtractionResult(
-                        status="RETAINED",
-                        output_path=destination.relative_to(
-                            self.paths.boundary_dir
-                        ).as_posix(),
-                        size=size,
-                        sha256=sha256,
-                    )
-                    retained += 1
-                except EvidenceConflictError:
-                    raise
-                except Exception as error:
-                    LOGGER.exception(
-                        "evidence extraction failed boundary=%s credential=%s",
-                        self.boundary_id,
-                        credential.credential_id,
-                    )
-                    extraction = ExtractionResult(
-                        status="ERROR",
-                        error=str(error)[:500],
-                    )
+                location = await self.reader.resolve_location(
+                    credential.occurrences[0].locator
+                )
+                content = await self.reader.read(location)
+                destination = evidence_path(
+                    self.paths.boundary_dir,
+                    credential.credential_id,
+                    content.filename,
+                )
+                _, size, sha256 = await retain_first_evidence(
+                    content.content,
+                    destination,
+                )
+                extraction = ExtractionResult(
+                    status="RETAINED",
+                    output_path=destination.relative_to(
+                        self.paths.boundary_dir
+                    ).as_posix(),
+                    size=size,
+                    sha256=sha256,
+                )
+                retained += 1
+            except EvidenceConflictError:
+                raise
+            except Exception as error:
+                LOGGER.exception(
+                    "evidence extraction failed boundary=%s credential=%s",
+                    self.boundary_id,
+                    credential.credential_id,
+                )
+                extraction = ExtractionResult(
+                    status="ERROR",
+                    error=str(error)[:500],
+                )
 
-                credential.extraction = extraction
-                self.checkpoint()
-            finally:
-                if reader is not None:
-                    await reader.aclose()
+            credential.extraction = extraction
+            self.checkpoint()
         return retained

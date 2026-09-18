@@ -102,9 +102,7 @@ implementations, or create circular feature dependencies.
 Updating `doc/` is part of every design change, not a separate follow-up task.
 Before finishing a change, update the affected documents in the same task:
 
-- `doc/architecture.md`: module ownership, dependencies, configuration, lifecycle.
-- `doc/interfaces.md`: data models, relationships, identity and field contracts.
-- `doc/ports.md`: protocol methods, callers, preconditions and outcomes.
+- doc/end-to-end.html
 - `doc/end-to-end.html`: authoritative visual workflow, worked example, and model map.
 
 When moving/renaming interfaces, update documentation links and static example
