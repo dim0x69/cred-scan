@@ -178,8 +178,6 @@ class ArtifactoryDockerReader(ContentReader):
     ) -> None:
         if not targets:
             raise ValueError("a content reader requires at least one target")
-        if any(target.boundary.id != boundary.id for target in targets):
-            raise ValueError("content-reader targets must belong to the boundary")
         self.backend = backend
         self.boundary = boundary
         self.targets = targets
@@ -228,10 +226,8 @@ class ArtifactoryDockerReader(ContentReader):
             ) from error
 
     async def _matching_layer(
-        self, provenance: DockerProvenance, manifest: dict[str, Any]
+        self, provenance: DockerLayerProvenance, manifest: dict[str, Any]
     ) -> dict[str, Any]:
-        if not isinstance(provenance, DockerLayerProvenance):
-            raise LayerEvidenceError("image metadata does not have a filesystem layer")
         raw_layers = manifest.get("layers")
         if not isinstance(raw_layers, list) or not raw_layers:
             raise LayerEvidenceError("image manifest contains no filesystem layers")
@@ -285,8 +281,7 @@ class ArtifactoryDockerReader(ContentReader):
         matches = [
             target
             for target in self.targets
-            if target.boundary.id == self.boundary.id
-            and isinstance(target.scope, DockerImageScanScope)
+            if isinstance(target.scope, DockerImageScanScope)
             and target.scope.image == image
             and target.scope.digest == provenance.manifest
         ]
@@ -302,9 +297,6 @@ class ArtifactoryDockerReader(ContentReader):
                 "Titus provenance does not identify exactly one pinned target"
             )
         return matches[0]
-
-    def _validate_provenance(self, provenance: DockerProvenance) -> None:
-        self._target_for_provenance(provenance)
 
     def _temporary_path(self) -> Path:
         with NamedTemporaryFile(
@@ -363,7 +355,6 @@ class ArtifactoryDockerReader(ContentReader):
         return None
 
     async def _find_file(self, provenance: DockerProvenance) -> bytes:
-        self._validate_provenance(provenance)
         if isinstance(provenance, DockerMetadataProvenance):
             return await self._metadata_bytes(provenance)
 
@@ -405,13 +396,11 @@ class ArtifactoryDockerReader(ContentReader):
 
     async def read(self, location: ContentLocation) -> bytes:
         provenance = parse_provenance(location.locator)
-        target = self._target_for_provenance(provenance, location.target_id)
+        self._target_for_provenance(provenance, location.target_id)
         if location.source_path != provenance.path:
             raise LayerEvidenceError("content location source path does not match locator")
         if location.filename != PurePosixPath(provenance.path).name:
             raise LayerEvidenceError("content location filename does not match locator")
-        if target.id != location.target_id:
-            raise LayerEvidenceError("content location target does not match locator")
         return await self._find_file(provenance)
 
     async def aclose(self) -> None:

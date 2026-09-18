@@ -1,5 +1,8 @@
 # Architecture
 
+For a visual overview, open the [standalone end-to-end graph](end-to-end.html#flow)
+and its [storage/lifecycle map](end-to-end.html#storage).
+
 This repository implements a manually inventoried, Titus-based credential
 scanner. A report boundary is one backend and one provider grouping. Boundaries
 retain historical scan data and never merge credentials across boundaries.
@@ -31,14 +34,18 @@ Backend schema dependencies are deliberately one-way:
 ```text
 src/cred_scan/backend/models.py (aggregate unions, targets, inventory)
   -> src/cred_scan/backend/adapters/artifactory/models.py (endpoint, repository, Docker scope)
+  -> src/cred_scan/backend/adapters/artifactory/package.py (package scope)
+  -> src/cred_scan/backend/adapters/ghes.py (Git boundary and scope)
        -> src/cred_scan/backend/base_models.py (BackendConfig, ScanBoundary, ScanScope, pin hash)
   -> src/cred_scan/backend/base_models.py
 ```
 
 Docker is part of the Artifactory integration in this harness. Its `DockerImageScanScope`,
 `ArtifactoryRepository`, and `ArtifactoryBackendConfig` live together in that
-integration's model module. `cred_scan.backend.models` imports/re-exports these exact classes
-for shared unions and consumers; it does not duplicate them. The schema-only bases
+integration's model module; `PackageScanScope` lives in the Artifactory package
+module, and Git boundary/scope models live in the GHES adapter module.
+`cred_scan.backend.models` imports/re-exports these exact classes for shared unions
+and consumers; it does not duplicate them. The schema-only bases
 import no adapters. Artifactory's package initializer imports no implementation,
 so loading models or orchestration settings does not load transport/runtime code.
 
@@ -256,7 +263,7 @@ ports without changing the source-neutral credential occurrence contract.
 ## Configuration and persistence
 
 Runtime settings remain in `config.yml`; relative paths resolve against that
-file. `Workspace` owns the resolved results root, typed `read(path, model_type)` /
+file. `Workspace` owns the resolved workspace root, typed `read(path, model_type)` /
 `write(path, document, model_type)`, inventory-directory discovery, and operation
 lock. `boundary(id)` returns an immutable, I/O-free `BoundaryPaths` value, not a
 resource/document handle. `ReportBoundary` retains the root workspace and its

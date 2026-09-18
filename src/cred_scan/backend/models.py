@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryBackendConfig as ArtifactoryBackendConfig,
@@ -16,6 +16,13 @@ from cred_scan.backend.adapters.artifactory.models import (
 from cred_scan.backend.adapters.artifactory.models import (
     DockerImageScanScope as DockerImageScanScope,
 )
+from cred_scan.backend.adapters.artifactory.package import (
+    PackageScanScope as PackageScanScope,
+)
+from cred_scan.backend.adapters.ghes import (
+    GitOrganization as GitOrganization,
+    GitRepositoryScanScope as GitRepositoryScanScope,
+)
 from cred_scan.backend.base_models import (
     BackendConfig as BackendConfig,
 )
@@ -25,61 +32,7 @@ from cred_scan.backend.base_models import (
 from cred_scan.backend.base_models import (
     ScanScope as ScanScope,
 )
-from cred_scan.backend.base_models import (
-    _pin_hash,
-)
-
-
-# H move to a GHES adapter.ghes module
-class GitOrganization(ScanBoundary):
-    """A GHES organization containing Git repository targets."""
-
-    kind: Literal["git-organization"] = "git-organization"
-
-
 ScanBoundaryRef = ArtifactoryRepository | GitOrganization
-
-
-# H move to a adapters.artifactory.package module.
-class PackageScanScope(ScanScope):
-    """Future package scan-scope shape."""
-
-    kind: Literal["package"] = "package"
-    name: str
-    uri: str
-    digest: str
-    ecosystem: str
-
-    @computed_field
-    @property
-    def id(self) -> str:
-        return f"{self.ecosystem}:{self.name}"
-
-    @computed_field
-    @property
-    def pin_id(self) -> str:
-        return _pin_hash((self.uri, self.digest))
-
-
-# H move to a GHES adapter.ghes module
-class GitRepositoryScanScope(ScanScope):
-    """A Git repository scan scope pinned to a commit."""
-
-    kind: Literal["git"] = "git"
-    remote: str
-    commit: str
-    branch: Literal["main"] = "main"
-    commit_timestamp: datetime
-
-    @computed_field
-    @property
-    def id(self) -> str:
-        return self.remote.removesuffix(".git")
-
-    @computed_field
-    @property
-    def pin_id(self) -> str:
-        return _pin_hash((self.commit, self.branch))
 
 
 ScanScopeRef = DockerImageScanScope | PackageScanScope | GitRepositoryScanScope

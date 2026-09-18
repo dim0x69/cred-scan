@@ -88,8 +88,8 @@ implementations, or create circular feature dependencies.
   is retrieved temporarily from immutable references and discarded afterward.
 - All runtime settings live in `config.yml`, including `workspace-dir`, Titus,
   LLM/environment settings, and the two central exclusion-file paths.
-  Results default to `<workspace-dir>`; an explicit `results-dir` override is
-  resolved relative to `config.yml`, like other relative paths.
+  `workspace-dir` is the root for all workspace persistence and resolves relative
+  to `config.yml` when configured as a relative path.
 - Internal APIs have no external compatibility requirement. Backends create
   repository-bound content readers directly; scan orchestration returns only
   the completed boundary count, not accumulated credential documents.

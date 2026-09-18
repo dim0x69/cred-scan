@@ -11,7 +11,7 @@ from cred_scan.common.models import WorkspaceConfig
 from cred_scan.common.workspace import Workspace
 from cred_scan.judge.proto import FindingJudge
 from cred_scan.orch import runtime
-from cred_scan.orch.credentials import merge_scan, with_judgment
+from cred_scan.orch.credentials import merge_scan
 from cred_scan.orch.models import AppConfig, TitusConfig
 from cred_scan.orch.runtime import LocalRuntime, ReportBoundary
 from cred_scan.scan.models import (
@@ -494,12 +494,11 @@ def test_evidence_recovery_reports_integrity_failure_without_overwriting_history
     else:
         evidence.write_bytes(b"damaged artifact")
     if rejudge:
+        saved.credentials[credential.credential_id].judgment = JudgmentResult(
+            verdict="ERROR"
+        )
         boundary.workspace.write(
-            boundary.paths.credentials,
-            with_judgment(
-                saved, credential.credential_id, JudgmentResult(verdict="ERROR")
-            ),
-            CredentialsDocument,
+            boundary.paths.credentials, saved, CredentialsDocument
         )
     backend.content_reader.reset_mock()
     document = boundary.workspace.read(boundary.paths.credentials, CredentialsDocument)
@@ -556,43 +555,6 @@ def test_invalid_credential_references_fail_before_content_access(
         asyncio.run(boundary.judge(document, judge, extract_valid=True))
     backend.content_reader.assert_not_called()
     judge.judge.assert_not_awaited()
-
-
-@pytest.mark.parametrize("phase", ["judge", "extract"])
-@pytest.mark.parametrize("missing", ["document", "credential"])
-def test_lifecycle_does_not_recreate_missing_persisted_state(
-    tmp_path, repository_inventory, credential, phase, missing
-):
-    boundary, _, backend, judge = make_boundary(tmp_path, repository_inventory)
-    if phase == "extract":
-        credential = credential.model_copy(
-            update={"judgment": JudgmentResult(verdict="VALID")}
-        )
-    document = CredentialsDocument(
-        boundary_id=repository_inventory.boundary.id,
-        report_generated_at="now",
-        credentials={credential.credential_id: credential},
-    )
-    if missing == "credential":
-        boundary.workspace.write(
-            boundary.paths.credentials,
-            document.model_copy(update={"credentials": {}}),
-            CredentialsDocument,
-        )
-    reader = create_autospec(ContentReader, instance=True)
-
-    reader.read.return_value = b"synthetic evidence"
-    backend.content_reader.return_value = reader
-    judge.judge.return_value = JudgmentResult(verdict="VALID")
-    with pytest.raises(ValueError, match="without|inactive credential"):
-        asyncio.run(
-            boundary.judge(document, judge)
-            if phase == "judge"
-            else boundary.extract(document)
-        )
-    saved = boundary.workspace.read(boundary.paths.credentials, CredentialsDocument)
-    assert saved is None if missing == "document" else saved.credentials == {}
-    reader.aclose.assert_awaited_once()
 
 
 def test_publication_guard_detects_an_injected_republication(

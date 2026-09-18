@@ -1,0 +1,2 @@
+- add --extract with max size
+- add 512 KB scan limit (global)

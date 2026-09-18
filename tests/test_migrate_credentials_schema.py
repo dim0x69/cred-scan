@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from cred_scan.scan.models import CredentialsDocument
 from cred_scan.tools import migrate_credentials_schema as migration
-from cred_scan.tools.migrate_credentials_schema import migrate_payload, migrate_results_dir
+from cred_scan.tools.migrate_credentials_schema import migrate_payload, migrate_workspace
 
 
 def _raw_finding() -> dict:
@@ -79,7 +79,7 @@ def test_migrate_payload_removes_redundant_fields(tmp_path: Path) -> None:
     assert credential["occurrences"][0]["finding_ids"] == ["finding-id"]
 
 
-def test_migrate_results_dir_writes_schema_three(tmp_path: Path) -> None:
+def test_migrate_workspace_writes_schema_three(tmp_path: Path) -> None:
     payload = _legacy_payload()
     extraction = {
         "status": "RETAINED",
@@ -96,7 +96,7 @@ def test_migrate_results_dir_writes_schema_three(tmp_path: Path) -> None:
     report = credentials.with_name("report.json")
     report_bytes = report.read_bytes()
 
-    assert migrate_results_dir(tmp_path) == 1
+    assert migrate_workspace(tmp_path) == 1
     migrated = json.loads(credentials.read_text(encoding="utf-8"))
     document = migration._validate_document(migrated, credentials)
     assert document.boundary_id == migrated["scope_id"]
@@ -115,11 +115,11 @@ def test_migrate_results_dir_writes_schema_three(tmp_path: Path) -> None:
     assert evidence.read_bytes() == b"test"
 
 
-def test_migrate_results_dir_dry_run_does_not_write(tmp_path: Path) -> None:
+def test_migrate_workspace_dry_run_does_not_write(tmp_path: Path) -> None:
     credentials = _write_boundary(tmp_path / "scope")
     original = credentials.read_bytes()
 
-    assert migrate_results_dir(tmp_path, dry_run=True) == 1
+    assert migrate_workspace(tmp_path, dry_run=True) == 1
     assert credentials.read_bytes() == original
 
 
@@ -156,7 +156,7 @@ def test_migration_preflights_all_documents_before_writing(tmp_path, dry_run, de
     second = _write_boundary(tmp_path / "b", payload)
     originals = {path: path.read_bytes() for path in (first, second)}
     with pytest.raises(ValueError):
-        migrate_results_dir(tmp_path, dry_run=dry_run)
+        migrate_workspace(tmp_path, dry_run=dry_run)
     assert all(path.read_bytes() == original for path, original in originals.items())
 
 
@@ -185,7 +185,7 @@ def test_migration_rejects_missing_or_inconsistent_raw_report(tmp_path, dry_run,
         report_path.write_text(json.dumps(report))
     originals = {path: path.read_bytes() for path in (first, second)}
     with pytest.raises(ValueError):
-        migrate_results_dir(tmp_path, dry_run=dry_run)
+        migrate_workspace(tmp_path, dry_run=dry_run)
     assert all(path.read_bytes() == original for path, original in originals.items())
 
 
@@ -195,11 +195,11 @@ def test_migration_skips_valid_schema_three_without_rewriting(tmp_path):
     )
     second = _write_boundary(tmp_path / "b")
     original = first.read_bytes()
-    assert migrate_results_dir(tmp_path, dry_run=True) == 1
-    assert migrate_results_dir(tmp_path) == 1
+    assert migrate_workspace(tmp_path, dry_run=True) == 1
+    assert migrate_workspace(tmp_path) == 1
     assert first.read_bytes() == original
     assert json.loads(second.read_text())["schema_version"] == 3
-    assert migrate_results_dir(tmp_path) == 0
+    assert migrate_workspace(tmp_path) == 0
 
 
 def test_migration_validates_schema_three_before_skipping(tmp_path):
@@ -208,7 +208,7 @@ def test_migration_validates_schema_three_before_skipping(tmp_path):
     credentials = _write_boundary(tmp_path / "scope", payload)
     original = credentials.read_bytes()
     with pytest.raises(ValueError, match="invalid schema-3"):
-        migrate_results_dir(tmp_path)
+        migrate_workspace(tmp_path)
     assert credentials.read_bytes() == original
 
 
@@ -224,12 +224,12 @@ def test_migration_resumes_after_interrupted_write(tmp_path, monkeypatch):
 
     monkeypatch.setattr(migration, "_write_json_atomically", interrupted)
     with pytest.raises(OSError, match="synthetic interruption"):
-        migrate_results_dir(tmp_path)
+        migrate_workspace(tmp_path)
     assert json.loads(first.read_text())["schema_version"] == 3
     assert json.loads(second.read_text())["schema_version"] == 2
     first_bytes = first.read_bytes()
     monkeypatch.setattr(migration, "_write_json_atomically", write)
-    assert migrate_results_dir(tmp_path) == 1
+    assert migrate_workspace(tmp_path) == 1
     assert first.read_bytes() == first_bytes
     assert json.loads(second.read_text())["schema_version"] == 3
 
@@ -249,7 +249,7 @@ def test_migration_preserves_idless_findings_and_occurrence_subsets(tmp_path):
     report["findings"] = [raw, {"RuleID": "unrelated", "Matches": None}]
     report_path.write_text(json.dumps(report))
     original = report_path.read_bytes()
-    assert migrate_results_dir(tmp_path) == 1
+    assert migrate_workspace(tmp_path) == 1
     assert report_path.read_bytes() == original
     migrated = migration._validate_document(
         json.loads(credentials.read_text()), credentials
@@ -257,9 +257,9 @@ def test_migration_preserves_idless_findings_and_occurrence_subsets(tmp_path):
     assert migrated.credentials["credential-id"].occurrences[0].finding_ids == ()
 
 
-def test_migration_requires_existing_results_directory(tmp_path):
+def test_migration_requires_existing_workspace_directory(tmp_path):
     with pytest.raises(ValueError, match="directory does not exist"):
-        migrate_results_dir(tmp_path / "missing")
+        migrate_workspace(tmp_path / "missing")
 
 
 def test_migrate_payload_rejects_missing_target_without_mutating_input(tmp_path):

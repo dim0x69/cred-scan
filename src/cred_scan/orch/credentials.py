@@ -1,11 +1,6 @@
-"""Pure append and lifecycle transitions for a boundary's credential checkpoint."""
+"""Pure append/merge policy for a boundary's credential checkpoint."""
 
-from cred_scan.scan.models import (
-    CredentialOccurrence,
-    CredentialsDocument,
-    ExtractionResult,
-    JudgmentResult,
-)
+from cred_scan.scan.models import CredentialOccurrence, CredentialsDocument
 
 
 def merge_scan(
@@ -59,39 +54,3 @@ def _merge_occurrences(
             update={"locations": tuple(locations), "finding_ids": tuple(finding_ids)}
         )
     return tuple(merged.values())
-
-
-def with_judgment(
-    document: CredentialsDocument, credential_id: str, judgment: JudgmentResult
-) -> CredentialsDocument:
-    """Update one known credential, preserving any historical extraction metadata."""
-    credential = document.credentials.get(credential_id)
-    if credential is None:
-        raise ValueError(f"cannot update inactive credential: {credential_id}")
-    return document.model_copy(
-        update={
-            "credentials": {
-                **document.credentials,
-                credential_id: credential.model_copy(update={"judgment": judgment}),
-            }
-        }
-    )
-
-
-def with_extraction(
-    document: CredentialsDocument, credential_id: str, extraction: ExtractionResult
-) -> CredentialsDocument:
-    """Record an extraction outcome only for a known VALID credential."""
-    credential = document.credentials.get(credential_id)
-    if credential is None:
-        raise ValueError(f"cannot extract inactive credential: {credential_id}")
-    if credential.judgment.verdict != "VALID":
-        raise ValueError("evidence extraction requires a VALID judgment")
-    return document.model_copy(
-        update={
-            "credentials": {
-                **document.credentials,
-                credential_id: credential.model_copy(update={"extraction": extraction}),
-            }
-        }
-    )

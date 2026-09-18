@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Credential scanner: Inventory → Scan → Judge → Extract, with stage inputs, outputs, model hierarchies, and persistence contracts.">
+  <title>Credential scanner — End-to-end flow &amp; models</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #182b3a;
+      --muted: #526371;
+      --paper: #f5f7fa;
+      --line: #d9e1e8;
+      --inventory: #08776d;
+      --scan: #245db4;
+      --judge: #7444ac;
+      --extract: #a34d0b;
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    a { color: #245aa0; text-underline-offset: .18em; }
+    a:hover { text-decoration-thickness: 2px; }
+    a:focus-visible, summary:focus-visible { outline: 3px solid #245db4; outline-offset: 5px; border-radius: 3px; }
+    .skip { position: absolute; left: 1rem; top: -5rem; padding: .5rem 1rem; background: white; z-index: 2; }
+    .skip:focus { top: 1rem; }
+    header { background: #142b3b; color: #fff; border-bottom: 5px solid #65c7b6; }
+    .wrap { max-width: 1320px; margin: auto; padding: 0 2rem; }
+    header .wrap { padding-top: 3.5rem; padding-bottom: 2.5rem; }
+    .eyebrow { margin: 0 0 .8rem; font-size: .76rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+    header .eyebrow { color: #91dcca; }
+    h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.3rem); line-height: 1.15; letter-spacing: -.035em; }
+    .lede { max-width: 790px; color: #d7e2ea; font-size: 1.1rem; margin: 1.25rem 0 1.6rem; }
+    nav { display: flex; flex-wrap: wrap; gap: .6rem; }
+    nav a { color: white; text-decoration: none; padding: .35rem .85rem; border: 1px solid #607586; border-radius: 99px; font-size: .88rem; }
+    nav a:hover { background: #2c4659; }
+    main { padding-bottom: 3rem !important; }
+    section { margin-top: 3.5rem; }
+    h2 { margin: 0 0 .5rem; font-size: 1.8rem; line-height: 1.25; letter-spacing: -.025em; }
+    h3 { margin: 0 0 .6rem; font-size: 1.16rem; }
+    h4 { margin: 1.1rem 0 .4rem; }
+    p { margin: .5rem 0 1rem; }
+    .section-intro { max-width: 920px; color: var(--muted); margin-bottom: 1.5rem; }
+    .note { padding: 1rem 1.25rem; border-left: 4px solid #859bac; background: #eaf0f5; border-radius: 0 8px 8px 0; }
+    .note p:last-child { margin-bottom: 0; }
+    .status { margin-top: 1.7rem; font-size: .9rem; }
+    .status strong { color: var(--ink); }
+    code, pre { font-family: var(--mono); font-size: .86em; }
+    code { overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .8rem 0; padding: 1rem; background: #f1f5f8; border: 1px solid var(--line); border-radius: 8px; line-height: 1.7; }
+    .chip { display: inline-block; border: 1px solid var(--line); border-radius: 5px; background: #f7f9fb; padding: .08rem .4rem; font-size: .75rem; font-weight: 650; }
+    .legend { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem 1.2rem; font-size: .85rem; color: var(--muted); margin: 1rem 0; }
+    .legend span { display: inline-flex; align-items: center; gap: .4rem; }
+    .swatch { width: .8rem; height: .8rem; background: white; border: 1px solid #8a9baa; border-radius: 3px; }
+    .swatch.artifact { background: #edf0f3; border-style: dashed; }
+    .flow { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.5rem; }
+    .stage { position: relative; border: 1px solid var(--line); border-top: 5px solid var(--accent); border-radius: 10px; background: white; padding: 1.2rem; box-shadow: 0 4px 15px #182b3a06; }
+    .inventory { --accent: var(--inventory); }
+    .scan { --accent: var(--scan); }
+    .judge { --accent: var(--judge); }
+    .extract { --accent: var(--extract); }
+    .stage:not(:last-child)::after { content: "→"; position: absolute; right: -1.4rem; top: 3rem; color: #607586; font-size: 1.35rem; }
+    .stage .number { color: var(--accent); font-weight: 800; font-size: .8rem; }
+    .stage h3 { font-size: 1.65rem; color: var(--accent); line-height: 1.2; margin-top: .3rem; }
+    .stage .purpose { color: var(--muted); min-height: 4.7rem; font-size: .9rem; }
+    .io-label { font-size: .69rem; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; margin: 1rem 0 .4rem; color: var(--muted); }
+    .nodes { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+    .nodes li { border: 1px solid var(--line); border-radius: 6px; padding: .5rem .6rem; font-size: .85rem; }
+    .nodes small { display: block; font-size: .78rem; color: var(--muted); }
+    .nodes a { font-family: var(--mono); font-size: .91em; }
+    .nodes .artifact { border-style: dashed; background: #f3f5f7; }
+    .down { text-align: center; color: var(--accent); margin: .4rem 0 -.4rem; }
+    .stage-foot { border-top: 1px solid var(--line); margin: 1rem 0 0; padding-top: .8rem; font-size: .8rem; color: var(--muted); }
+    .gate { margin-top: 1rem; border: 1px solid #c4d5e4; padding: .85rem 1rem; background: #edf4fb; border-radius: 8px; font-size: .88rem; }
+    .grid-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+    .panel { min-width: 0; background: white; border: 1px solid var(--line); border-radius: 10px; padding: 1.4rem; }
+    .phase-detail { border-left: 4px solid var(--accent); }
+    .phase-detail h3 { color: var(--accent); }
+    .phase-detail ol, .phase-detail ul { padding-left: 1.2rem; }
+    .phase-detail li { margin: .4rem 0; }
+    .port { color: var(--muted); font-size: .85rem; }
+    .model-grid { align-items: start; }
+    .model { border: 1px solid var(--line); background: white; border-radius: 10px; min-width: 0; }
+    .model > summary { padding: 1rem 1.25rem; background: #edf2f6; border-radius: 10px 10px 0 0; font-weight: 700; }
+    summary { cursor: pointer; }
+    summary .chip { margin-left: .5rem; vertical-align: middle; }
+    .model-body { padding: .7rem 1.25rem 1.2rem; }
+    .owner { font-size: .8rem; color: var(--muted); margin-bottom: 1rem; }
+    .tree, .tree ul { list-style: none; padding-left: 1.1rem; margin: .5rem 0; border-left: 1px solid #cbd6e0; }
+    .tree li { position: relative; padding: .25rem 0 .25rem .2rem; }
+    .tree li::before { content: ""; position: absolute; top: 1rem; left: -1.1rem; width: .85rem; border-top: 1px solid #cbd6e0; }
+    .type { color: #5e4884; }
+    .hint { display: block; font-size: .83rem; color: var(--muted); margin: .1rem 0; }
+    .tree details { margin: .3rem 0; }
+    .tree summary { font-size: .9rem; }
+    .tree p { font-size: .85rem; margin: .3rem 0; }
+    .field-group { line-height: 1.85; }
+    .relations { margin-top: 1.25rem; }
+    .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: white; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
+    th, td { padding: .85rem 1rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { background: #eaf0f5; font-size: .8rem; }
+    tr:last-child td { border-bottom: 0; }
+    .timeline { padding-left: 1.4rem; }
+    .timeline li { padding: .4rem 0 .6rem .35rem; }
+    .timeline li::marker { color: var(--inventory); font-weight: 800; }
+    footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.5rem; font-size: .85rem; color: var(--muted); }
+    @media (max-width: 1050px) {
+      .flow { grid-template-columns: 1fr; gap: 2rem; }
+      .stage:not(:last-child)::after { content: "↓"; top: auto; bottom: -1.9rem; right: calc(50% - .5rem); }
+      .stage .purpose { min-height: 0; }
+      .grid-two { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .wrap { padding: 0 1rem; }
+      header .wrap { padding-top: 2.3rem; }
+      section { margin-top: 2.5rem; }
+      .panel, .stage { padding: 1rem; }
+      .model-body { padding-left: .85rem; padding-right: .85rem; }
+      th, td { padding: .7rem; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media print {
+      body { background: white; font-size: 10pt; }
+      header { color: black; background: white; border-bottom: 2px solid #666; }
+      header .eyebrow, .lede { color: #333; }
+      header .wrap { padding-top: 1rem; padding-bottom: 1rem; }
+      nav, .skip { display: none; }
+      .wrap { max-width: none; padding: 0; }
+      section { margin-top: 1.5rem; }
+      .flow, .grid-two { display: block; }
+      .stage, .panel, .model { margin-bottom: 1rem; box-shadow: none; break-inside: avoid; }
+      .stage:not(:last-child)::after { display: none; }
+      .stage .purpose { min-height: 0; }
+      details::details-content { content-visibility: visible; }
+      details > :not(summary) { display: block !important; }
+      a { color: inherit; text-decoration: none; }
+      h2, h3, summary { break-after: avoid; }
+      .table-scroll { overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip" href="#flow">Skip to end-to-end flow</a>
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Credential scanner / Flow &amp; model map</p>
+    <h1>From inventory to retained evidence.</h1>
+    <p class="lede">Four stages. One report boundary at a time. Follow the documents through <strong>Inventory → Scan → Judge → Extract</strong>, then look inside the models they carry.</p>
+    <nav aria-label="Document sections">
+      <a href="#flow">01 · End-to-end graph</a>
+      <a href="#contracts">02 · Stage contracts</a>
+      <a href="#models">03 · Model structure</a>
+      <a href="#storage">04 · Storage &amp; lifecycle</a>
+      <a href="#example">05 · Worked example</a>
+    </nav>
+  </div>
+</header>
+<main class="wrap">
+  <aside class="note status" aria-label="Scope of this document">
+    <strong>Contract map, not a live execution trace.</strong> This standalone page describes the current local models and orchestration contracts. Artifactory local Docker is the current adapter; Git/package shapes are future-adapter contracts. The adjusted Titus build’s all-occurrence retention and cumulative export guarantees still require live integration verification. No external assets, scripts, fonts, or network access are needed to view this page.
+  </aside>
+
+  <section id="flow" aria-labelledby="flow-title">
+    <p class="eyebrow">01 / The big picture</p>
+    <h2 id="flow-title">Top-level documents move; nested results change.</h2>
+    <p class="section-intro">The graph deliberately shows top-level input/output models only. Judge and Extract do <em>not</em> introduce separate report documents: each checkpoints changes inside the same <code>CredentialsDocument</code>. Expand the <a href="#models">model trees</a> for individual credentials, occurrences, locations, and result models.</p>
+    <div class="legend" aria-label="Graph legend">
+      <span><i class="swatch" aria-hidden="true"></i> Typed model / document</span>
+      <span><i class="swatch artifact" aria-hidden="true"></i> File or datastore, not a Pydantic model</span>
+      <span>↓ Stage transformation &nbsp; → Next stage</span>
+    </div>
+    <ol class="flow" aria-label="Inventory, Scan, Judge, Extract data flow">
+      <li class="stage inventory">
+        <span class="number">01 / MANUAL DISCOVERY</span>
+        <h3>Inventory</h3>
+        <p class="purpose">Discover report boundaries and select immutable source pins.</p>
+        <p class="io-label">In</p>
+        <ul class="nodes">
+          <li><a href="#model-config">AppConfig</a><small>Configured backend endpoints</small></li>
+          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Previous state, if any</small></li>
+        </ul>
+        <div class="down" aria-hidden="true">↓</div>
+        <p class="io-label">Out · one per boundary</p>
+        <ul class="nodes">
+          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Pinned targets + retained history<br><code>inventory.json</code></small></li>
+        </ul>
+        <p class="stage-foot"><code>cred-scan inventory</code><br>Separate manual operation. Never scans, judges, or extracts.</p>
+      </li>
+      <li class="stage scan">
+        <span class="number">02 / DETECTION</span>
+        <h3>Scan</h3>
+        <p class="purpose">Scan eligible pins, export the boundary, normalize and append findings.</p>
+        <p class="io-label">In</p>
+        <ul class="nodes">
+          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Persisted; no discovery refresh</small></li>
+          <li><a href="#model-exclusions">ExclusionPolicy</a><small>Loaded once for this run</small></li>
+          <li><a href="#model-credentials">CredentialsDocument</a><small>Previous checkpoint, if any</small></li>
+        </ul>
+        <div class="down" aria-hidden="true">↓</div>
+        <p class="io-label">Out</p>
+        <ul class="nodes">
+          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Target execution results updated</small></li>
+          <li><a href="#model-report">TitusReport</a><small>Final boundary export · <code>report.json</code></small></li>
+          <li><a href="#model-credentials">CredentialsDocument</a><small>Append-only observations · <code>credentials.json</code></small></li>
+          <li class="artifact"><code>titus.ds/</code><small>One persistent boundary datastore</small></li>
+        </ul>
+        <p class="stage-foot">No per-target handoff to Judge. Publish the final boundary credential checkpoint first.</p>
+      </li>
+      <li class="stage judge">
+        <span class="number">03 / ASSESSMENT</span>
+        <h3>Judge</h3>
+        <p class="purpose">Assess each eligible credential with pinned source context.</p>
+        <p class="io-label">In</p>
+        <ul class="nodes">
+          <li><a href="#model-credentials">CredentialsDocument</a><small>Published observations</small></li>
+          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Resolve retained immutable pins</small></li>
+          <li><a href="#model-judge-config">JudgeConfig</a><small>LLM and read-tool settings</small></li>
+        </ul>
+        <div class="down" aria-hidden="true">↓</div>
+        <p class="io-label">Out</p>
+        <ul class="nodes">
+          <li><a href="#model-credentials">CredentialsDocument</a><small>Per-credential judgments saved<br>Same <code>credentials.json</code></small></li>
+        </ul>
+        <p class="stage-foot">Attempts <code>PENDING</code> / <code>ERROR</code>. Only a saved <strong>VALID</strong> judgment enables new evidence extraction.</p>
+      </li>
+      <li class="stage extract">
+        <span class="number">04 / EVIDENCE</span>
+        <h3>Extract</h3>
+        <p class="purpose">Retain the first occurrence’s file for a VALID credential.</p>
+        <p class="io-label">In</p>
+        <ul class="nodes">
+          <li><a href="#model-credentials">CredentialsDocument</a><small>Select VALID credentials</small></li>
+          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Resolve retained immutable pins</small></li>
+        </ul>
+        <div class="down" aria-hidden="true">↓</div>
+        <p class="io-label">Out</p>
+        <ul class="nodes">
+          <li><a href="#model-credentials">CredentialsDocument</a><small>Extraction metadata saved<br>Same <code>credentials.json</code></small></li>
+          <li class="artifact">Evidence file bytes<small><code>evidence/&lt;credential&gt;/&lt;filename&gt;</code></small></li>
+        </ul>
+        <p class="stage-foot">Reuse verified evidence or retrieve exact pinned bytes. Missing/corrupt retained evidence fails visibly; it is not overwritten.</p>
+      </li>
+    </ol>
+    <div class="gate"><strong>Operator sequence:</strong> <code>inventory</code>, then <code>scan</code>. The normal <code>scan</code> command includes Scan → Judge → Extract. Separate <code>judge</code> and <code>extract</code> commands recover from saved documents. Within one credential, immediate VALID extraction happens before its judgment content session closes—not after judging every credential.</div>
+    <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; <a href="#model-paths"><code>BoundaryPaths</code></a> selects storage; <code>BackendAdapter</code>, <code>ContentReader</code>, and <code>WorkspaceProtocol</code> are service ports, not serialized models.</p>
+  </section>
+
+  <section id="contracts" aria-labelledby="contracts-title">
+    <p class="eyebrow">02 / Inside each stage</p>
+    <h2 id="contracts-title">Model inputs and outputs at operation level.</h2>
+    <p class="section-intro">The graph above follows persisted documents. These smaller contracts show what each operation actually accepts and returns. Signatures below omit <code>self</code>; arrows describe types, not executable examples.</p>
+    <div class="grid-two">
+      <article class="panel phase-detail inventory">
+        <h3>Inventory · backend-owned discovery</h3>
+        <pre>BackendAdapter.inventory()
+  → list[ScanBoundaryInventory]</pre>
+        <p>The adapter is constructed from <code>ArtifactoryBackendConfig</code>. Orchestration merges discovered inventories with previous persisted inventories.</p>
+        <ol>
+          <li>Discover an Artifactory repository boundary and its logical Docker image scopes.</li>
+          <li>Select the newest manifest/platform by timestamp in the backend and create fully pinned <code>ScanTarget</code> values.</li>
+          <li>Merge by canonical target ID; save one <code>ScanBoundaryInventory</code> per boundary.</li>
+        </ol>
+        <p><strong>Same pin:</strong> reuse its target/result. <strong>New pin:</strong> append current/pending; retain the old pin as superseded. Authoritative absence marks stale without deletion. Failed/partial discovery records errors without promoting pins or changing prior lifecycle.</p>
+        <p class="port">Owner: <code>backend/</code> discovery and merge rules, coordinated by <code>orch/inventory.py</code>. Empty repositories without errors do not create report boundaries.</p>
+      </article>
+      <article class="panel phase-detail scan">
+        <h3>Scan · target in, target result out</h3>
+        <pre>CredentialScanner.scan(
+  target: ScanTarget, work_dir: Path,
+  datastore: Path, exclusions: ExclusionPolicy
+) → ScanTarget
+
+CredentialScanner.export_report(datastore: Path)
+  → TitusReport
+
+deduplicate_report(
+  report: TitusReport,
+  inventory: ScanBoundaryInventory,
+  policy: ExclusionPolicy, resolver: ContentReader
+) → CredentialsDocument</pre>
+        <p>The returned target keeps its immutable identity and contains an updated <code>ScanTargetResult</code>. All target invocations write to the same boundary datastore. Conversion resolves locations, groups credentials, applies exclusions, and preserves pinned references.</p>
+        <p><code>merge_scan(previous, candidates)</code> returns the append-only <code>CredentialsDocument</code>; existing judgments and evidence metadata survive. <code>ReportBoundary.scan(scanner, policy)</code> returns that document only after saving it.</p>
+        <p class="port">Owner: <code>scan/</code> detects/converts; <code>orch/</code> checkpoints and publishes. Unresolvable locations stay in the raw report plus diagnostics, not in unpinned judge candidates.</p>
+      </article>
+      <article class="panel phase-detail judge">
+        <h3>Judge · credential in, judgment out</h3>
+        <pre>FindingJudge.judge(
+  credential: Credential, content: ContentReader
+) → JudgmentResult
+
+<em>mutate credential.judgment and persist the current document</em></pre>
+        <p>Orchestration validates the boundary and occurrence target references against retained inventory. The judge can read reported locations through session-local location IDs; the backend interprets opaque locators.</p>
+        <p><code>JudgmentResult.verdict</code> is <code>PENDING | VALID | INVALID | UNKNOWN | ERROR</code>. The result also carries <code>reasoning</code>. A verdict is not user acceptance or mitigation.</p>
+        <p><code>ReportBoundary.judge(document, judge, extract_valid=False)</code> returns the <strong>number of attempted judgments</strong>, not a document. Normal scan passes <code>extract_valid=True</code> for immediate evidence retention.</p>
+        <p class="port">Owner: <code>judge/</code> assesses; <code>orch/</code> saves each judgment to the latest credential checkpoint.</p>
+      </article>
+      <article class="panel phase-detail extract">
+        <h3>Extract · pinned bytes in, evidence out</h3>
+        <pre>ContentReader.read(location: ContentLocation)
+  → bytes
+
+retain_first_evidence(
+  credential: Credential, location: ContentLocation,
+  content: bytes, destination: Path
+) → tuple[Path, int, str]  # path, size, SHA-256
+
+<em>mutate credential.extraction and persist the current document</em></pre>
+        <p>For a VALID credential, orchestration selects <code>occurrences[0].locations[0]</code>. It reuses bytes already read during judgment or retrieves the exact pinned file. Python—not the LLM—writes and hashes evidence, then checkpoints <code>ExtractionResult</code>.</p>
+        <p><code>ReportBoundary.extract(document)</code> returns the <strong>number of newly retained artifacts</strong>. Verified reuse does not increment it. Retrieval/write errors can save extraction <code>ERROR</code> while keeping the saved VALID judgment.</p>
+        <p class="port">Owner: <code>judge/evidence.py</code> owns destinations/integrity; <code>orch/</code> owns eligibility, session lifetime, and persistence. Extract is a workflow stage, not a separate <code>extract/</code> module.</p>
+      </article>
+    </div>
+    <aside class="note" style="margin-top: 1.25rem">
+      <strong>Return value ≠ persisted output.</strong> The runtime scan operation returns only the completed-boundary count. Judge returns attempted-credential count; Extract returns newly retained count. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
+    </aside>
+  </section>
+
+  <section id="models" aria-labelledby="models-title">
+    <p class="eyebrow">03 / Model structure</p>
+    <h2 id="models-title">Top models → submodels → fields.</h2>
+    <p class="section-intro">Trees show actual field nesting, not just conceptual ownership. <code>[]</code> means a collection; <code>?</code> means nullable. Union alternatives are shown under their field. References by ID are called out separately: a credential does not embed a full target or inventory. Click a tree heading to collapse or expand it.</p>
+    <div class="grid-two model-grid">
+      <details class="model" id="model-inventory" open>
+        <summary><code>ScanBoundaryInventory</code> <span class="chip">inventory.json · v7</span></summary>
+        <div class="model-body">
+          <p class="owner">Owner: aggregate unions in <code>backend/models.py</code>; shared identity bases in <code>backend/base_models.py</code>; Artifactory shapes in <code>backend/adapters/artifactory/models.py</code> and <code>backend/adapters/artifactory/package.py</code>; Git shapes in <code>backend/adapters/ghes.py</code>.</p>
+          <ul class="tree">
+            <li><code>schema_version: 7</code></li>
+            <li><code>generated_at: datetime</code></li>
+            <li><code>backend: <span class="type">BackendConfig</span></code>
+              <ul><li><code>name: str</code><span class="hint">Persisted backend identity; endpoint configuration is in AppConfig.</span></li></ul>
+            </li>
+            <li id="model-boundary"><code>boundary: <span class="type">ScanBoundaryRef</span></code>
+              <ul>
+                <li><code class="type">ArtifactoryRepository | GitOrganization</code><span class="hint">Union of report-boundary types. Both inherit ScanBoundary.</span></li>
+                <li><code>id: str</code> · <code>name: str</code></li>
+                <li><code>kind: "artifactory" | "git-organization"</code><span class="hint">Artifactory repository or Git organization; not an image or commit.</span></li>
+              </ul>
+            </li>
+            <li><code>lifecycle: "active" | "stale"</code></li>
+            <li><code>stale_reason: str?</code></li>
+            <li id="model-target"><code>targets: <span class="type">ScanTarget[]</span></code>
+              <ul>
+                <li><code>id: str</code><span class="hint">Canonical target_id_for(scope) = scope.id + "@" + scope.pin_id.</span></li>
+                <li><code>backend_id: str</code><span class="hint">Matches inventory.backend.name.</span></li>
+                <li><code>boundary: <span class="type">ScanBoundaryRef</span></code><span class="hint">Same owner as inventory.boundary.</span></li>
+                <li id="model-scope"><code>scope: <span class="type">ScanScopeRef</span></code>
+                  <ul>
+                    <li><code>lifecycle: "active" | "stale"</code><span class="hint">Inherited from ScanScope.</span></li>
+                    <li><code>id</code> + <code>pin_id</code><span class="hint">Computed logical identity + immutable version identity.</span></li>
+                    <li>
+                      <details open>
+                        <summary><code class="type">DockerImageScanScope</code> · current adapter</summary>
+                        <p class="field-group"><code>kind: "docker"</code><br><code>image: str</code><br><code>digest: str</code> — selected child manifest<br><code>platform: str</code><br><code>root_digest: str</code> — parent/root metadata<br><code>tags: str[]</code><br><code>manifest_timestamp: datetime</code></p>
+                        <p><code>id = image</code>; <code>pin_id</code> hashes the child <code>digest</code> alone. Parent index, tags, and platform labels do not create a different pin for the same child manifest.</p>
+                      </details>
+                    </li>
+                    <li>
+                      <details open>
+                        <summary><code class="type">GitRepositoryScanScope</code> · future adapter</summary>
+                        <p class="field-group"><code>kind: "git"</code><br><code>remote: str</code><br><code>commit: str</code><br><code>branch: "main"</code><br><code>commit_timestamp: datetime</code></p>
+                        <p><code>id</code> is the remote without a trailing <code>.git</code>; <code>pin_id</code> hashes commit and branch. Inventory owns newest-commit selection on main.</p>
+                      </details>
+                    </li>
+                    <li>
+                      <details open>
+                        <summary><code class="type">PackageScanScope</code> · Artifactory package adapter</summary>
+                        <p class="field-group"><code>kind: "package"</code><br><code>name: str</code><br><code>uri: str</code><br><code>digest: str</code><br><code>ecosystem: str</code></p>
+                        <p><code>id = ecosystem + ":" + name</code>; <code>pin_id</code> hashes URI and digest.</p>
+                      </details>
+                    </li>
+                  </ul>
+                </li>
+                <li><code>lifecycle: "current" | "superseded"</code><span class="hint">Pin selection, separate from scope lifecycle and execution status.</span></li>
+                <li id="model-target-result"><code>result: <span class="type">ScanTargetResult</span></code>
+                  <ul>
+                    <li><code>status: pending | running | scanned | partial | failed</code></li>
+                    <li><code>errors: str[]</code> · <code>retryable: bool</code></li>
+                    <li><code>return_code: int?</code></li>
+                    <li><code>started_at: datetime?</code> · <code>finished_at: datetime?</code></li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+            <li><code>errors: str[]</code></li>
+          </ul>
+          <p class="hint">The persisted inventory contains a flat targets collection. Logical scopes are grouped by target.scope.id; there is no second nested scope registry to synchronize.</p>
+        </div>
+      </details>
+
+      <div>
+        <details class="model" id="model-report" open>
+          <summary><code>TitusReport</code> <span class="chip">report.json · v2</span></summary>
+          <div class="model-body">
+            <p class="owner">Owner: <code>scan/models.py</code>. Latest cumulative raw export for one boundary.</p>
+            <ul class="tree">
+              <li><code>schema_version: 2</code></li>
+              <li><code>boundary_id: str</code><span class="hint">References inventory.boundary.id.</span></li>
+              <li><code>generated_at: str</code></li>
+              <li><code>incomplete: bool</code> · <code>errors: str[]</code></li>
+              <li><code>findings: dict[str, Any][]</code><span class="hint">Raw Titus finding/rule data; not a separate typed Finding model.</span></li>
+            </ul>
+            <p class="hint">Written before candidate conversion. A conversion failure may leave a newer raw report beside an older credential checkpoint.</p>
+          </div>
+        </details>
+        <details class="model" id="model-credentials" open style="margin-top: 1.25rem">
+          <summary><code>CredentialsDocument</code> <span class="chip">credentials.json · v7</span></summary>
+          <div class="model-body">
+            <p class="owner">Owner: <code>scan/models.py</code>. Shared normalized document through Scan, Judge, and Extract; not one new schema per phase.</p>
+            <ul class="tree">
+              <li><code>schema_version: 7</code></li>
+              <li><code>boundary_id: str</code><span class="hint">References inventory.boundary.id.</span></li>
+              <li><code>report_generated_at: str</code></li>
+              <li><code>incomplete: bool</code> · <code>errors: str[]</code></li>
+              <li id="model-credential"><code>credentials: dict[str, <span class="type">Credential</span>]</code>
+                <ul>
+                  <li><code>credential_id: str</code><span class="hint">Dictionary key must equal this ID.</span></li>
+                  <li><code>credential: str?</code><span class="hint">Extracted secret value; not included in this example or operational logs.</span></li>
+                  <li id="model-occurrence"><code>occurrences: <span class="type">CredentialOccurrence[]</span></code><span class="hint">Nonempty; all retained target/path observations.</span>
+                    <ul>
+                      <li><code>target_id: str</code><span class="hint">Nonempty reference to an existing immutable ScanTarget.id.</span></li>
+                      <li id="model-location"><code>locations: <span class="type">ContentLocation[]</span></code><span class="hint">Nonempty. CredentialLocation is an alias for ContentLocation, not another shape.</span>
+                        <ul>
+                          <li><code>target_id: str</code><span class="hint">Must equal its containing occurrence.target_id.</span></li>
+                          <li><code>locator: str</code><span class="hint">Nonempty opaque backend locator; only the backend parses it.</span></li>
+                          <li><code>source_path: str</code><span class="hint">Source-relative display / exclusion path.</span></li>
+                          <li><code>filename: str</code><span class="hint">Evidence filename metadata; safe destination is validated by the evidence helper.</span></li>
+                        </ul>
+                      </li>
+                      <li><code>finding_ids: str[]</code><span class="hint">References raw findings in TitusReport.</span></li>
+                    </ul>
+                  </li>
+                  <li id="model-judgment"><code>judgment: <span class="type">JudgmentResult</span></code>
+                    <ul>
+                      <li><code>verdict: PENDING | VALID | INVALID | UNKNOWN | ERROR</code><span class="hint">New candidates default to PENDING; append preserves existing verdicts.</span></li>
+                      <li><code>reasoning: str</code></li>
+                    </ul>
+                  </li>
+                  <li id="model-extraction"><code>extraction: <span class="type">ExtractionResult?</span></code>
+                    <ul>
+                      <li><code>status: RETAINED | ERROR</code></li>
+                      <li><code>output_path: str?</code><span class="hint">Relative to the boundary directory.</span></li>
+                      <li><code>size: int?</code> — nonnegative byte count</li>
+                      <li><code>sha256: str?</code></li>
+                      <li><code>error: str?</code></li>
+                    </ul>
+                    <span class="hint">Metadata only. File bytes live under evidence/. No source fingerprint or separate evidence index.</span>
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="panel relations" id="identity">
+      <h3>Containment is not the same as identity.</h3>
+      <pre>Logical ownership:   ScanBoundary → ScanScope → immutable ScanTarget pin(s)
+Actual nesting:      ScanBoundaryInventory.targets[] → ScanTarget.{boundary, scope, result}
+
+Document join:       TitusReport.boundary_id ────────────┐
+                     CredentialsDocument.boundary_id ───┴→ inventory.boundary.id
+Pinned-content join: CredentialOccurrence.target_id ─────→ inventory.targets[].id
+                     ContentLocation.target_id ─────────→ occurrence.target_id
+Raw-finding join:    CredentialOccurrence.finding_ids[] ─→ TitusReport.findings
+Evidence join:       Credential.extraction.output_path ─→ retained file under boundary/</pre>
+      <p><strong>Boundary:</strong> report/notification grouping, e.g. repository <code>docker-local</code>. <strong>Scope:</strong> logical source, e.g. image <code>payments/api</code>. <strong>Target:</strong> exact selected manifest pin. Superseded targets remain in inventory so old credential locations remain resolvable.</p>
+    </div>
+
+    <h3 style="margin-top: 2rem">Supporting models · configuration and storage context</h3>
+    <div class="grid-two model-grid">
+      <details class="model" id="model-config" open>
+        <summary><code>AppConfig</code> <span class="chip">runtime settings</span></summary>
+        <div class="model-body">
+          <p class="owner">Owner: <code>orch/models.py</code>; loading in <code>orch/configuration.py</code>. YAML in <code>config.yml</code>; deployment secrets from environment / adjacent <code>.env</code>.</p>
+          <ul class="tree">
+            <li><code>workspace: <span class="type">WorkspaceConfig</span></code>
+              <ul><li><code>workspace_dir: Path</code> · YAML <code>workspace-dir</code><span class="hint">The resolved root for all workspace persistence.</span></li></ul>
+            </li>
+            <li><code>scan_concurrency: int</code><span class="hint">Async scan worker slots across boundaries, not Titus internal workers.</span></li>
+            <li><code>titus: <span class="type">TitusConfig</span></code>
+              <ul><li><code>executable: str</code> · <code>arguments: str[]</code> · <code>internal_workers: int</code></li></ul>
+            </li>
+            <li id="model-judge-config"><code>judge: <span class="type">JudgeConfig</span></code>
+              <ul>
+                <li><code>provider: str</code> · <code>model: str</code></li>
+                <li><code>base_url: str?</code> · <code>api_version: str?</code></li>
+                <li><code>max_iterations: int</code></li>
+                <li><code>layer_tools: <span class="type">JudgeLayerToolsConfig</span></code><ul><li><code>enabled: bool</code></li></ul></li>
+              </ul>
+            </li>
+            <li><code>exclusions: <span class="type">ExclusionFiles</span></code>
+              <ul><li><code>paths: Path</code> · path-pattern file</li><li><code>credentials: Path</code> · credential-value-pattern file</li></ul>
+            </li>
+            <li><code>backends: <span class="type">ArtifactoryBackendConfig[]</span></code>
+              <ul><li><code>name: str</code> · inherited BackendConfig identity</li><li><code>kind: "artifactory"</code></li><li><code>base_url: str</code> · <code>platform: str</code></li></ul>
+            </li>
+            <li><code>artifactory_api_key: str?</code> · <code>azure_openai_api_key: str?</code><span class="hint">Secret inputs, not pipeline observations.</span></li>
+          </ul>
+        </div>
+      </details>
+      <div>
+        <details class="model" id="model-exclusions" open>
+          <summary><code>ExclusionPolicy</code> <span class="chip">run-local</span></summary>
+          <div class="model-body">
+            <p class="owner">Owner: <code>scan/models.py</code>. Derived once per run from the two configured exclusion files.</p>
+            <ul class="tree">
+              <li><code>path_file: Path</code></li>
+              <li><code>path_patterns: str[]</code></li>
+              <li><code>credential_patterns: str[]</code></li>
+            </ul>
+            <p>Path exclusions go to the adjusted Titus build and are reapplied during conversion. Credential-value exclusions run before judgment. Patterns are plain: their contents are not hashed, versioned, or persisted as document identity.</p>
+          </div>
+        </details>
+        <details class="model" id="model-paths" open style="margin-top: 1.25rem">
+          <summary><code>BoundaryPaths</code> <span class="chip">nonpersisted value</span></summary>
+          <div class="model-body">
+            <p class="owner">Owner: <code>common/models.py</code>. Frozen, I/O-free path value; not another inventory or service handle.</p>
+            <ul class="tree">
+              <li><code>boundary_id: str</code></li>
+              <li><code>boundary_dir: Path</code></li>
+              <li>Derived properties: <code>inventory</code>, <code>report</code>, <code>credentials</code>, <code>datastore</code>, <code>scratch_parent</code></li>
+            </ul>
+            <p>Workspace owns directory encoding and typed document I/O. Evidence destinations belong to <code>judge/evidence.py</code>, not to a nested evidence workspace model.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="storage" aria-labelledby="storage-title">
+    <p class="eyebrow">04 / Persistence &amp; ownership</p>
+    <h2 id="storage-title">What stays, what changes, what is temporary.</h2>
+    <p class="section-intro">One backend → one report boundary → its retained target pins and artifacts. Documents never combine findings from different boundaries. Inventory, report, judgment, and extraction writes are individual checkpoints, not a multi-document transaction.</p>
+    <div class="table-scroll" role="region" aria-label="Persisted artifacts" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">Artifact under boundary/</th><th scope="col">Model</th><th scope="col">Written by</th><th scope="col">Lifetime / meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>inventory.json</code></td><td><a href="#model-inventory">ScanBoundaryInventory</a></td><td>Inventory; Scan target checkpoints</td><td>Retains old/current pins, lifecycle, and execution results.</td></tr>
+          <tr><td><code>titus.ds/</code></td><td>None — Titus datastore</td><td>Scan</td><td>Persistent and shared by all pins in this boundary; never target scratch.</td></tr>
+          <tr><td><code>report.json</code></td><td><a href="#model-report">TitusReport</a></td><td>Scan final export</td><td>Latest cumulative raw findings and rule metadata.</td></tr>
+          <tr><td><code>credentials.json</code></td><td><a href="#model-credentials">CredentialsDocument</a></td><td>Scan → Judge → Extract</td><td>Append-only observations; per-credential judgment and extraction checkpoints.</td></tr>
+          <tr><td><code>evidence/&lt;credential&gt;/&lt;filename&gt;</code></td><td>Bytes, indexed by <a href="#model-extraction">ExtractionResult</a></td><td>Extract</td><td>First-occurrence evidence for VALID credentials. Historical evidence is retained.</td></tr>
+          <tr><td><code>scratch/</code></td><td>None — temporary files</td><td>Scan / content readers</td><td>Each operation owns one temporary child; cleanup after target or judgment + immediate extraction.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid-two" style="margin-top: 1.25rem">
+      <article class="panel">
+        <h3>Scheduling and handoff</h3>
+        <ul>
+          <li>Inventory and scan are exclusive workspace operations. Judge/extract recovery also owns the workspace operation lock.</li>
+          <li>One worker owns one target and all its Titus attempts; current execution serializes targets within a boundary.</li>
+          <li>Independent boundaries may scan concurrently. A serial judger receives a boundary only after its credentials were successfully published.</li>
+          <li>Stale boundaries/scopes, superseded pins, and already-scanned current targets do not start new target scans.</li>
+        </ul>
+      </article>
+      <article class="panel">
+        <h3>Retention and failure rules</h3>
+        <ul>
+          <li>Append publication preserves old credentials, paths, finding references, judgments, and evidence metadata—even if a later report omits them.</li>
+          <li>One credential-local byte session spans judgment and immediate VALID extraction. Close it and discard scratch afterward; no whole-image/repository or cross-credential cache.</li>
+          <li>Before reusing RETAINED evidence, verify path, size, and SHA-256. Missing/corrupt bytes fail without replacing historical evidence or expected metadata.</li>
+          <li>A saved VALID judgment survives a later extraction error, so extraction can retry without another LLM judgment.</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section id="example" aria-labelledby="example-title">
+    <p class="eyebrow">05 / Walk one credential through</p>
+    <h2 id="example-title">Repository → image pin → finding → evidence.</h2>
+    <p class="section-intro">Schematic identifiers below are labels, not valid persisted target IDs. Real IDs must be computed with <code>target_id_for(scope)</code>. No credential value is shown.</p>
+    <div class="panel">
+      <ol class="timeline">
+        <li><strong>Inventory.</strong> The Artifactory backend discovers repository <code>docker-local</code>, image scope <code>payments/api</code>, and selected child manifest <code>M1</code>. It writes a <code>ScanBoundaryInventory</code> containing a <code>ScanTarget</code> whose <code>boundary</code> is the repository and whose <code>scope</code> is a <code>DockerImageScanScope</code> pinned to M1.</li>
+        <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains finding <code>F1</code> at <code>app.env</code>. Backend resolution produces a <code>ContentLocation</code> with M1’s existing target ID, an opaque locator, <code>source_path="app.env"</code>, and <code>filename="app.env"</code>.</li>
+        <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> referencing that target and F1. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
+        <li><strong>Judge.</strong> The judge receives C1 and a pinned content reader. Assume it returns <code>JudgmentResult(verdict="VALID", reasoning=…)</code>. Orchestration saves this result to the latest <code>credentials.json</code>.</li>
+        <li><strong>Extract.</strong> Reuse <code>app.env</code> bytes if judgment already read them; otherwise read through the same session. Retain the file under C1’s evidence directory and save <code>ExtractionResult(status="RETAINED", output_path=…, size=…, sha256=…)</code>. Close the session and discard its scratch.</li>
+        <li><strong>Next inventory, next scan.</strong> A new child manifest M2 appends a target and supersedes M1; both remain resolvable. If C1 appears at another path in M2, append its occurrence without discarding M1/F1 or changing the first evidence location. Reuse historical evidence only after integrity verification. Returning to M1 later reuses M1’s target and execution result.</li>
+      </ol>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>orch/models.py</code>, <code>common/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code> and <code>orch/credentials.py</code>.</p>
+    <p>Companion repository documents: <code>doc/architecture.md</code>, <code>doc/interfaces.md</code>, <code>doc/ports.md</code>, <code>doc/end-to-end.md</code>. This HTML is intentionally self-contained and readable when copied outside the repository. Current document schemas: inventory 7 · report 2 · credentials 7.</p>
+  </footer>
+</main>
+</body>
+</html>

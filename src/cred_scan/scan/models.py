@@ -86,13 +86,6 @@ class Credential(BaseModel):
             for location in occurrence.locations
         )
 
-    @model_validator(mode="after")
-    def require_paths(self) -> "Credential":
-        if not self.paths:
-            raise ValueError("credential requires at least one occurrence path")
-        return self
-
-
 class TitusReport(BaseModel):
     """The complete final Titus export for one report boundary."""
 

@@ -7,6 +7,8 @@ import pytest
 
 from cred_scan.backend import base_models, models
 from cred_scan.backend.adapters.artifactory import models as artifactory_models
+from cred_scan.backend.adapters.artifactory import package as package_models
+from cred_scan.backend.adapters import ghes as ghes_models
 
 
 @pytest.mark.parametrize(
@@ -14,6 +16,8 @@ from cred_scan.backend.adapters.artifactory import models as artifactory_models
     [
         "cred_scan.backend.base_models",
         "cred_scan.backend.adapters.artifactory.models",
+        "cred_scan.backend.adapters.artifactory.package",
+        "cred_scan.backend.adapters.ghes",
         "cred_scan.backend.models",
         "cred_scan.backend.proto",
         "cred_scan.orch.configuration",
@@ -59,6 +63,14 @@ def test_aggregate_exports_the_defining_models_without_copies():
         value = getattr(models, name)
         assert value is getattr(artifactory_models, name)
         assert value.__module__ == "cred_scan.backend.adapters.artifactory.models"
+    for name in ("PackageScanScope",):
+        value = getattr(models, name)
+        assert value is getattr(package_models, name)
+        assert value.__module__ == "cred_scan.backend.adapters.artifactory.package"
+    for name in ("GitOrganization", "GitRepositoryScanScope"):
+        value = getattr(models, name)
+        assert value is getattr(ghes_models, name)
+        assert value.__module__ == "cred_scan.backend.adapters.ghes"
 
 
 def test_inventory_roundtrip_uses_provider_models_and_retains_pinned_identity(

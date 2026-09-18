@@ -1,5 +1,8 @@
 # Data interfaces
 
+The [standalone HTML model trees](end-to-end.html#models) show top-level documents,
+nested models, union alternatives, and ID relationships alongside the stage flow.
+
 All persisted values use Pydantic v2 models. A report boundary is one backend
 and one provider grouping. Its documents never combine findings from another
 boundary.
@@ -12,10 +15,13 @@ boundary.
   defines `ArtifactoryBackendConfig` (name, kind, base URL, platform),
   `ArtifactoryRepository`, and `DockerImageScanScope`. Docker is bound to Artifactory in this
   harness; these schemas remain distinct configuration/boundary/scope levels.
+- [`src/cred_scan/backend/adapters/artifactory/package.py`](../src/cred_scan/backend/adapters/artifactory/package.py)
+  owns `PackageScanScope`, while [`src/cred_scan/backend/adapters/ghes.py`](../src/cred_scan/backend/adapters/ghes.py)
+  owns `GitOrganization` and `GitRepositoryScanScope`.
 - [`src/cred_scan/backend/models.py`](../src/cred_scan/backend/models.py) is the aggregate schema entry point:
-  it re-exports those exact classes and defines Git/package scopes, typed unions,
-  targets, inventories, and content-transfer models. Provider schemas import only
-  the shared bases, never the aggregate module, avoiding circular imports.
+  it re-exports the exact provider classes and defines typed unions, targets,
+  inventories, and content-transfer models. Provider schemas import only the
+  shared bases, never the aggregate module, avoiding circular imports.
 
 Model ownership is reflected in module locations, and concrete scope class names
 state the logical source explicitly: `DockerImageScanScope`,

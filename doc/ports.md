@@ -1,5 +1,9 @@
 # Ports
 
+See the [standalone HTML stage contracts](end-to-end.html#contracts) for a visual
+Inventory → Scan → Judge → Extract input/output map. It distinguishes saved
+documents, per-item result models, service ports, and operation return counts.
+
 ## Backend construction and model ownership
 
 [`BackendAdapter`](../src/cred_scan/backend/proto.py) remains the runtime contract used by
@@ -12,9 +16,11 @@ there is no additional config/name-only runtime superclass.
 [`artifactory/models.py`](../src/cred_scan/backend/adapters/artifactory/models.py). Shared port
 signatures still use the exact classes and unions exported by `cred_scan.backend.models`.
 The concrete scope classes are `DockerImageScanScope`, `GitRepositoryScanScope`,
-and `PackageScanScope`; `ScanScopeRef` remains their union, so `ScanTarget.scope`
-and reader/scanner port signatures keep the same shape.
-The provider model module imports schema-only shared bases, not adapter code.
+and `PackageScanScope`; the Docker/package classes are owned by Artifactory,
+while the Git boundary/scope classes are owned by the GHES adapter.
+`ScanScopeRef` remains their union, so `ScanTarget.scope` and reader/scanner port
+signatures keep the same shape. Provider model modules import schema-only shared
+bases, not the aggregate module or runtime adapter code.
 Import runtime classes/errors from
 `cred_scan.backend.adapters.artifactory.common` or
 `cred_scan.backend.adapters.artifactory.docker`, not the package initializer;
@@ -147,18 +153,18 @@ input while it is in use.
 
 ## Credential publication
 
-[`src/cred_scan/orch/credentials.py`](../src/cred_scan/orch/credentials.py) exposes pure transformations:
+[`src/cred_scan/orch/credentials.py`](../src/cred_scan/orch/credentials.py) exposes the pure publication merge:
 
 ```python
 merge_scan(previous: CredentialsDocument | None, discovered: CredentialsDocument) -> CredentialsDocument
-with_judgment(document: CredentialsDocument, credential_id: str, judgment: JudgmentResult) -> CredentialsDocument
-with_extraction(document: CredentialsDocument, credential_id: str, extraction: ExtractionResult) -> CredentialsDocument
 ```
 
-`ReportBoundary` reads the latest checkpoint, applies the transformation, and
-writes the result before advancing. Transformations do not mutate their inputs
-or perform I/O. Missing lifecycle documents and unknown credential IDs fail;
-merging documents from different boundaries is rejected. `merge_scan` merges
+`ReportBoundary` owns the current in-memory `CredentialsDocument` during
+judgment and evidence extraction. It mutates the relevant nested credential,
+then writes that same document at every checkpoint. Workspace writes revalidate
+the complete document before replacing the checkpoint. Missing lifecycle
+credentials and invalid evidence eligibility fail; merging documents from
+different boundaries is rejected. `merge_scan` merges
 credential IDs, occurrences, and finding references idempotently. It never removes a prior credential,
 occurrence, or evidence artifact. The publication folds **all** historical entries
 before new entries, including multiple entries for the same target, and unions
@@ -186,12 +192,13 @@ expected metadata remain untouched; restore the verified artifact offline
 before retrying. No automatic evidence repair is performed.
 
 `evidence_path(boundary_dir, credential_id, filename)` resolves a plain safe filename
-under the encoded credential directory. Runtime reads the location through the
-short-lived content session, then passes the raw bytes to
-`retain_first_evidence(credential, location, content, destination)`, which requires
-VALID, writes atomically, and returns `(path, size, sha256)`. Only credentials
-without retained evidence reach this extraction call. Metadata is stored
-separately in `credentials.json`.
+under the encoded credential directory. Orchestration selects only VALID
+credentials, reads the location through the short-lived content session, and
+passes the raw bytes to
+`retain_first_evidence(credential, location, content, destination)`, which writes
+atomically and returns `(path, size, sha256)`. The evidence helper does not repeat
+the lifecycle check. Only credentials without retained evidence reach this
+extraction call. Metadata is stored separately in `credentials.json`.
 
 `ReportBoundary._ensure_evidence` is the one orchestration path for immediate and
 recovery extraction: verify RETAINED first; otherwise borrow the live judgment
@@ -247,7 +254,7 @@ formats; it does not upgrade to this runtime.
 [`WorkspaceProtocol`](../src/cred_scan/common/proto.py) is the single common persistence port:
 
 ```python
-results_dir: Path
+workspace_dir: Path
 boundary(boundary_id: str) -> BoundaryPaths
 inventory_boundaries() -> Iterator[BoundaryPaths]
 read(path: Path, model_type: type[DocumentT]) -> DocumentT | None

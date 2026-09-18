@@ -21,32 +21,30 @@ class WorkspaceBusyError(RuntimeError):
 
 class Workspace(WorkspaceProtocol):
     def __init__(self, config: WorkspaceConfig) -> None:
-        self._results_dir = config.results_dir
+        self._workspace_dir = config.workspace_dir
 
     @property
-    def results_dir(self) -> Path:
-        return self._results_dir
+    def workspace_dir(self) -> Path:
+        return self._workspace_dir
 
     def boundary(self, boundary_id: str) -> BoundaryPaths:
         return BoundaryPaths(
             boundary_id=boundary_id,
-            boundary_dir=self.results_dir / quote(boundary_id, safe=""),
+            boundary_dir=self.workspace_dir / quote(boundary_id, safe=""),
         )
 
     def inventory_boundaries(self) -> Iterator[BoundaryPaths]:
-        for inventory in self.results_dir.glob("*/inventory.json"):
+        for inventory in self.workspace_dir.glob("*/inventory.json"):
             yield self.boundary(unquote(inventory.parent.name))
 
     def operation_lock(self) -> AbstractContextManager[None]:
-        return _operation_lock(self.results_dir / ".operation.lock")
+        return _operation_lock(self.workspace_dir / ".operation.lock")
 
     def read(self, path: Path, model_type: type[DocumentT]) -> DocumentT | None:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        if not isinstance(payload, dict):
-            raise ValueError(f"expected JSON object: {path}")
         return model_type.model_validate(payload)
 
     def write(

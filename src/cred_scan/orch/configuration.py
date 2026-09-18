@@ -21,7 +21,6 @@ def _resolve_config_paths(config: AppConfig, base: Path) -> AppConfig:
     config.workspace.workspace_dir = _resolve_path(
         config.workspace.workspace_dir, base
     )
-    config.workspace.results_dir = _resolve_path(config.workspace.results_dir, base)
     config.exclusions.paths = _resolve_path(config.exclusions.paths, base)
     config.exclusions.credentials = _resolve_path(
         config.exclusions.credentials, base

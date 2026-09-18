@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from cred_scan.common.models import WorkspaceConfig
 from cred_scan.orch.configuration import YamlConfigLoader
 
 
@@ -13,7 +15,6 @@ def test_configuration_resolves_backend_and_exclusion_paths(tmp_path: Path) -> N
         """
 workspace:
   workspace-dir: workspace
-  results-dir: workspace/results
 titus:
   executable: titus
 exclusions:
@@ -30,9 +31,15 @@ backends:
     config = asyncio.run(YamlConfigLoader().load(config_path))
     assert config.backends[0].name == "primary"
     assert config.workspace.workspace_dir == (tmp_path / "workspace").resolve()
-    assert config.workspace.results_dir == (tmp_path / "workspace/results").resolve()
     assert config.exclusions.paths == (tmp_path / "path-exclusions.list").resolve()
     assert config.artifactory_api_key is None
+
+
+def test_workspace_config_rejects_removed_results_override(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="results-dir"):
+        WorkspaceConfig.model_validate(
+            {"workspace-dir": tmp_path, "results-dir": tmp_path / "results"}
+        )
 
 
 def test_configuration_uses_process_credentials_before_dotenv_without_mutation(
@@ -43,7 +50,6 @@ def test_configuration_uses_process_credentials_before_dotenv_without_mutation(
         """
 workspace:
   workspace-dir: workspace
-  results-dir: workspace/results
 titus:
   executable: titus
 exclusions:
@@ -75,17 +81,15 @@ backends:
 
 
 @pytest.mark.parametrize("absolute_workspace", [False, True])
-@pytest.mark.parametrize("override", [None, "other-results", "/tmp/cred-scan-results"])
-def test_results_root_default_and_override_are_config_relative(
-    tmp_path: Path, monkeypatch, absolute_workspace: bool, override: str | None
+def test_workspace_root_is_config_relative(
+    tmp_path: Path, monkeypatch, absolute_workspace: bool
 ) -> None:
     config_dir = tmp_path / "settings"
     config_dir.mkdir()
     workspace = tmp_path / "custom-workspace" if absolute_workspace else Path("custom")
-    results_setting = f"  results-dir: {override}\n" if override is not None else ""
     config_path = config_dir / "config.yml"
     config_path.write_text(
-        f"workspace:\n  workspace-dir: {workspace}\n{results_setting}"
+        f"workspace:\n  workspace-dir: {workspace}\n"
         "titus:\n  executable: ./titus\n"
         "exclusions:\n  paths: paths.list\n  credentials: values.list\n"
         "backends: []\n",
@@ -96,10 +100,4 @@ def test_results_root_default_and_override_are_config_relative(
     config = asyncio.run(YamlConfigLoader().load(config_path))
 
     expected_workspace = (config_dir / workspace).resolve()
-    expected_results = (
-        (config_dir / override).resolve()
-        if override is not None
-        else expected_workspace
-    )
     assert config.workspace.workspace_dir == expected_workspace
-    assert config.workspace.results_dir == expected_results

@@ -1,5 +1,9 @@
 # End-to-end flow
 
+See also the [self-contained HTML flow and model map](end-to-end.html):
+Inventory → Scan → Judge → Extract, with top-level inputs/outputs, nested model
+structures, and a worked example. Open the HTML locally; no network is required.
+
 This document describes the manual inventory and append-only scan lifecycle.
 The current live adapter is Artifactory local Docker; Git, package, and
 OpenShift adapters use the same source-neutral contracts when implemented.
@@ -36,8 +40,9 @@ sources. Error handling is unchanged, including `ArtifactoryError` on transport 
 response failures.
 
 The example's image snapshot is a `DockerImageScanScope`. Git and package
-snapshots use `GitRepositoryScanScope` and `PackageScanScope`. These concrete
-names describe logical scopes with immutable pins, not report boundaries.
+snapshots use `GitRepositoryScanScope` and `PackageScanScope`, owned by the GHES
+and Artifactory package adapter modules respectively. These concrete names
+describe logical scopes with immutable pins, not report boundaries.
 Their persisted `kind` values remain `docker`, `git`, and `package` respectively;
 renaming Python classes requires no result migration or new schema version.
 
@@ -295,20 +300,23 @@ artifact's path, size, and hash before reuse. If the file is missing or corrupt,
 replacing the artifact or its expected metadata. Restore bytes matching that
 metadata before retrying; automatic repair is not part of this workflow.
 
-Orchestration applies `with_judgment` to the latest checkpoint and writes it before
-extracting, then persists `with_extraction` separately. One Python-owned content
-session remains alive through judgment and immediate VALID extraction, so evidence
-uses the exact bytes already retrieved for judgment. The cache belongs to this
-one credential only, keys all four location fields, and is cleared on session
-close; it is not an image or cross-credential cache. Evidence writing and hashing
-are centralized in Python. Extraction records contain only status, output path,
-size, SHA-256, and error; there is no source-set fingerprint to compute or compare.
+Orchestration keeps one current in-memory `CredentialsDocument`. After each
+judgment it mutates the nested credential and persists the document; after each
+evidence attempt it mutates the same document again and persists another
+checkpoint. One Python-owned content session remains alive through judgment and
+immediate VALID extraction, so evidence uses the exact bytes already retrieved
+for judgment. The cache belongs to this one credential only, keys all four
+location fields, and is cleared on session close; it is not an image or
+cross-credential cache. Evidence writing and hashing are centralized in Python.
+Extraction records contain only status, output path, size, SHA-256, and error;
+there is no source-set fingerprint to compute or compare.
 Migration removes that unused field without changing these integrity values,
 even when later observations have been appended.
 An evidence error leaves a saved VALID judgment and retryable extraction ERROR,
 without requiring another LLM judgment.
-Every update preserves other credentials' already-saved results, rather than
-writing a stale queued document over them. The separate `judge` and `extract` commands
+Every checkpoint writes the current document, preserving other credentials'
+already-saved results rather than writing a stale queued document over them. The
+separate `judge` and `extract` commands
 remain available for recovery but are not required for normal use. They call
 `boundary.judge(persisted_document, judge)` or `boundary.extract(persisted_document)`.
 Judgment returns attempted credentials; extraction returns newly retained artifacts.

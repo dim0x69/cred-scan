@@ -28,7 +28,7 @@ def evidence_matches(
     boundary_dir: Path, credential_id: str, extraction: ExtractionResult
 ) -> bool:
     """Verify retained path, size and hash without changing any bytes or metadata."""
-    if extraction.status != "RETAINED" or extraction.output_path is None:
+    if extraction.output_path is None:
         return False
     credential_dir = boundary_dir / "evidence" / quote(credential_id, safe="._-")
     candidate = (boundary_dir / extraction.output_path).resolve()
@@ -52,8 +52,6 @@ async def retain_first_evidence(
     Content retrieval belongs to the caller-owned read session. This helper owns
     only evidence bytes, atomic replacement, and the resulting integrity data.
     """
-    if credential.judgment.verdict != "VALID":
-        raise ValueError("evidence retention requires a VALID judgment")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
     try:

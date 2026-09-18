@@ -8,16 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkspaceConfig(BaseModel):
-    """Resolved workspace root and an optional results-directory override."""
+    """Resolved workspace root used for all persisted results."""
 
-    model_config = ConfigDict(validate_by_name=True)
+    model_config = ConfigDict(validate_by_name=True, extra="forbid")
 
     workspace_dir: Path = Field(alias="workspace-dir")
-    # H: results_dir, used? if not: drop.!
-    results_dir: Path = Field(
-        alias="results-dir",
-        default_factory=lambda data: data["workspace_dir"],
-    )
 
 
 class BoundaryPaths(BaseModel):

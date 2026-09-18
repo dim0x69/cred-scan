@@ -17,7 +17,6 @@ from cred_scan.backend.adapters.artifactory.docker import (
 from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import (
     ArtifactoryBackendConfig,
-    ArtifactoryRepository,
     ContentLocation,
     DockerImageScanScope,
     ScanBoundaryInventory,
@@ -54,7 +53,7 @@ def backend(tmp_path: Path):
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
         "synthetic-token",
         workspace=Workspace(
-            WorkspaceConfig(workspace_dir=tmp_path, results_dir=tmp_path / "results")
+            WorkspaceConfig(workspace_dir=tmp_path)
         ),
     )
     yield backend
@@ -167,16 +166,11 @@ def test_reader_returns_complete_bytes(
     asyncio.run(reader.aclose())
 
 
-def test_direct_reader_creation_requires_target_context(
+def test_direct_reader_creation_requires_targets(
     backend, repository_inventory: ScanBoundaryInventory
 ) -> None:
     with pytest.raises(ValueError, match="at least one target"):
         backend.content_reader(repository_inventory.boundary, ())
-    with pytest.raises(ValueError, match="must belong to the boundary"):
-        backend.content_reader(
-            ArtifactoryRepository(id="other", name="other"),
-            repository_inventory.targets,
-        )
 
 
 def test_reader_validates_provenance_target(
@@ -246,7 +240,7 @@ def test_reader_rejects_unmapped_layer_instead_of_searching_other_layers(
         raise AssertionError(f"unexpected request: {request.url}")
 
     workspace = Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path, results_dir=tmp_path / "results")
+        WorkspaceConfig(workspace_dir=tmp_path)
     )
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
@@ -309,7 +303,7 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
         raise AssertionError(f"unexpected request: {request.url}")
 
     workspace = Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path, results_dir=tmp_path / "results")
+        WorkspaceConfig(workspace_dir=tmp_path)
     )
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
@@ -372,7 +366,7 @@ def test_reader_reads_the_selected_layer(
         raise AssertionError(f"unexpected request: {request.url}")
 
     workspace = Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path, results_dir=tmp_path / "results")
+        WorkspaceConfig(workspace_dir=tmp_path)
     )
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),

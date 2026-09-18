@@ -74,16 +74,3 @@ def test_new_filename_does_not_delete_old_evidence(tmp_path, credential):
     assert sha256 == hashlib.sha256(b"new evidence").hexdigest()
     assert old.read_bytes() == b"historical artifact"
     assert destination.read_bytes() == b"new evidence"
-
-
-def test_non_valid_credential_cannot_trigger_evidence_extraction(tmp_path, credential):
-    with pytest.raises(ValueError, match="VALID"):
-        asyncio.run(
-            retain_first_evidence(
-                credential,
-                credential.occurrences[0].locations[0],
-                b"unused",
-                tmp_path / "unused",
-            )
-        )
-    assert list(tmp_path.iterdir()) == []

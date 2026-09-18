@@ -501,7 +501,7 @@ def test_multiple_boundaries_scan_concurrently_but_judge_serially_after_publicat
         h.policy.assert_called_once()
         assert all(reader.aclose.await_count == 1 for reader in h.readers)
         assert all(backend.aclose.await_count == 1 for backend in h.backends)
-        assert not list(h.workspace.results_dir.glob("*/scratch"))
+        assert not list(h.workspace.workspace_dir.glob("*/scratch"))
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=3))
 
@@ -589,7 +589,7 @@ def test_worker_or_judger_failure_cancels_sibling_scan(harness, failure_phase):
         with pytest.raises(ExceptionGroup):
             await LocalRuntime(h.config).scan()
         assert sibling_cancelled.is_set()
-        assert not list(h.workspace.results_dir.glob("*/scratch"))
+        assert not list(h.workspace.workspace_dir.glob("*/scratch"))
         assert all(reader.aclose.await_count == 1 for reader in h.readers)
         assert all(backend.aclose.await_count == 1 for backend in h.backends)
         with Workspace(h.config.workspace).operation_lock():

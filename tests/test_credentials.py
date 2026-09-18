@@ -1,10 +1,10 @@
-"""Credential policy is pure; persistence/lifecycle integration is tested separately."""
+"""Credential publication merge is pure; lifecycle persistence is tested separately."""
 
 import pytest
 from pydantic import ValidationError
 
 from cred_scan.backend.models import target_id_for
-from cred_scan.orch.credentials import merge_scan, with_extraction, with_judgment
+from cred_scan.orch.credentials import merge_scan
 from cred_scan.scan.exclusions import match_credential_exclusion
 from cred_scan.scan.models import (
     CredentialsDocument,
@@ -24,21 +24,16 @@ def document_for(inventory, credential, **metadata):
 
 
 def retained_document(inventory, credential):
-    document = with_judgment(
-        merge_scan(None, document_for(inventory, credential)),
-        credential.credential_id,
-        JudgmentResult(verdict="VALID"),
+    document = merge_scan(None, document_for(inventory, credential))
+    saved = document.credentials[credential.credential_id]
+    saved.judgment = JudgmentResult(verdict="VALID")
+    saved.extraction = ExtractionResult(
+        status="RETAINED",
+        output_path="evidence/credential/app.env",
+        size=17,
+        sha256="a" * 64,
     )
-    return with_extraction(
-        document,
-        credential.credential_id,
-        ExtractionResult(
-            status="RETAINED",
-            output_path="evidence/credential/app.env",
-            size=17,
-            sha256="a" * 64,
-        ),
-    )
+    return document
 
 
 def test_credential_exclusion_matches_without_persisted_ledger():
@@ -49,15 +44,18 @@ def test_credential_exclusion_matches_without_persisted_ledger():
 
 
 def test_credential_lifecycle_is_nested(repository_inventory, credential):
-    original = document_for(repository_inventory, credential)
-    judged = with_judgment(
-        original, credential.credential_id, JudgmentResult(verdict="VALID")
+    document = merge_scan(None, document_for(repository_inventory, credential))
+    saved = document.credentials[credential.credential_id]
+    saved.judgment = JudgmentResult(verdict="VALID")
+    assert saved.judgment.verdict == "VALID"
+    assert saved.extraction is None
+    saved.extraction = ExtractionResult(
+        status="RETAINED",
+        output_path="evidence/credential/app.env",
+        size=17,
+        sha256="a" * 64,
     )
-    assert judged.credentials[credential.credential_id].judgment.verdict == "VALID"
-    assert judged.credentials[credential.credential_id].extraction is None
-    retained = retained_document(repository_inventory, credential)
-    assert retained.credentials[credential.credential_id].extraction is not None
-    assert original.credentials[credential.credential_id].judgment.verdict == "PENDING"
+    assert saved.extraction is not None
 
 
 def test_credentials_document_rejects_mismatched_index(
@@ -77,20 +75,16 @@ def test_non_valid_judgment_retains_historical_evidence(
 ):
     document = retained_document(repository_inventory, credential)
     original = document.model_dump(mode="json")
-    changed = with_judgment(
-        document, credential.credential_id, JudgmentResult(verdict=verdict)
+    document.credentials[credential.credential_id].judgment = JudgmentResult(
+        verdict=verdict
     )
     assert (
-        changed.credentials[credential.credential_id].extraction
-        == document.credentials[credential.credential_id].extraction
+        document.credentials[credential.credential_id].extraction
+        == retained_document(repository_inventory, credential)
+        .credentials[credential.credential_id]
+        .extraction
     )
-    assert document.model_dump(mode="json") == original
-    with pytest.raises(ValueError, match="VALID"):
-        with_extraction(
-            changed,
-            credential.credential_id,
-            ExtractionResult(status="ERROR", error="failure"),
-        )
+    assert document.model_dump(mode="json") != original
 
 
 def test_absent_history_and_changed_filename_preserve_first_evidence(
@@ -232,18 +226,6 @@ def test_merge_rejects_another_boundary(repository_inventory, credential):
     document = document_for(repository_inventory, credential)
     with pytest.raises(ValueError, match="another boundary"):
         merge_scan(document, document.model_copy(update={"boundary_id": "other"}))
-
-
-def test_lifecycle_rejects_unknown_credentials(repository_inventory, credential):
-    document = document_for(repository_inventory, credential)
-    with pytest.raises(ValueError, match="inactive credential"):
-        with_judgment(document, "unknown", JudgmentResult(verdict="VALID"))
-    with pytest.raises(ValueError, match="inactive credential"):
-        with_extraction(
-            document,
-            "unknown",
-            ExtractionResult(status="ERROR", error="failure"),
-        )
 
 
 def test_pending_judgment_and_missing_value_accept_candidate_state(

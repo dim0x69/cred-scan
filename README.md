@@ -49,8 +49,10 @@ report owner; `ScanTarget.scope` is the typed logical-source snapshot. The forme
 boundary-level `ScanScope` is now `ScanBoundary`; the former `Source` is now
 `ScanScope`.
 
-Artifactory endpoint, repository, and Docker scope models live together in
+Artifactory endpoint, repository, and Docker scope models live in
 [`src/cred_scan/backend/adapters/artifactory/models.py`](src/cred_scan/backend/adapters/artifactory/models.py).
+`PackageScanScope` lives in the Artifactory package adapter and the Git boundary/scope
+models live in [`src/cred_scan/backend/adapters/ghes.py`](src/cred_scan/backend/adapters/ghes.py).
 The concrete logical scopes are `DockerImageScanScope`, `GitRepositoryScanScope`,
 and `PackageScanScope`. Shared schema bases live in `src/cred_scan/backend/base_models.py`;
 `cred_scan.backend.models` remains the aggregate model entry point. Model imports do not load adapter implementations.
@@ -81,8 +83,8 @@ before enforcing the new contract. Do not merely bump
 schema numbers or discard history; the historical credential-schema utility does
 not perform this upgrade.
 
-Relative paths in `config.yml` resolve against that file. Results default to
-`<workspace-dir>`; `workspace.results-dir` is an optional override.
+Relative paths in `config.yml` resolve against that file. `workspace-dir` is the
+root for all workspace persistence.
 ``pydantic-settings` loads the selected YAML file and its adjacent `.env` without
 mutating the process environment. YAML owns ordinary runtime settings; process environment
 credentials override adjacent `.env` credentials. The deployment supplies
@@ -194,6 +196,8 @@ preserve a sanitized source filename.
 
 ## Documentation
 
+- [Visual end-to-end flow and model map](doc/end-to-end.html) — self-contained HTML;
+  open locally for Inventory → Scan → Judge → Extract, inputs/outputs, and model trees.
 - [Architecture](doc/architecture.md)
 - [Interfaces](doc/interfaces.md)
 - [Ports](doc/ports.md)

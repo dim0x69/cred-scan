@@ -19,7 +19,7 @@ from cred_scan.judge.evidence import (
     retain_first_evidence,
 )
 from cred_scan.judge.proto import FatalJudgeError, FindingJudge
-from cred_scan.orch.credentials import merge_scan, with_extraction, with_judgment
+from cred_scan.orch.credentials import merge_scan
 from cred_scan.orch.inventory import build_backend, run_inventory
 from cred_scan.orch.models import AppConfig
 from cred_scan.scan.credentials import deduplicate_report
@@ -393,11 +393,17 @@ class ReportBoundary:
 
     async def _ensure_evidence(
         self,
-        credential: Credential,
+        document: CredentialsDocument,
+        credential_id: str,
         targets: dict[str, ScanTarget],
         reader: ReadSession | None = None,
     ) -> bool:
-        """Reuse verified evidence or extract and checkpoint once; return newly retained."""
+        """Reuse or extract evidence and checkpoint the supplied document."""
+        credential = document.credentials.get(credential_id)
+        if credential is None:
+            raise ValueError(f"cannot extract inactive credential: {credential_id}")
+        if credential.judgment.verdict != "VALID":
+            raise ValueError("evidence extraction requires a VALID judgment")
         if (
             credential.extraction is not None
             and credential.extraction.status == "RETAINED"
@@ -439,14 +445,8 @@ class ReportBoundary:
             credential.credential_id,
             extraction.status,
         )
-        latest = self.workspace.read(self.paths.credentials, CredentialsDocument)
-        if latest is None:
-            raise ValueError("cannot record extraction without a credential document")
-        self.workspace.write(
-            self.paths.credentials,
-            with_extraction(latest, credential.credential_id, extraction),
-            CredentialsDocument,
-        )
+        credential.extraction = extraction
+        self.workspace.write(self.paths.credentials, document, CredentialsDocument)
         return extraction.status == "RETAINED"
 
     async def judge(
@@ -476,8 +476,10 @@ class ReportBoundary:
                     for c in document.credentials.values()
                 ),
             )
+        current = document
         judged_count = 0
-        for credential_id, credential in document.credentials.items():
+        for credential_id in tuple(current.credentials):
+            credential = current.credentials[credential_id]
             if credential.judgment.verdict in JUDGEABLE_VERDICTS:
                 judged_count += 1
                 LOGGER.info(
@@ -487,20 +489,13 @@ class ReportBoundary:
                     result,
                     reader,
                 ):
-                    latest = self.workspace.read(
-                        self.paths.credentials, CredentialsDocument
-                    )
-                    if latest is None:
-                        raise ValueError(
-                            "cannot judge without a published scan document"
-                        )
-                    saved = with_judgment(latest, credential_id, result)
+                    credential.judgment = result
                     self.workspace.write(
-                        self.paths.credentials, saved, CredentialsDocument
+                        self.paths.credentials, current, CredentialsDocument
                     )
                     if extract_valid and result.verdict in EVIDENCE_VERDICTS:
                         await self._ensure_evidence(
-                            saved.credentials[credential_id], targets, reader
+                            current, credential_id, targets, reader
                         )
                 LOGGER.info(
                     "judged credential=%s verdict=%s boundary=%s",
@@ -509,11 +504,11 @@ class ReportBoundary:
                     self.boundary_id,
                 )
             elif extract_valid and credential.judgment.verdict in EVIDENCE_VERDICTS:
-                await self._ensure_evidence(credential, targets)
+                await self._ensure_evidence(current, credential_id, targets)
         LOGGER.info(
             "judgment complete boundary=%s candidates=%d judged=%d",
             self.boundary_id,
-            len(document.credentials),
+            len(current.credentials),
             judged_count,
         )
         return judged_count
@@ -521,17 +516,20 @@ class ReportBoundary:
     async def extract(self, document: CredentialsDocument) -> int:
         """Recover evidence for published VALID credentials; return newly retained count."""
         targets = self._validate_document_targets(document)
-        credentials = tuple(
-            c
-            for c in document.credentials.values()
-            if c.judgment.verdict in EVIDENCE_VERDICTS
+        credential_ids = tuple(
+            credential_id
+            for credential_id, credential in document.credentials.items()
+            if credential.judgment.verdict in EVIDENCE_VERDICTS
         )
         LOGGER.info(
-            "extracting boundary=%s valid=%d", self.boundary_id, len(credentials)
+            "extracting boundary=%s valid=%d", self.boundary_id, len(credential_ids)
         )
+        current = document
         retained_count = 0
-        for credential in credentials:
-            retained_count += await self._ensure_evidence(credential, targets)
+        for credential_id in credential_ids:
+            retained_count += await self._ensure_evidence(
+                current, credential_id, targets
+            )
         return retained_count
 
 

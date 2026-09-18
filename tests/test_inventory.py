@@ -28,7 +28,7 @@ from cred_scan.orch.models import AppConfig
 
 def make_workspace(tmp_path):
     return Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path, results_dir=tmp_path / "results")
+        WorkspaceConfig(workspace_dir=tmp_path)
     )
 
 
@@ -347,7 +347,7 @@ def test_run_inventory_persists_adapter_returned_boundaries(
     result = asyncio.run(inventory.run_inventory(app_config, workspace))
 
     assert result == 1
-    assert list(workspace.results_dir.glob("*/inventory.json"))
+    assert list(workspace.workspace_dir.glob("*/inventory.json"))
     assert list(workspace.inventory_boundaries())
 
 
