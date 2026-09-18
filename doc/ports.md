@@ -113,35 +113,38 @@ raw-export representation or repeat that conversion.
 
 `BackendAdapter.content_reader(boundary: ScanBoundaryRef,
 targets: tuple[ScanTarget, ...])` creates a reader bound to one report boundary
-and a nonempty set of its retained pins, including superseded targets. The
-boundary parameter must not be a logical `ScanScope`.
+and its retained pins, including superseded targets. The target collection is
+backend inventory context, not a credential relationship; orchestration passes
+the boundary inventory rather than selecting targets from each credential.
+The boundary parameter must not be a logical `ScanScope`.
 
 ```python
-ContentReader.resolve_location(
-    raw_path: str,
-    *,
-    target_id: str | None = None,
-) -> ContentLocation
-
-ContentReader.read(location: ContentLocation) -> bytes
+ContentReader.resolve_location(raw_path: str) -> ContentLocation
+ContentReader.read(location: ContentLocation) -> ContentRead
 ContentReader.aclose() -> None
+
+@dataclass(frozen=True)
+class ContentRead:
+    content: bytes
+    source_path: str
+    filename: str
 ```
 
-The resolver returns a source-neutral location whose target ID belongs to a
-retained immutable target in the current boundary. Historical report locations
-may therefore resolve to superseded targets as well as current targets. The
-opaque locator is interpreted only by the backend. Docker distinguishes layer
-files from manifest/config metadata internally; Git and package adapters provide
-equivalent backend-owned locator strings.
+`resolve_location` is runtime-only normalization for report conversion or a
+read session. Credential persistence keeps only the canonical opaque locator;
+it does not persist the normalized target-bearing location. Historical report
+locators may resolve to superseded targets as well as current targets. Docker
+distinguishes layer files from manifest/config metadata internally; Git and
+package adapters provide equivalent backend-owned locator strings.
 
-`read()` returns complete exact bytes. It does not write evidence or expose text
-encoding. A Python content session caches bytes only for one credential's
-judgment and immediate evidence extraction, keyed by all location fields. It
-clears the cache and closes the reader on exit, including failed or cancelled
-judgment. There is no cross-credential or cross-run cache. Evidence helpers own
-writing and hashing. The LLM
-judge uses session-local location IDs which orchestration resolves to these
-source-neutral values before invoking the reader.
+`read()` returns complete exact bytes and backend-derived source metadata. It
+does not write evidence or expose text encoding. A Python content session caches
+reads only for one credential's judgment and immediate evidence extraction,
+keyed by normalized runtime location fields. It clears the cache and closes the
+reader on exit, including failed or cancelled judgment. There is no
+cross-credential or cross-run cache. Evidence helpers own writing and hashing.
+The LLM judge uses session-local IDs for persisted occurrence locators and the
+session resolves those locators before invoking the reader.
 
 `FindingJudge.judge(credential, content)` is awaited directly and must propagate
 cancellation and keep all reader use within its awaitable. Ordinary judgment/reader
@@ -165,12 +168,11 @@ then writes that same document at every checkpoint. Workspace writes revalidate
 the complete document before replacing the checkpoint. Missing lifecycle
 credentials and invalid evidence eligibility fail; merging documents from
 different boundaries is rejected. `merge_scan` merges
-credential IDs, occurrences, and finding references idempotently. It never removes a prior credential,
-occurrence, or evidence artifact. The publication folds **all** historical entries
-before new entries, including multiple entries for the same target, and unions
-locations/finding IDs in first-seen order. Initial publication also normalizes
-repeated entries. Partial/excluded later reports cannot erase earlier paths or
-change the first evidence location.
+credential IDs and occurrences idempotently by locator. It never removes a prior
+credential, occurrence, or evidence artifact. The publication folds **all**
+historical entries before new entries and preserves first-seen locator order.
+Partial/excluded later reports cannot erase earlier paths or change the first
+evidence location.
 
 Judgment and extraction update one credential record by stable credential ID.
 Judgment updates do not delete historical extraction metadata. Extraction is
@@ -226,7 +228,7 @@ failures into successful checkpoints.
 
 ## Persisted inventory precondition
 
-Runtime operations require inventory **7**, report **2**, and credential **7**
+Runtime operations require inventory **7**, report **2**, and credential **8**
 models. Inventory/target `boundary` is the report owner; target `scope` is the
 logical scope snapshot. Reports and credentials carry `boundary_id`.
 `Workspace.boundary(boundary_id)` returns `BoundaryPaths` with that unchanged
@@ -234,11 +236,12 @@ report-boundary ID and directory encoding.
 
 Older keys/versions are rejected with no runtime aliases or automatic migration.
 The operator-only `cred_scan.tools.migrate_workspace_schema` utility performs an
-authorized offline upgrade from credentials 5 or 6 to 7 after inventory/report
-preflight. It converts schema-5 typed provenance to target-bearing opaque
-locators and removes the unused extraction `source_fingerprint` from both old
-versions. No source-fingerprint helper remains. All other extraction metadata,
-observations, judgments, findings, evidence, and datastore files are preserved.
+authorized offline upgrade from credentials 5, 6, or 7 to 8 after inventory/report
+preflight. It converts legacy locations to opaque locator occurrences and removes
+the unused extraction `source_fingerprint`. Target IDs and finding references
+are not copied into credentials. No source-fingerprint helper remains. All other
+extraction metadata, observations, judgments, evidence, and datastore files are
+preserved.
 Evidence reuse still checks stored path, size, and SHA-256 before backend reads.
 Inventory-only boundaries are skipped after validating inventory;
 existing reports are validated even without credentials. Missing reports with
@@ -273,9 +276,8 @@ Inventory orchestration reads/merges/writes `ScanBoundaryInventory`. ReportBound
 writes `TitusReport` before conversion and reads/transforms/writes
 `CredentialsDocument` afterward. It reads the latest credential checkpoint for each
 judgment/extraction update, rejects missing documents, and validates the document
-boundary and occurrence target references before content access. Pydantic already
-validates location-to-occurrence target consistency. Paths come from `BoundaryPaths`, never a reader's
-untrusted locator. Direct read/modify/write callers must hold operation ownership;
+boundary before content access. Backend locators are interpreted only by the
+boundary-selected reader. Direct read/modify/write callers must hold operation ownership;
 a per-write lock alone is not a transaction across the read and transformation.
 
 The lock is workspace-wide and nonblocking. `inventory`, `scan`, `judge`, and
@@ -302,12 +304,12 @@ It never reclaims a still-retryable failure within that invocation; retries with
 target retain the existing three-attempt policy. It writes the final typed report
 before converting/appending credentials and returns only after publication succeeds.
 
-`judge` validates the document boundary and occurrence target references, attempts
+`judge` validates the document boundary, attempts
 PENDING/ERROR credentials, and returns attempted judgment count. With
 `extract_valid=True`, it also ensures
 evidence for existing VALID credentials and newly VALID judgments while their
 readers are live; it does not change the returned count. `extract` validates the
-same references, processes only VALID credentials, and returns newly retained
+same boundary, processes only VALID credentials, and returns newly retained
 count. Both consume published documents; neither republishes scan observations.
 
 ## Runtime workflow

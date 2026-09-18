@@ -6,6 +6,7 @@ from typing import Protocol
 
 from cred_scan.backend.models import (
     ContentLocation,
+    ContentRead,
     ScanBoundaryRef,
     ScanBoundaryInventory,
     ScanTarget,
@@ -43,12 +44,10 @@ class ContentReader(Protocol):
     leave detached workers accessing files that aclose removes.
     """
 
-    async def resolve_location(
-        self, raw_path: str, *, target_id: str | None = None
-    ) -> ContentLocation: ...
+    async def resolve_location(self, raw_path: str) -> ContentLocation: ...
 
-    async def read(self, location: ContentLocation) -> bytes:
-        """Return complete exact bytes for one resolved pinned location."""
+    async def read(self, location: ContentLocation) -> ContentRead:
+        """Return complete exact bytes and metadata for one location."""
         ...
 
     async def aclose(self) -> None: ...

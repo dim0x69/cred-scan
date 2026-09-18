@@ -1,7 +1,8 @@
-"""Offline migration from credentials schema 5 or 6 to schema 7.
+"""Offline migration from credentials schema 5, 6, or 7 to schema 8.
 
-Schema 5 locations become source-neutral; obsolete extraction source
-fingerprints are removed from both versions. Evidence integrity data is kept.
+Legacy target-grouped locations are flattened into backend occurrences and
+obsolete extraction source fingerprints are removed. Evidence integrity data is
+kept.
 
 The runtime intentionally rejects old credential documents. This operator-only
 utility preflights every boundary and writes only with ``--apply``.
@@ -23,8 +24,8 @@ from cred_scan.backend.adapters.artifactory.models import DockerImageScanScope
 from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
-OLD_CREDENTIALS_SCHEMAS = (5, 6)
-CURRENT_CREDENTIALS_SCHEMA = 7
+OLD_CREDENTIALS_SCHEMAS = (5, 6, 7)
+CURRENT_CREDENTIALS_SCHEMA = 8
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -47,31 +48,27 @@ def _validate(model: type[Any], payload: dict[str, Any], path: Path) -> Any:
 def _migrate_credentials(
     path: Path,
     original: dict[str, Any],
-    inventory: ScanBoundaryInventory,
 ) -> dict[str, Any]:
     version = original.get("schema_version")
     if version not in (*OLD_CREDENTIALS_SCHEMAS, CURRENT_CREDENTIALS_SCHEMA):
         raise ValueError(
-            f"{path}: expected credentials schema 5, 6, or "
+            f"{path}: expected credentials schema 5, 6, 7, or "
             f"{CURRENT_CREDENTIALS_SCHEMA}, found {version!r}"
         )
     payload = copy.deepcopy(original)
     payload["schema_version"] = CURRENT_CREDENTIALS_SCHEMA
-    target_ids = {target.id for target in inventory.targets}
     for credential in payload.get("credentials", {}).values():
         if not isinstance(credential, dict):
             raise ValueError(f"{path}: credential must be an object")
         extraction = credential.get("extraction")
         if version in OLD_CREDENTIALS_SCHEMAS and isinstance(extraction, dict):
             extraction.pop("source_fingerprint", None)
+        if version == CURRENT_CREDENTIALS_SCHEMA:
+            continue
+        flattened: list[dict[str, str]] = []
         for occurrence in credential.get("occurrences", ()):
             if not isinstance(occurrence, dict):
                 raise ValueError(f"{path}: occurrence must be an object")
-            target_id = occurrence.get("target_id")
-            if not isinstance(target_id, str) or not target_id:
-                raise ValueError(f"{path}: occurrence has no target ID")
-            if target_id not in target_ids:
-                raise ValueError(f"{path}: unknown occurrence target {target_id!r}")
             for location in occurrence.get("locations", ()):
                 if not isinstance(location, dict):
                     raise ValueError(f"{path}: location must be an object")
@@ -82,11 +79,12 @@ def _migrate_credentials(
                             f"{path}: typed provenance is required for schema 5"
                         )
                     locator = provenance.get("raw_path")
-                    if not isinstance(locator, str) or not locator:
-                        raise ValueError(f"{path}: provenance has no raw_path")
-                    location.pop("provenance")
-                    location["target_id"] = target_id
-                    location["locator"] = locator
+                else:
+                    locator = location.get("locator")
+                if not isinstance(locator, str) or not locator:
+                    raise ValueError(f"{path}: occurrence has no locator")
+                flattened.append({"locator": locator})
+        credential["occurrences"] = flattened
 
     document = _validate(CredentialsDocument, payload, path)
     return document.model_dump(mode="json")
@@ -152,7 +150,7 @@ def _preflight_boundary(inventory_path: Path) -> tuple[Path, dict[str, Any]]:
     original = _read_object(credentials_path)
     if original.get("boundary_id") != inventory.boundary.id:
         raise ValueError(f"{credentials_path}: boundary does not match inventory")
-    return credentials_path, _migrate_credentials(credentials_path, original, inventory)
+    return credentials_path, _migrate_credentials(credentials_path, original)
 
 
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:

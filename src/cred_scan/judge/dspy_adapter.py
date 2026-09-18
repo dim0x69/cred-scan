@@ -10,7 +10,6 @@ import time
 from typing import Any, Literal
 
 import dspy
-from cred_scan.backend.models import ContentLocation
 from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.models import Credential, JudgmentResult
 
@@ -54,33 +53,31 @@ def _error_status(error: BaseException) -> int | None:
 
 def _judge_input(
     credential: Credential,
-) -> tuple[str, dict[str, ContentLocation]]:
-    """Build bounded input and a registry of source-neutral locations."""
+) -> tuple[str, dict[str, str]]:
+    """Build bounded input and a registry of opaque source locators."""
     locations: list[dict[str, str]] = []
-    registry: dict[str, ContentLocation] = {}
+    registry: dict[str, str] = {}
     seen: dict[str, str] = {}
     for occurrence in credential.occurrences:
-        for location in occurrence.locations:
-            key = location.model_dump_json()
-            location_id = seen.get(key)
-            if location_id is None:
-                location_id = f"location-{len(registry)}"
-                seen[key] = location_id
-                registry[location_id] = location
-            descriptor = {
-                "id": location_id,
-                "target_id": location.target_id,
-                "path": location.source_path[:_MAX_PATH_CHARS],
-            }
-            candidate = [*locations, descriptor]
-            serialized = json.dumps(
-                {"credential": credential.credential, "locations": candidate},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            if len(serialized) > _MAX_JUDGE_INPUT_CHARS:
-                break
-            locations.append(descriptor)
+        locator = occurrence.locator
+        location_id = seen.get(locator)
+        if location_id is None:
+            location_id = f"location-{len(registry)}"
+            seen[locator] = location_id
+            registry[location_id] = locator
+        descriptor = {
+            "id": location_id,
+            "path": locator[:_MAX_PATH_CHARS],
+        }
+        candidate = [*locations, descriptor]
+        serialized = json.dumps(
+            {"credential": credential.credential, "locations": candidate},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(serialized) > _MAX_JUDGE_INPUT_CHARS:
+            break
+        locations.append(descriptor)
     return (
         json.dumps(
             {"credential": credential.credential, "locations": locations},
@@ -152,14 +149,14 @@ class DspyFindingJudge(FindingJudge):
             input_data, location_registry = _judge_input(credential)
 
             async def read(location_id: str) -> dict[str, str]:
-                location = location_registry[location_id]
+                locator = location_registry[location_id]
                 LOGGER.info(
-                    "judge tool call credential=%s tool=read location=%s target=%s",
+                    "judge tool call credential=%s tool=read location=%s",
                     credential.credential_id,
                     location_id,
-                    location.target_id,
                 )
-                content_bytes = await content.read(location)
+                location = await content.resolve_location(locator)
+                content_bytes = (await content.read(location)).content
                 try:
                     decoded = content_bytes.decode("utf-8")
                     encoding = "utf-8"

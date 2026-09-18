@@ -254,7 +254,7 @@ def test_migration_preserves_idless_findings_and_occurrence_subsets(tmp_path):
     migrated = migration._validate_document(
         json.loads(credentials.read_text()), credentials
     )
-    assert migrated.credentials["credential-id"].occurrences[0].finding_ids == ()
+    assert migrated.credentials["credential-id"].occurrences[0].locator == "source://immutable/file"
 
 
 def test_migration_requires_existing_workspace_directory(tmp_path):

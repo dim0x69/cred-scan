@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -44,10 +45,19 @@ def target_id_for(scope: ScanScope) -> str:
 
 
 class ContentLocation(BaseModel):
-    """Source-neutral locator for one file in one immutable target."""
+    """A normalized backend locator used during one read operation."""
 
     target_id: str = Field(min_length=1)
     locator: str = Field(min_length=1)
+    source_path: str
+    filename: str
+
+
+@dataclass(frozen=True)
+class ContentRead:
+    """Bytes and source metadata returned by a backend content read."""
+
+    content: bytes
     source_path: str
     filename: str
 

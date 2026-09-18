@@ -60,14 +60,12 @@ def test_new_filename_does_not_delete_old_evidence(tmp_path, credential):
     credential = credential.model_copy(
         update={"judgment": JudgmentResult(verdict="VALID")}
     )
-    location = credential.occurrences[0].locations[0]
-    old = evidence_path(tmp_path, credential.credential_id, location.filename)
+    old = evidence_path(tmp_path, credential.credential_id, "app.env")
     old.parent.mkdir(parents=True)
     old.write_bytes(b"historical artifact")
-    renamed = location.model_copy(update={"filename": "renamed.env"})
-    destination = evidence_path(tmp_path, credential.credential_id, renamed.filename)
+    destination = evidence_path(tmp_path, credential.credential_id, "renamed.env")
     result, size, sha256 = asyncio.run(
-        retain_first_evidence(credential, renamed, b"new evidence", destination)
+        retain_first_evidence(b"new evidence", destination)
     )
     assert result == destination
     assert size == len(b"new evidence")

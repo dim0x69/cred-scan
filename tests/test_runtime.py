@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory
+from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.models import WorkspaceConfig
 from cred_scan.common.workspace import Workspace
@@ -50,11 +50,10 @@ def make_boundary(tmp_path: Path, inventory: ScanBoundaryInventory, findings=())
     backend.name = "primary"
     reader = create_autospec(ContentReader, instance=True)
 
-    async def resolve(raw_path: str, *, target_id=None):
+    async def resolve(raw_path: str):
         source_path = raw_path.split("sha256:layer:", 1)[-1]
-        resolved_target_id = target_id or inventory.targets[0].id
         return ContentLocation(
-            target_id=resolved_target_id,
+            target_id=inventory.targets[0].id,
             locator=raw_path,
             source_path=source_path,
             filename=source_path.rsplit("/", 1)[-1],
@@ -206,13 +205,15 @@ def test_combined_judgment_extracts_with_live_reader_without_republishing(
 
     async def read(_location):
         reader.aclose.assert_not_awaited()
-        return content_bytes
+        return ContentRead(
+            content=content_bytes, source_path="etc/app.env", filename="app.env"
+        )
 
     async def judge_with_content(candidate, content):
         sessions.append(content)
-        location = candidate.occurrences[0].locations[0]
-        assert await content.read(location) == content_bytes
-        assert await content.read(location.model_copy()) == content_bytes
+        locator = candidate.occurrences[0].locator
+        assert (await content.read(locator)).content == content_bytes
+        assert (await content.read(locator)).content == content_bytes
         return JudgmentResult(verdict="VALID", reasoning="example")
 
     reader.read.side_effect = read
@@ -233,11 +234,13 @@ def test_combined_judgment_extracts_with_live_reader_without_republishing(
     assert destination.read_bytes() == content_bytes
     publication.assert_not_called()
     judge.judge.assert_awaited_once()
-    reader.read.assert_awaited_once_with(credential.occurrences[0].locations[0])
+    reader.read.assert_awaited_once_with(
+        asyncio.run(reader.resolve_location(credential.occurrences[0].locator))
+    )
     reader.aclose.assert_awaited_once()
     assert not sessions[0]._cache
     with pytest.raises(RuntimeError, match="closed"):
-        asyncio.run(sessions[0].read(credential.occurrences[0].locations[0]))
+        asyncio.run(sessions[0].read(credential.occurrences[0].locator))
 
 
 def test_combined_evidence_failure_is_retryable_without_rejudging(
@@ -260,7 +263,11 @@ def test_combined_evidence_failure_is_retryable_without_rejudging(
             reader.aclose.assert_not_awaited()
             if index == 0:
                 raise OSError("temporary evidence failure")
-            return b"SYNTHETIC_VALUE"
+            return ContentRead(
+                content=b"SYNTHETIC_VALUE",
+                source_path="etc/app.env",
+                filename="app.env",
+            )
 
         reader.read.side_effect = read
     backend.content_reader.side_effect = readers
@@ -435,7 +442,11 @@ def test_combined_processing_handles_existing_valid_and_reuses_retained_evidence
 
         async def read(_location, reader=reader):
             reader.aclose.assert_not_awaited()
-            return b"SYNTHETIC_VALUE\nSECOND_SYNTHETIC_VALUE"
+            return ContentRead(
+                content=b"SYNTHETIC_VALUE\nSECOND_SYNTHETIC_VALUE",
+                source_path="etc/app.env",
+                filename="app.env",
+            )
 
         reader.read.side_effect = read
     backend.content_reader.reset_mock()
@@ -475,7 +486,9 @@ def test_evidence_recovery_reports_integrity_failure_without_overwriting_history
     )
     reader = create_autospec(ContentReader, instance=True)
 
-    reader.read.return_value = b"verified evidence"
+    reader.read.return_value = ContentRead(
+        content=b"verified evidence", source_path="etc/app.env", filename="app.env"
+    )
     backend.content_reader.return_value = reader
     judge.judge.return_value = JudgmentResult(verdict="VALID")
     asyncio.run(
@@ -529,29 +542,15 @@ def test_evidence_recovery_reports_integrity_failure_without_overwriting_history
     backend.content_reader.assert_not_called()
 
 
-@pytest.mark.parametrize("invalid", ["boundary", "target", "empty-target"])
-def test_invalid_credential_references_fail_before_content_access(
-    tmp_path, repository_inventory, credential, invalid
+def test_invalid_credential_boundary_fails_before_content_access(
+    tmp_path, repository_inventory, credential
 ):
     boundary, _, backend, judge = make_boundary(tmp_path, repository_inventory)
-    if invalid != "boundary":
-        credential = credential.model_copy(
-            update={
-                "occurrences": (
-                    credential.occurrences[0].model_copy(
-                        update={"target_id": "unknown" if invalid == "target" else ""}
-                    ),
-                )
-            }
-        )
-    # model_copy intentionally simulates an invalid queued in-memory document.
     document = CredentialsDocument(
-        boundary_id="other"
-        if invalid == "boundary"
-        else repository_inventory.boundary.id,
+        boundary_id="other",
         report_generated_at="now",
     ).model_copy(update={"credentials": {credential.credential_id: credential}})
-    with pytest.raises(ValueError, match="another boundary|unknown target"):
+    with pytest.raises(ValueError, match="another boundary"):
         asyncio.run(boundary.judge(document, judge, extract_valid=True))
     backend.content_reader.assert_not_called()
     judge.judge.assert_not_awaited()

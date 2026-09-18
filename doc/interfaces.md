@@ -29,8 +29,8 @@ state the logical source explicitly: `DockerImageScanScope`,
 (`docker`, `git`, `package`), computed identity, and inheritance are unchanged.
 Generated JSON Schema titles and definition references use the new class names;
 persisted JSON does not store Python class names. Inventory 7, report 2, and
-the central configuration shape remain unchanged; source-neutral locations use
-credentials schema 7. No aliases
+the central configuration shape remain unchanged; credentials use schema 8 with
+backend-owned source occurrences. No aliases
 for the old class names, legacy persisted fields, or runtime migration are added.
 
 ## Boundary, scope, and target identity
@@ -80,8 +80,8 @@ class ScanTarget(BaseModel):
 Every target ID must equal `target_id_for(scope)` (`scope.id@scope.pin_id`).
 Construction and persistence reject mismatches. Naming changes do not alter
 these ID values. A new scope pin appends a target; rediscovery of a superseded
-pin reuses its ID and result. Occurrence `target_id` resolves to one retained
-immutable target, never merely to the current logical scope.
+pin reuses its ID and result. Credential occurrences retain backend locators;
+they do not embed or reference `ScanTarget` objects.
 
 `ScanBoundaryInventory.boundary` identifies the owner of all its targets. Its
 `lifecycle: Literal["active", "stale"]` and `stale_reason: str | None` describe
@@ -108,47 +108,35 @@ class TitusReport(BaseModel):
 ```
 
 The selected adjusted Titus build must retain old source occurrences when new
-pins are scanned into the same datastore. If finding IDs are only unique within
-an export, credential references must qualify them with target or scan
-identity.
+pins are scanned into the same datastore. Raw finding IDs remain in the cumulative report. Credential persistence does
+not retain finding references; the normalized source locator is the durable
+credential occurrence.
 
 ## Credential occurrence
 
 ```python
-class ContentLocation(BaseModel):
-    target_id: str
-    locator: str
-    source_path: str
-    filename: str
-
 class CredentialOccurrence(BaseModel):
-    target_id: str
-    locations: tuple[ContentLocation, ...]
-    finding_ids: tuple[str, ...]
+    locator: str
 ```
 
-`target_id` is the existing authoritative `ScanTarget.id`; it is not generated
-from a Titus report match. The backend-bound reader resolves the raw Titus path
-to exactly one retained target and constructs the location with that ID. The
-opaque `locator` is a backend-owned string. Scan, judgment, evidence, and
-persistence do not parse it. `source_path` and `filename` are separate display
-and evidence metadata.
+An occurrence is one canonical backend locator where the credential appeared.
+The locator is opaque to scan, judgment, evidence, and persistence. The
+backend selected by the enclosing `CredentialsDocument.boundary_id` interprets
+it and returns bytes plus source metadata when reading it. `ScanTarget` remains
+an inventory and Titus-scheduling model, not a credential model.
 
-Pydantic requires a nonempty target ID and locator, and occurrence validation
-requires every location target ID to equal the occurrence target ID. Runtime
-validation checks the document boundary and occurrence target IDs against the
-retained inventory; location membership follows from those two invariants.
-The LLM judge receives short session-local location IDs and display paths. Its
-only content tool is `read(location_id)`, which resolves through a session
-registry and returns UTF-8 or base64 representation of raw bytes. Evidence uses
-the same location and byte session directly; it is not LLM-controlled.
+The final Titus report is converted by normalizing each match path, applying
+path exclusions, and retaining one occurrence per distinct locator for each
+credential. Finding IDs are intentionally not copied into credentials. The
+raw cumulative report remains the detailed Titus record if audit or debugging
+needs it. Append publication merges occurrences by locator in first-seen order
+and preserves judgment and evidence metadata.
 
-Occurrences
-from repeated scans are merged idempotently by target, location, and finding
-identity. Both persisted and newly converted documents may contain several
-occurrences for one target. Append publication folds every entry into one
-target group, unions locations/finding IDs in first-seen order, and preserves
-the original first location even if later reports omit or reorder it.
+A locator must be complete and stable enough for its backend to identify one
+immutable source snapshot. A plain source-relative path is insufficient when
+the same path can occur in multiple targets. Backend reads return a runtime
+result containing exact bytes, `source_path`, and safe `filename`; none of that
+runtime result is embedded in the credential document.
 
 ## Credential lifecycle
 
@@ -161,9 +149,9 @@ class Credential(BaseModel):
     extraction: ExtractionResult | None
 ```
 
-`CredentialsDocument.boundary_id` identifies the enclosing report boundary.
-It does not identify a logical scan scope; each occurrence reaches that scope
-through its immutable target reference.
+`CredentialsDocument.boundary_id` identifies the enclosing report boundary
+and therefore the backend/content-reader context. Occurrences reach their
+immutable source through their backend locators, not through a target reference.
 
 Pure transformations in `src/cred_scan/orch/credentials.py` own append and lifecycle policy;
 orchestration persists their results through validated workspace I/O. The document
@@ -176,7 +164,7 @@ when normal judgment may start; recovery consumes an existing credential documen
 Scanning publication is append-only:
 
 - new credential IDs are added;
-- new occurrences and finding references are appended;
+- new source occurrences are appended;
 - repeated observations are deduplicated;
 - existing credentials are not removed when absent from a later report;
 - existing judgment and evidence metadata are preserved.
@@ -199,15 +187,22 @@ failure while retaining the expected metadata and any existing artifact.
 
 ## Content reader locators
 
-`ContentReader.resolve_location(raw_path, target_id=...)` returns a
-source-neutral `ContentLocation`. The backend owns interpretation of the opaque
-locator and validates that its target ID matches one retained immutable target.
+`ContentReader.resolve_location(raw_path)` normalizes a report locator for
+scan-time exclusion and candidate conversion. The normalized location is
+runtime-only and may contain backend validation metadata; it is not persisted
+inside a credential.
 
 ```python
-async def read(location: ContentLocation) -> bytes: ...
+@dataclass(frozen=True)
+class ContentRead:
+    content: bytes
+    source_path: str
+    filename: str
+
+async def read(location: ContentLocation) -> ContentRead: ...
 ```
 
-`read()` returns complete exact bytes. There is no public directory-listing or
+`read()` returns complete exact bytes and backend-derived source metadata. There is no public directory-listing or
 evidence-extraction operation. A Python content session caches those bytes for
 one credential's judgment and immediate evidence only, keyed by all four location
 fields. It closes the reader and clears the cache when that operation ends;
@@ -255,18 +250,19 @@ lock. Current document versions and field changes are:
 |---|---|---|
 | Inventory | **7** | inventory `scope` → `boundary`; target `scope` → `boundary`, `source` → `scope` |
 | Titus report | **2** | `scope_id` → `boundary_id` |
-| Credentials | **7** | source-neutral locations from schema 6; unused extraction `source_fingerprint` removed |
+| Credentials | **8** | target-grouped locations and finding references replaced by backend locator occurrences |
 
 Old field names are not runtime aliases. Older versions are rejected; a schema
 number alone cannot upgrade their payloads. The operator-only
 `cred_scan.tools.migrate_workspace_schema` utility performs an authorized
-offline migration from credentials schema 5 or 6 to 7 after inventory and report
-preflight. Schema-5 typed provenance `raw_path` values become opaque locators,
-with occurrence target IDs copied onto locations. Both old versions lose only
+offline migration from credentials schema 5, 6, or 7 to 8 after inventory and report
+preflight. Legacy typed/source-neutral locations become opaque locator
+occurrences; target IDs and finding references are not copied into credentials.
+Old versions lose only
 the unused extraction `source_fingerprint`; remaining extraction metadata,
 observations, judgments, raw findings, evidence bytes, boundary IDs, and datastore
 paths are preserved. Runtime loading rejects old schema versions and extraction
-records containing the removed field, even with a schema-7 wrapper. The tool is
+records containing the removed field, even with an incorrect schema-8 wrapper. The tool is
 read-only unless `--apply` is provided and writes each converted document
 atomically. Inventory-only boundaries can have neither report nor credentials;
 existing reports must validate even without credentials, and credentials,

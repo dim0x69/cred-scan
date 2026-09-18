@@ -3,7 +3,6 @@
 import pytest
 from pydantic import ValidationError
 
-from cred_scan.backend.models import target_id_for
 from cred_scan.orch.credentials import merge_scan
 from cred_scan.scan.exclusions import match_credential_exclusion
 from cred_scan.scan.models import (
@@ -87,7 +86,7 @@ def test_non_valid_judgment_retains_historical_evidence(
     assert document.model_dump(mode="json") != original
 
 
-def test_absent_history_and_changed_filename_preserve_first_evidence(
+def test_absent_history_and_new_occurrence_preserve_first_evidence(
     repository_inventory, credential
 ):
     document = retained_document(repository_inventory, credential)
@@ -99,37 +98,23 @@ def test_absent_history_and_changed_filename_preserve_first_evidence(
     assert published.credentials == document.credentials
     assert published.report_generated_at == "new"
     occurrence = credential.occurrences[0]
-    renamed = occurrence.locations[0].model_copy(update={"filename": "renamed.env"})
-    candidate = credential.model_copy(
-        update={
-            "occurrences": (occurrence.model_copy(update={"locations": (renamed,)}),)
-        }
+    new_occurrence = occurrence.model_copy(
+        update={"locator": occurrence.locator.replace("app.env", "renamed.env")}
     )
+    candidate = credential.model_copy(update={"occurrences": (new_occurrence,)})
     published = merge_scan(published, document_for(repository_inventory, candidate))
     saved = published.credentials[credential.credential_id]
     assert saved.extraction == old.extraction
-    assert saved.occurrences[0].locations == occurrence.locations + (renamed,)
+    assert saved.occurrences == (occurrence, new_occurrence)
 
 
 @pytest.mark.parametrize("stored_split", [False, True])
 def test_append_unions_every_historical_occurrence_without_changing_first_evidence(
     repository_inventory, credential, stored_split
 ):
-    first = credential.occurrences[0].model_copy(update={"finding_ids": ("f1",)})
-    location = first.locations[0]
+    first = credential.occurrences[0]
     second = first.model_copy(
-        update={
-            "locations": (
-                location.model_copy(
-                    update={
-                        "locator": location.locator.replace("app.env", "b.env"),
-                        "source_path": "etc/b.env",
-                        "filename": "b.env",
-                    }
-                ),
-            ),
-            "finding_ids": ("f2",),
-        }
+        update={"locator": first.locator.replace("app.env", "b.env")}
     )
     history = credential.model_copy(update={"occurrences": (first, second)})
     original = retained_document(repository_inventory, history)
@@ -150,9 +135,8 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
     )
     published = merge_scan(original, partial)
     saved = published.credentials[credential.credential_id]
-    assert len(saved.occurrences) == 1
-    assert saved.occurrences[0].locations == first.locations + second.locations
-    assert saved.occurrences[0].finding_ids == ("f1", "f2")
+    assert len(saved.occurrences) == 2
+    assert saved.occurrences == (first, second)
     assert saved.judgment.verdict == "VALID"
     assert saved.extraction == retained
     assert published.incomplete and published.errors == ("partial",)
@@ -170,24 +154,17 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
     assert merge_scan(published, reversed_report) == published
 
 
-def test_append_normalizes_duplicate_locations_and_finding_ids_on_first_write(
+def test_append_normalizes_duplicate_occurrences_on_first_write(
     repository_inventory, credential
 ):
     occurrence = credential.occurrences[0]
-    duplicated = occurrence.model_copy(
-        update={
-            "locations": occurrence.locations * 2,
-            "finding_ids": ("f1", "f1"),
-        }
-    )
-    candidate = credential.model_copy(update={"occurrences": (duplicated, duplicated)})
+    candidate = credential.model_copy(update={"occurrences": (occurrence, occurrence)})
     document = document_for(repository_inventory, candidate)
     before = document.model_dump(mode="json")
     published = merge_scan(None, document)
     saved = published.credentials[credential.credential_id]
     assert len(saved.occurrences) == 1
-    assert saved.occurrences[0].locations == occurrence.locations
-    assert saved.occurrences[0].finding_ids == ("f1",)
+    assert saved.occurrences == (occurrence,)
     assert merge_scan(published, document) == published
     assert document.model_dump(mode="json") == before
 
@@ -197,14 +174,8 @@ def test_append_adds_new_pin_and_credential_without_losing_absent_history(
 ):
     document = retained_document(repository_inventory, credential)
     old = document.credentials[credential.credential_id]
-    scope = repository_inventory.targets[0].scope.model_copy(
-        update={"digest": "sha256:second"}
-    )
     new_occurrence = credential.occurrences[0].model_copy(
-        update={
-            "target_id": target_id_for(scope),
-            "finding_ids": ("new-finding",),
-        }
+        update={"locator": credential.occurrences[0].locator.replace("manifest", "second")}
     )
     candidate = credential.model_copy(update={"occurrences": (new_occurrence,)})
     published = merge_scan(document, document_for(repository_inventory, candidate))

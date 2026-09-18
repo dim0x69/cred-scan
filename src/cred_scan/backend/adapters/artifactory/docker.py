@@ -30,6 +30,7 @@ from cred_scan.backend.adapters.artifactory.models import (
 from cred_scan.backend.models import (
     BackendConfig,
     ContentLocation,
+    ContentRead,
     ScanBoundaryRef,
     ScanBoundaryInventory,
     ScanTarget,
@@ -275,7 +276,7 @@ class ArtifactoryDockerReader(ContentReader):
         )
 
     def _target_for_provenance(
-        self, provenance: DockerProvenance, target_id: str | None = None
+        self, provenance: DockerProvenance
     ) -> ScanTarget:
         image = f"{provenance.registry}/{provenance.repository}/{provenance.image}"
         matches = [
@@ -285,13 +286,6 @@ class ArtifactoryDockerReader(ContentReader):
             and target.scope.image == image
             and target.scope.digest == provenance.manifest
         ]
-        if target_id is not None:
-            target = next((item for item in matches if item.id == target_id), None)
-            if target is None:
-                raise LayerEvidenceError(
-                    "Titus provenance does not match the requested pinned target"
-                )
-            return target
         if len(matches) != 1:
             raise LayerEvidenceError(
                 "Titus provenance does not identify exactly one pinned target"
@@ -373,19 +367,13 @@ class ArtifactoryDockerReader(ContentReader):
         content, _ = result
         return content
 
-    async def resolve_location(
-        self, raw_path: str, *, target_id: str | None = None
-    ) -> ContentLocation:
+    async def resolve_location(self, raw_path: str) -> ContentLocation:
         try:
             provenance = parse_provenance(raw_path)
         except LayerEvidenceError:
-            LOGGER.exception(
-                "invalid Docker provenance raw_path=%s target_id=%s",
-                raw_path,
-                target_id or "<not supplied>",
-            )
+            LOGGER.exception("invalid Docker provenance raw_path=%s", raw_path)
             raise
-        target = self._target_for_provenance(provenance, target_id)
+        target = self._target_for_provenance(provenance)
         source_path = provenance.path
         return ContentLocation(
             target_id=target.id,
@@ -394,14 +382,22 @@ class ArtifactoryDockerReader(ContentReader):
             filename=PurePosixPath(source_path).name,
         )
 
-    async def read(self, location: ContentLocation) -> bytes:
+    async def read(self, location: ContentLocation) -> ContentRead:
         provenance = parse_provenance(location.locator)
-        self._target_for_provenance(provenance, location.target_id)
+        target = self._target_for_provenance(provenance)
+        if target.id != location.target_id:
+            raise LayerEvidenceError(
+                "content location target does not match its locator"
+            )
         if location.source_path != provenance.path:
             raise LayerEvidenceError("content location source path does not match locator")
         if location.filename != PurePosixPath(provenance.path).name:
             raise LayerEvidenceError("content location filename does not match locator")
-        return await self._find_file(provenance)
+        return ContentRead(
+            content=await self._find_file(provenance),
+            source_path=provenance.path,
+            filename=PurePosixPath(provenance.path).name,
+        )
 
     async def aclose(self) -> None:
         if self._closed:

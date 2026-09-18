@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory, target_id_for
+from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory, target_id_for
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.workspace import Workspace, WorkspaceBusyError
 from cred_scan.judge.proto import FindingJudge
@@ -63,11 +63,10 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
             reader = create_autospec(ContentReader, instance=True)
             reader.boundary_id = boundary.id
 
-            async def resolve(raw_path, *, target_id=None):
+            async def resolve(raw_path):
                 reader.aclose.assert_not_awaited()
-                resolved_target_id = target_id or targets[0].id
                 return ContentLocation(
-                    target_id=resolved_target_id,
+                    target_id=targets[0].id,
                     locator=raw_path,
                     source_path="etc/app.env",
                     filename="app.env",
@@ -75,7 +74,11 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
 
             async def read(_location):
                 reader.aclose.assert_not_awaited()
-                return b"synthetic evidence"
+                return ContentRead(
+                    content=b"synthetic evidence",
+                    source_path="etc/app.env",
+                    filename="app.env",
+                )
 
             reader.resolve_location.side_effect = resolve
             reader.read.side_effect = read
@@ -281,10 +284,10 @@ def test_credential_checkpoint_failure_is_recoverable_without_losing_other_recor
                 raise OSError("checkpoint failed")
         return write(self, path, document, model_type)
 
-    async def failing_extraction(candidate, *args):
-        if candidate.credential_id == "zz-second":
+    async def failing_extraction(content, destination):
+        if "zz-second" in str(destination):
             raise OSError("extraction failed")
-        return await original(candidate, *args)
+        return await original(content, destination)
 
     with monkeypatch.context() as patch:
         patch.setattr(Workspace, "write", failing_write)
@@ -446,11 +449,9 @@ def test_multiple_boundaries_scan_concurrently_but_judge_serially_after_publicat
                 "occurrences": (
                     h.credential.occurrences[0].model_copy(
                         update={
-                            "target_id": target.id,
-                            "locations": tuple(
-                                location.model_copy(update={"target_id": target.id})
-                                for location in h.credential.occurrences[0].locations
-                            ),
+                            "locator": h.credential.occurrences[0].locator.replace(
+                                "team/api", f"image-{index}"
+                            )
                         }
                     ),
                 )
@@ -553,11 +554,9 @@ def test_worker_or_judger_failure_cancels_sibling_scan(harness, failure_phase):
             "occurrences": (
                 h.credential.occurrences[0].model_copy(
                     update={
-                        "target_id": target.id,
-                        "locations": tuple(
-                            location.model_copy(update={"target_id": target.id})
-                            for location in h.credential.occurrences[0].locations
-                        ),
+                        "locator": h.credential.occurrences[0].locator.replace(
+                            "team/api", "other"
+                        )
                     }
                 ),
             )

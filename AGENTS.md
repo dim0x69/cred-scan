@@ -105,11 +105,12 @@ Before finishing a change, update the affected documents in the same task:
 - `doc/architecture.md`: module ownership, dependencies, configuration, lifecycle.
 - `doc/interfaces.md`: data models, relationships, identity and field contracts.
 - `doc/ports.md`: protocol methods, callers, preconditions and outcomes.
-- `doc/end-to-end.md`: worked example reflecting the current contracts.
+- `doc/end-to-end.html`: authoritative visual workflow, worked example, and model map.
 
 When moving/renaming interfaces, update documentation links and static example
 imports. When a contract changes, update both its port description and the
-end-to-end example. Keep README as an entry point to the detailed documents.
+HTML end-to-end guide. Keep README as a minimal entry point to the detailed
+documents; do not create a parallel end-to-end Markdown document.
 Clearly distinguish a proposal, a user-provided capability, and verified behavior.
 Do not describe design stubs as working implementations.
 

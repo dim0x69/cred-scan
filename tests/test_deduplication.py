@@ -95,11 +95,8 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
     )
     document = asyncio.run(deduplicate_report(report, repository, policy, resolver))
     credential = next(iter(document.credentials.values()))
-    assert credential.source_paths == ("etc/app:prod.env",)
     assert credential.paths == (raw_path,)
-    location = credential.occurrences[0].locations[0]
-    assert location.filename == "app:prod.env"
-    assert credential.occurrences[0].finding_ids == ("finding-1",)
+    assert credential.occurrences[0].locator == raw_path
 
 
 def test_dedup_omits_credential_when_all_locations_are_excluded() -> None:
@@ -211,8 +208,7 @@ def test_unavailable_locations_remain_raw_and_produce_diagnostics():
     credential = next(iter(document.credentials.values()))
     assert credential.paths == ("available",)
     occurrence = credential.occurrences[0]
-    assert occurrence.target_id == occurrence.locations[0].target_id == scan_target.id
-    assert occurrence.finding_ids == ("partly-available",)
+    assert occurrence.locator == "available"
     assert len(document.errors) == 2
     assert "partly-available" in document.errors[0]
     assert "unavailable-only" in document.errors[1]

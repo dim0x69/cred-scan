@@ -14,7 +14,7 @@ from cred_scan.backend.models import (
 )
 from cred_scan.common.models import WorkspaceConfig
 from cred_scan.orch.models import AppConfig, TitusConfig
-from cred_scan.scan.models import Credential, CredentialLocation, CredentialOccurrence, ExclusionFiles
+from cred_scan.scan.models import Credential, CredentialOccurrence, ExclusionFiles
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,6 @@ def repository_inventory() -> ScanBoundaryInventory:
 
 @pytest.fixture
 def credential(repository_inventory: ScanBoundaryInventory) -> Credential:
-    target = repository_inventory.targets[0]
     locator = (
         "docker://registry/docker-local/team/api@sha256:manifest/"
         "sha256:layer:etc/app.env"
@@ -59,19 +58,7 @@ def credential(repository_inventory: ScanBoundaryInventory) -> Credential:
     return Credential(
         credential_id="synthetic-credential",
         credential="SYNTHETIC_VALUE",
-        occurrences=(
-            CredentialOccurrence(
-                target_id=target.id,
-                locations=(
-                    CredentialLocation(
-                        target_id=target.id,
-                        locator=locator,
-                        source_path="etc/app.env",
-                        filename="app.env",
-                    ),
-                ),
-            ),
-        ),
+        occurrences=(CredentialOccurrence(locator=locator),),
     )
 
 

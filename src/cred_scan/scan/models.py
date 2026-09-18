@@ -1,4 +1,4 @@
-"""Titus reports, resolved credential provenance, and lifecycle results."""
+"""Titus reports, backend credential occurrences, and lifecycle results."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from cred_scan.backend.models import ContentLocation
 
 
 class ExclusionFiles(BaseModel):
@@ -23,24 +21,10 @@ class ExclusionPolicy(BaseModel):
     credential_patterns: tuple[str, ...] = ()
 
 
-# Credential locations are the source-neutral backend locations persisted with
-# each occurrence. Keep the historical import name for internal callers while
-# using one model for resolution, judgment, evidence, and persistence.
-CredentialLocation = ContentLocation
-
-
 class CredentialOccurrence(BaseModel):
-    """Occurrences grouped by one pinned, source-neutral scan target."""
+    """One backend locator where the credential appeared."""
 
-    target_id: str = Field(min_length=1)
-    locations: tuple[CredentialLocation, ...] = Field(min_length=1)
-    finding_ids: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def validate_location_targets(self) -> "CredentialOccurrence":
-        if any(location.target_id != self.target_id for location in self.locations):
-            raise ValueError("location target IDs must match the occurrence target")
-        return self
+    locator: str = Field(min_length=1)
 
 
 class JudgmentResult(BaseModel):
@@ -71,20 +55,9 @@ class Credential(BaseModel):
 
     @property
     def paths(self) -> tuple[str, ...]:
-        """Raw Titus paths retained for the source-aware content reader."""
-        return tuple(
-            location.locator
-            for occurrence in self.occurrences
-            for location in occurrence.locations
-        )
+        """Backend locators retained for source-aware content access."""
+        return tuple(occurrence.locator for occurrence in self.occurrences)
 
-    @property
-    def source_paths(self) -> tuple[str, ...]:
-        return tuple(
-            location.source_path
-            for occurrence in self.occurrences
-            for location in occurrence.locations
-        )
 
 class TitusReport(BaseModel):
     """The complete final Titus export for one report boundary."""
@@ -100,7 +73,7 @@ class TitusReport(BaseModel):
 class CredentialsDocument(BaseModel):
     """The append-only ID-indexed credentials document for one boundary."""
 
-    schema_version: Literal[7] = 7
+    schema_version: Literal[8] = 8
     boundary_id: str
     report_generated_at: str
     incomplete: bool = False

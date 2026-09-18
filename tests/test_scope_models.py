@@ -94,7 +94,7 @@ def test_documents_use_boundary_id_and_reject_legacy_fields_and_versions(kind):
         else CredentialsDocument(boundary_id="boundary", report_generated_at="now")
     )
     payload = document.model_dump(mode="json")
-    assert payload["schema_version"] == (2 if kind == "report" else 7)
+    assert payload["schema_version"] == (2 if kind == "report" else 8)
     assert payload["boundary_id"] == "boundary"
     assert "scope_id" not in payload
     assert type(document).model_validate(payload) == document

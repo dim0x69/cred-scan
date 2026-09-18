@@ -32,20 +32,23 @@ def _validate_document(payload: dict[str, Any], path: Path) -> CredentialsDocume
         if payload.get("schema_version") != NEW_SCHEMA_VERSION:
             raise ValueError("not a schema-3 document")
         view = copy.deepcopy(payload)
-        view["schema_version"] = 7
+        view["schema_version"] = 8
         view["boundary_id"] = view["scope_id"]
         for credential in view.get("credentials", {}).values():
             extraction = credential.get("extraction")
             if isinstance(extraction, dict):
                 extraction.pop("source_fingerprint", None)
+            flattened = []
             for occurrence in credential.get("occurrences", ()):
                 target_id = occurrence.get("target_id")
+                if not isinstance(target_id, str) or not target_id:
+                    raise ValueError("legacy occurrence has no target ID")
                 for location in occurrence.get("locations", ()):
                     provenance = location.pop("provenance", None)
                     if not isinstance(provenance, str):
                         raise ValueError("legacy provenance is not a string")
-                    location["target_id"] = target_id
-                    location["locator"] = provenance
+                    flattened.append({"locator": provenance})
+            credential["occurrences"] = flattened
         return CredentialsDocument.model_validate(view)
     except (KeyError, TypeError, ValueError):
         # Validation errors can include credential values; report only the path.
@@ -97,10 +100,11 @@ def _validate_report(
                 if isinstance(match, dict) and match.get("RuleName"):
                     rule_names.add(str(match["RuleName"]))
 
-    for credential in document.credentials.values():
-        for occurrence in credential.occurrences:
-            if any(finding_id not in by_id for finding_id in occurrence.finding_ids):
-                raise ValueError(f"{path}: finding reference is absent from canonical report")
+    for credential in original.get("credentials", {}).values():
+        for occurrence in credential.get("occurrences", ()):
+            for finding_id in occurrence.get("finding_ids", ()):
+                if finding_id not in by_id:
+                    raise ValueError(f"{path}: finding reference is absent from canonical report")
 
     # Check the data being removed, including occurrence-specific match subsets
     # and findings without IDs. An ID alone does not prove metadata is retained.

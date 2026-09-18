@@ -142,9 +142,9 @@ def test_cumulative_report_resolves_current_and_superseded_docker_pins(
             )
         )
         credential = next(iter(document.credentials.values()))
-        assert [occurrence.target_id for occurrence in credential.occurrences] == [
-            original.id,
-            fresh.id,
+        assert [occurrence.locator for occurrence in credential.occurrences] == [
+            PROVENANCE,
+            PROVENANCE.replace("sha256:manifest", "sha256:new-manifest"),
         ]
     finally:
         asyncio.run(reader.aclose())
@@ -161,7 +161,7 @@ def test_reader_returns_complete_bytes(
 
     content = asyncio.run(reader.read(_locator(PROVENANCE, repository_inventory)))
 
-    assert content == retrieved
+    assert content.content == retrieved
     reader._find_file.assert_awaited_once()
     asyncio.run(reader.aclose())
 
@@ -181,7 +181,7 @@ def test_reader_validates_provenance_target(
     )
     unpinned = PROVENANCE.replace("sha256:manifest", "sha256:other")
     location = _locator(unpinned, repository_inventory)
-    with pytest.raises(LayerEvidenceError, match="pinned target"):
+    with pytest.raises(LayerEvidenceError, match="identify exactly one"):
         asyncio.run(reader.read(location))
     asyncio.run(reader.aclose())
 
@@ -339,8 +339,8 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
         config_content = asyncio.run(
             reader.read(_locator(config_path, repository_inventory))
         )
-        assert content == layer_content
-        assert config_content == json.dumps(config).encode()
+        assert content.content == layer_content
+        assert config_content.content == json.dumps(config).encode()
     finally:
         asyncio.run(reader.aclose())
         asyncio.run(backend.aclose())
@@ -386,7 +386,7 @@ def test_reader_reads_the_selected_layer(
     )
     try:
         expected = PROVENANCE.replace("sha256:layer", "sha256:newer")
-        assert asyncio.run(reader.read(_locator(expected, repository_inventory))) == b"SECRET=newer\n"
+        assert asyncio.run(reader.read(_locator(expected, repository_inventory))).content == b"SECRET=newer\n"
     finally:
         asyncio.run(reader.aclose())
         asyncio.run(backend.aclose())

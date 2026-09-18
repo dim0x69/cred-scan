@@ -14,8 +14,8 @@ from cred_scan.judge.dspy_adapter import (
     _judge_input,
 )
 from cred_scan.judge.proto import FatalJudgeError
+from cred_scan.backend.models import ContentLocation, ContentRead
 from cred_scan.orch.models import AppConfig
-from cred_scan.scan.models import CredentialLocation
 
 
 class APIConnectionError(Exception):
@@ -47,21 +47,14 @@ def test_rate_limit_detection_remains_retryable() -> None:
 
 
 def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
-    occurrence = credential.occurrences[0].model_copy(
+    expanded = credential.model_copy(
         update={
-            "locations": tuple(
-                CredentialLocation(
-                    target_id=credential.occurrences[0].target_id,
-                    locator=f"path-{index}",
-                    source_path=f"path-{index}",
-                    filename=f"path-{index}",
-                )
+            "occurrences": tuple(
+                credential.occurrences[0].model_copy(update={"locator": f"path-{index}"})
                 for index in range(100)
             )
         }
     )
-    expanded = credential.model_copy(update={"occurrences": (occurrence,)})
-
     serialized, registry = _judge_input(expanded)
 
     assert len(serialized) <= 120_000
@@ -92,7 +85,19 @@ def test_judge_uses_native_async_dspy_and_content_tools(
         }
     )
     content = Mock()
-    content.read = AsyncMock(return_value=raw_bytes)
+    content.resolve_location = AsyncMock(
+        return_value=ContentLocation(
+            target_id="synthetic-target",
+            locator=credential.occurrences[0].locator,
+            source_path="etc/app.env",
+            filename="app.env",
+        )
+    )
+    content.read = AsyncMock(
+        return_value=ContentRead(
+            content=raw_bytes, source_path="etc/app.env", filename="app.env"
+        )
+    )
     captured: dict[str, object] = {}
 
     class Program:
@@ -103,7 +108,7 @@ def test_judge_uses_native_async_dspy_and_content_tools(
             assert len(tools) == 1
             read = tools[0]
             assert await read("location-0") == {
-                "path": credential.occurrences[0].locations[0].source_path,
+                "path": "etc/app.env",
                 "encoding": encoding,
                 "content": text,
             }

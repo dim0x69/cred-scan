@@ -3,52 +3,66 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from cred_scan.backend.models import ContentLocation, ContentRead
 from cred_scan.backend.proto import ContentReader
 from cred_scan.orch.runtime import ReadSession
 
 
+def _location(locator: str) -> ContentLocation:
+    return ContentLocation(
+        target_id="target",
+        locator=locator,
+        source_path="etc/app.env",
+        filename="app.env",
+    )
+
+
 @pytest.mark.parametrize("content", [b"", b"text", b"\xff\x00binary"])
-def test_read_session_reuses_exact_locations_and_clears_on_close(credential, content):
+def test_read_session_reuses_exact_locators_and_clears_on_close(credential, content):
     reader = create_autospec(ContentReader, instance=True)
-    reader.read.return_value = content
+    reader.resolve_location.side_effect = lambda locator: _location(locator)
+    reader.read.return_value = ContentRead(
+        content=content, source_path="etc/app.env", filename="app.env"
+    )
     session = ReadSession(reader)
-    location = credential.occurrences[0].locations[0]
+    locator = credential.occurrences[0].locator
 
     async def exercise():
-        assert await session.read(location) == content
-        assert await session.read(location.model_copy()) == content
-        reader.read.assert_awaited_once_with(location)
+        assert (await session.read(locator)).content == content
+        assert (await session.read(locator)).content == content
+        reader.read.assert_awaited_once_with(_location(locator))
         await session.aclose()
         await session.aclose()
         assert not session._cache
         reader.aclose.assert_awaited_once()
         with pytest.raises(RuntimeError, match="closed"):
-            await session.read(location)
+            await session.read(locator)
 
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("field", ["target_id", "locator", "source_path", "filename"])
-def test_cache_does_not_bypass_validation_of_changed_location(credential, field):
+def test_cache_does_not_bypass_validation_of_changed_locator(credential):
     reader = create_autospec(ContentReader, instance=True)
-    location = credential.occurrences[0].locations[0]
+    reader.resolve_location.side_effect = lambda locator: _location(locator)
 
     async def read(requested):
-        if requested != location:
-            raise ValueError("location does not match locator")
-        return b"content"
+        if requested.locator != credential.occurrences[0].locator:
+            raise ValueError("locator does not match source")
+        return ContentRead(
+            content=b"content", source_path="etc/app.env", filename="app.env"
+        )
 
     reader.read.side_effect = read
     session = ReadSession(reader)
+    locator = credential.occurrences[0].locator
 
     async def exercise():
         try:
-            assert await session.read(location) == b"content"
-            changed = location.model_copy(update={field: "different"})
+            assert (await session.read(locator)).content == b"content"
             with pytest.raises(ValueError, match="does not match"):
-                await session.read(changed)
+                await session.read("different")
             assert reader.read.await_count == 2
-            assert await session.read(location) == b"content"
+            assert (await session.read(locator)).content == b"content"
             assert reader.read.await_count == 2
         finally:
             await session.aclose()
@@ -58,16 +72,22 @@ def test_cache_does_not_bypass_validation_of_changed_location(credential, field)
 
 def test_read_session_does_not_cache_failures(credential):
     reader = create_autospec(ContentReader, instance=True)
-    reader.read.side_effect = [OSError("temporary failure"), b"retried"]
+    locator = credential.occurrences[0].locator
+    reader.resolve_location.side_effect = lambda value: _location(value)
+    reader.read.side_effect = [
+        OSError("temporary failure"),
+        ContentRead(
+            content=b"retried", source_path="etc/app.env", filename="app.env"
+        ),
+    ]
     session = ReadSession(reader)
-    location = credential.occurrences[0].locations[0]
 
     async def exercise():
         try:
             with pytest.raises(OSError, match="temporary failure"):
-                await session.read(location)
-            assert await session.read(location) == b"retried"
-            assert await session.read(location) == b"retried"
+                await session.read(locator)
+            assert (await session.read(locator)).content == b"retried"
+            assert (await session.read(locator)).content == b"retried"
             assert reader.read.await_count == 2
         finally:
             await session.aclose()

@@ -150,6 +150,7 @@
     <h1>From inventory to retained evidence.</h1>
     <p class="lede">Four stages. One report boundary at a time. Follow the documents through <strong>Inventory → Scan → Judge → Extract</strong>, then look inside the models they carry.</p>
     <nav aria-label="Document sections">
+      <a href="#terms">00 · Key terms</a>
       <a href="#flow">01 · End-to-end graph</a>
       <a href="#contracts">02 · Stage contracts</a>
       <a href="#models">03 · Model structure</a>
@@ -163,10 +164,58 @@
     <strong>Contract map, not a live execution trace.</strong> This standalone page describes the current local models and orchestration contracts. Artifactory local Docker is the current adapter; Git/package shapes are future-adapter contracts. The adjusted Titus build’s all-occurrence retention and cumulative export guarantees still require live integration verification. No external assets, scripts, fonts, or network access are needed to view this page.
   </aside>
 
+  <section id="terms" aria-labelledby="terms-title">
+    <p class="eyebrow">00 / Vocabulary</p>
+    <h2 id="terms-title">The nouns that organize the scanner.</h2>
+    <p class="section-intro">These terms describe ownership and identity. A boundary owns the report and backend context; a scope describes a logical source; a target is one immutable pin of that scope. Credentials retain backend locators rather than target objects.</p>
+    <div class="grid-two">
+      <article class="panel">
+        <h3>Boundary</h3>
+        <p>The notification and report boundary: currently an Artifactory repository, or a future Git organization. It owns one cumulative Titus datastore, report, credential document, and evidence area.</p>
+      </article>
+      <article class="panel">
+        <h3>ScanScope</h3>
+        <p>The logical source being monitored, such as a Docker image, Git repository, or package. Its logical identity remains stable while its immutable pins change over time.</p>
+      </article>
+      <article class="panel">
+        <h3>ScanTarget</h3>
+        <p>One immutable pin of a scope: for example a selected child manifest, commit, or package artifact. It is the inventory and Titus scheduling unit. Its pin identity is immutable; its scan result is lifecycle state.</p>
+      </article>
+      <article class="panel">
+        <h3>Backend</h3>
+        <p>The adapter for a source system. It discovers boundaries and targets, supplies Titus arguments, and interprets backend locators to return source bytes and metadata.</p>
+      </article>
+      <article class="panel">
+        <h3>Inventory</h3>
+        <p>The manually refreshed retained-source document for one boundary. It records backend configuration, boundary lifecycle, current and superseded targets, and target execution results.</p>
+      </article>
+      <article class="panel">
+        <h3>Locator</h3>
+        <p>An opaque, complete backend path for one source occurrence. It is persisted inside a credential occurrence and interpreted only by the boundary-selected backend.</p>
+      </article>
+      <article class="panel">
+        <h3>Credential and occurrence</h3>
+        <p>A credential is one deduplicated detected value identified by <code>credential_id</code>. One credential may have many occurrences, each retaining a distinct locator where it appeared.</p>
+      </article>
+      <article class="panel">
+        <h3>Report and datastore</h3>
+        <p>The boundary datastore is Titus's persistent incremental state. The final boundary export is <code>report.json</code>, retaining raw cumulative findings before normalized credential publication.</p>
+      </article>
+      <article class="panel">
+        <h3>Judgment</h3>
+        <p>The assessment attached to a credential: <code>PENDING</code>, <code>VALID</code>, <code>INVALID</code>, <code>UNKNOWN</code>, or <code>ERROR</code>. Only <code>VALID</code> enables new evidence retention.</p>
+      </article>
+      <article class="panel">
+        <h3>Evidence</h3>
+        <p>A retained first-occurrence source file for a valid credential. Bytes live under the boundary evidence directory; <code>credentials.json</code> stores output path, size, hash, and status.</p>
+      </article>
+    </div>
+  </section>
+
   <section id="flow" aria-labelledby="flow-title">
     <p class="eyebrow">01 / The big picture</p>
     <h2 id="flow-title">Top-level documents move; nested results change.</h2>
-    <p class="section-intro">The graph deliberately shows top-level input/output models only. Judge and Extract do <em>not</em> introduce separate report documents: each checkpoints changes inside the same <code>CredentialsDocument</code>. Expand the <a href="#models">model trees</a> for individual credentials, occurrences, locations, and result models.</p>
+    <p class="section-intro">The graph deliberately shows top-level input/output models only. Judge and Extract do <em>not</em> introduce separate report documents: each checkpoints changes inside the same <code>CredentialsDocument</code>. Expand the <a href="#models">model trees</a> for credentials, locator occurrences, and result models.</p>
     <div class="legend" aria-label="Graph legend">
       <span><i class="swatch" aria-hidden="true"></i> Typed model / document</span>
       <span><i class="swatch artifact" aria-hidden="true"></i> File or datastore, not a Pydantic model</span>
@@ -281,7 +330,7 @@ deduplicate_report(
   inventory: ScanBoundaryInventory,
   policy: ExclusionPolicy, resolver: ContentReader
 ) → CredentialsDocument</pre>
-        <p>The returned target keeps its immutable identity and contains an updated <code>ScanTargetResult</code>. All target invocations write to the same boundary datastore. Conversion resolves locations, groups credentials, applies exclusions, and preserves pinned references.</p>
+        <p>The returned target keeps its immutable identity and contains an updated <code>ScanTargetResult</code>. All target invocations write to the same boundary datastore. Conversion normalizes backend locators, groups credentials, applies exclusions, and preserves every source occurrence.</p>
         <p><code>merge_scan(previous, candidates)</code> returns the append-only <code>CredentialsDocument</code>; existing judgments and evidence metadata survive. <code>ReportBoundary.scan(scanner, policy)</code> returns that document only after saving it.</p>
         <p class="port">Owner: <code>scan/</code> detects/converts; <code>orch/</code> checkpoints and publishes. Unresolvable locations stay in the raw report plus diagnostics, not in unpinned judge candidates.</p>
       </article>
@@ -292,7 +341,7 @@ deduplicate_report(
 ) → JudgmentResult
 
 <em>mutate credential.judgment and persist the current document</em></pre>
-        <p>Orchestration validates the boundary and occurrence target references against retained inventory. The judge can read reported locations through session-local location IDs; the backend interprets opaque locators.</p>
+        <p>Orchestration validates the document boundary. The judge can read persisted occurrence locators through session-local IDs; the boundary-selected backend interprets them and returns exact bytes plus source metadata.</p>
         <p><code>JudgmentResult.verdict</code> is <code>PENDING | VALID | INVALID | UNKNOWN | ERROR</code>. The result also carries <code>reasoning</code>. A verdict is not user acceptance or mitigation.</p>
         <p><code>ReportBoundary.judge(document, judge, extract_valid=False)</code> returns the <strong>number of attempted judgments</strong>, not a document. Normal scan passes <code>extract_valid=True</code> for immediate evidence retention.</p>
         <p class="port">Owner: <code>judge/</code> assesses; <code>orch/</code> saves each judgment to the latest credential checkpoint.</p>
@@ -300,15 +349,14 @@ deduplicate_report(
       <article class="panel phase-detail extract">
         <h3>Extract · pinned bytes in, evidence out</h3>
         <pre>ContentReader.read(location: ContentLocation)
-  → bytes
+  → ContentRead(bytes, source_path, filename)
 
 retain_first_evidence(
-  credential: Credential, location: ContentLocation,
   content: bytes, destination: Path
 ) → tuple[Path, int, str]  # path, size, SHA-256
 
 <em>mutate credential.extraction and persist the current document</em></pre>
-        <p>For a VALID credential, orchestration selects <code>occurrences[0].locations[0]</code>. It reuses bytes already read during judgment or retrieves the exact pinned file. Python—not the LLM—writes and hashes evidence, then checkpoints <code>ExtractionResult</code>.</p>
+        <p>For a VALID credential, orchestration selects <code>occurrences[0].locator</code>. It reuses bytes already read during judgment or retrieves the exact backend locator. Python—not the LLM—writes and hashes evidence, then checkpoints <code>ExtractionResult</code>.</p>
         <p><code>ReportBoundary.extract(document)</code> returns the <strong>number of newly retained artifacts</strong>. Verified reuse does not increment it. Retrieval/write errors can save extraction <code>ERROR</code> while keeping the saved VALID judgment.</p>
         <p class="port">Owner: <code>judge/evidence.py</code> owns destinations/integrity; <code>orch/</code> owns eligibility, session lifetime, and persistence. Extract is a workflow stage, not a separate <code>extract/</code> module.</p>
       </article>
@@ -407,11 +455,11 @@ retain_first_evidence(
           </div>
         </details>
         <details class="model" id="model-credentials" open style="margin-top: 1.25rem">
-          <summary><code>CredentialsDocument</code> <span class="chip">credentials.json · v7</span></summary>
+          <summary><code>CredentialsDocument</code> <span class="chip">credentials.json · v8</span></summary>
           <div class="model-body">
             <p class="owner">Owner: <code>scan/models.py</code>. Shared normalized document through Scan, Judge, and Extract; not one new schema per phase.</p>
             <ul class="tree">
-              <li><code>schema_version: 7</code></li>
+              <li><code>schema_version: 8</code></li>
               <li><code>boundary_id: str</code><span class="hint">References inventory.boundary.id.</span></li>
               <li><code>report_generated_at: str</code></li>
               <li><code>incomplete: bool</code> · <code>errors: str[]</code></li>
@@ -419,18 +467,9 @@ retain_first_evidence(
                 <ul>
                   <li><code>credential_id: str</code><span class="hint">Dictionary key must equal this ID.</span></li>
                   <li><code>credential: str?</code><span class="hint">Extracted secret value; not included in this example or operational logs.</span></li>
-                  <li id="model-occurrence"><code>occurrences: <span class="type">CredentialOccurrence[]</span></code><span class="hint">Nonempty; all retained target/path observations.</span>
+                  <li id="model-occurrence"><code>occurrences: <span class="type">CredentialOccurrence[]</span></code><span class="hint">Nonempty; one complete backend locator per source occurrence.</span>
                     <ul>
-                      <li><code>target_id: str</code><span class="hint">Nonempty reference to an existing immutable ScanTarget.id.</span></li>
-                      <li id="model-location"><code>locations: <span class="type">ContentLocation[]</span></code><span class="hint">Nonempty. CredentialLocation is an alias for ContentLocation, not another shape.</span>
-                        <ul>
-                          <li><code>target_id: str</code><span class="hint">Must equal its containing occurrence.target_id.</span></li>
-                          <li><code>locator: str</code><span class="hint">Nonempty opaque backend locator; only the backend parses it.</span></li>
-                          <li><code>source_path: str</code><span class="hint">Source-relative display / exclusion path.</span></li>
-                          <li><code>filename: str</code><span class="hint">Evidence filename metadata; safe destination is validated by the evidence helper.</span></li>
-                        </ul>
-                      </li>
-                      <li><code>finding_ids: str[]</code><span class="hint">References raw findings in TitusReport.</span></li>
+                      <li><code>locator: str</code><span class="hint">Opaque, stable backend locator; target and finding references are not persisted.</span></li>
                     </ul>
                   </li>
                   <li id="model-judgment"><code>judgment: <span class="type">JudgmentResult</span></code>
@@ -464,11 +503,9 @@ Actual nesting:      ScanBoundaryInventory.targets[] → ScanTarget.{boundary, s
 
 Document join:       TitusReport.boundary_id ────────────┐
                      CredentialsDocument.boundary_id ───┴→ inventory.boundary.id
-Pinned-content join: CredentialOccurrence.target_id ─────→ inventory.targets[].id
-                     ContentLocation.target_id ─────────→ occurrence.target_id
-Raw-finding join:    CredentialOccurrence.finding_ids[] ─→ TitusReport.findings
+Content read:        CredentialOccurrence.locator ───────→ boundary-selected backend
 Evidence join:       Credential.extraction.output_path ─→ retained file under boundary/</pre>
-      <p><strong>Boundary:</strong> report/notification grouping, e.g. repository <code>docker-local</code>. <strong>Scope:</strong> logical source, e.g. image <code>payments/api</code>. <strong>Target:</strong> exact selected manifest pin. Superseded targets remain in inventory so old credential locations remain resolvable.</p>
+      <p><strong>Boundary:</strong> report/notification grouping, e.g. repository <code>docker-local</code>. <strong>Scope:</strong> logical source, e.g. image <code>payments/api</code>. <strong>Target:</strong> exact selected manifest pin. Superseded targets remain in inventory so historical backend locators remain available to the reader.</p>
     </div>
 
     <h3 style="margin-top: 2rem">Supporting models · configuration and storage context</h3>
@@ -562,7 +599,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
       <article class="panel">
         <h3>Retention and failure rules</h3>
         <ul>
-          <li>Append publication preserves old credentials, paths, finding references, judgments, and evidence metadata—even if a later report omits them.</li>
+          <li>Append publication preserves old credentials, locator occurrences, judgments, and evidence metadata—even if a later report omits them.</li>
           <li>One credential-local byte session spans judgment and immediate VALID extraction. Close it and discard scratch afterward; no whole-image/repository or cross-credential cache.</li>
           <li>Before reusing RETAINED evidence, verify path, size, and SHA-256. Missing/corrupt bytes fail without replacing historical evidence or expected metadata.</li>
           <li>A saved VALID judgment survives a later extraction error, so extraction can retry without another LLM judgment.</li>
@@ -573,23 +610,23 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
 
   <section id="example" aria-labelledby="example-title">
     <p class="eyebrow">05 / Walk one credential through</p>
-    <h2 id="example-title">Repository → image pin → finding → evidence.</h2>
-    <p class="section-intro">Schematic identifiers below are labels, not valid persisted target IDs. Real IDs must be computed with <code>target_id_for(scope)</code>. No credential value is shown.</p>
+    <h2 id="example-title">Repository → image pin → locator → evidence.</h2>
+    <p class="section-intro">Schematic identifiers below describe the boundary inventory and backend locator flow. No credential value is shown.</p>
     <div class="panel">
       <ol class="timeline">
         <li><strong>Inventory.</strong> The Artifactory backend discovers repository <code>docker-local</code>, image scope <code>payments/api</code>, and selected child manifest <code>M1</code>. It writes a <code>ScanBoundaryInventory</code> containing a <code>ScanTarget</code> whose <code>boundary</code> is the repository and whose <code>scope</code> is a <code>DockerImageScanScope</code> pinned to M1.</li>
-        <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains finding <code>F1</code> at <code>app.env</code>. Backend resolution produces a <code>ContentLocation</code> with M1’s existing target ID, an opaque locator, <code>source_path="app.env"</code>, and <code>filename="app.env"</code>.</li>
-        <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> referencing that target and F1. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
+        <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains a finding at <code>app.env</code>. Conversion retains its complete backend locator as a credential occurrence.</li>
+        <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> containing the complete backend locator. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
         <li><strong>Judge.</strong> The judge receives C1 and a pinned content reader. Assume it returns <code>JudgmentResult(verdict="VALID", reasoning=…)</code>. Orchestration saves this result to the latest <code>credentials.json</code>.</li>
         <li><strong>Extract.</strong> Reuse <code>app.env</code> bytes if judgment already read them; otherwise read through the same session. Retain the file under C1’s evidence directory and save <code>ExtractionResult(status="RETAINED", output_path=…, size=…, sha256=…)</code>. Close the session and discard its scratch.</li>
-        <li><strong>Next inventory, next scan.</strong> A new child manifest M2 appends a target and supersedes M1; both remain resolvable. If C1 appears at another path in M2, append its occurrence without discarding M1/F1 or changing the first evidence location. Reuse historical evidence only after integrity verification. Returning to M1 later reuses M1’s target and execution result.</li>
+        <li><strong>Next inventory, next scan.</strong> A new child manifest M2 appends a target and supersedes M1; both remain available to the backend. If C1 appears at another locator in M2, append its occurrence without discarding M1 or changing the first evidence location. Reuse historical evidence only after integrity verification.</li>
       </ol>
     </div>
   </section>
 
   <footer>
     <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>orch/models.py</code>, <code>common/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code> and <code>orch/credentials.py</code>.</p>
-    <p>Companion repository documents: <code>doc/architecture.md</code>, <code>doc/interfaces.md</code>, <code>doc/ports.md</code>, <code>doc/end-to-end.md</code>. This HTML is intentionally self-contained and readable when copied outside the repository. Current document schemas: inventory 7 · report 2 · credentials 7.</p>
+    <p>Supporting repository documents: <code>doc/architecture.md</code>, <code>doc/interfaces.md</code>, and <code>doc/ports.md</code>. This HTML is the authoritative workflow/model guide and is intentionally self-contained and readable when copied outside the repository. Current document schemas: inventory 7 · report 2 · credentials 8.</p>
   </footer>
 </main>
 </body>

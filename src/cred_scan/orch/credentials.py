@@ -39,18 +39,6 @@ def _merge_occurrences(
     discovered: tuple[CredentialOccurrence, ...],
 ) -> tuple[CredentialOccurrence, ...]:
     merged: dict[str, CredentialOccurrence] = {}
-    # Fold every historical entry first, including several for the same target.
     for occurrence in (*existing, *discovered):
-        prior = merged.get(occurrence.target_id)
-        locations = list(prior.locations) if prior is not None else []
-        for location in occurrence.locations:
-            if location not in locations:
-                locations.append(location)
-        finding_ids = list(prior.finding_ids) if prior is not None else []
-        for finding_id in occurrence.finding_ids:
-            if finding_id not in finding_ids:
-                finding_ids.append(finding_id)
-        merged[occurrence.target_id] = occurrence.model_copy(
-            update={"locations": tuple(locations), "finding_ids": tuple(finding_ids)}
-        )
+        merged.setdefault(occurrence.locator, occurrence)
     return tuple(merged.values())

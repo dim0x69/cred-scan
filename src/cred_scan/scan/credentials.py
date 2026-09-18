@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 from pathspec import PathSpec
 
-from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory
+from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.exclusions import match_credential_exclusion
 from cred_scan.scan.models import Credential, CredentialsDocument, ExclusionPolicy, TitusReport
@@ -109,14 +109,6 @@ def _path_spec(policy: ExclusionPolicy) -> PathSpec:
     return PathSpec.from_lines("gitwildmatch", policy.path_patterns)
 
 
-def _explicit_target_id(value: dict[str, Any]) -> str | None:
-    for key in ("target_id", "TargetID", "targetId", "target"):
-        target_id = value.get(key)
-        if isinstance(target_id, str) and target_id:
-            return target_id
-    return None
-
-
 def report_from_export(
     raw_report: list[dict[str, Any]],
     inventory: ScanBoundaryInventory,
@@ -162,47 +154,26 @@ async def deduplicate_report(
             item["credential"] = value
         matches = finding.get("Matches", [])
         matches = matches if isinstance(matches, list) else []
-        by_target: dict[str, list[ContentLocation]] = {}
         for match in matches:
             if not isinstance(match, dict) or not match.get("file_path"):
                 continue
             raw_path = str(match["file_path"])
             try:
-                resolved = await resolver.resolve_location(
-                    raw_path,
-                    target_id=_explicit_target_id(match) or _explicit_target_id(finding),
-                )
+                resolved = await resolver.resolve_location(raw_path)
             except Exception as error:
                 finding_id = str(finding.get("ID", "<unknown>"))
                 conversion_errors.append(
-                    f"finding {finding_id} location unavailable: {type(error).__name__}: {error}"
+                    f"finding {finding_id} location unavailable: "
+                    f"{type(error).__name__}: {error}"
                 )
                 continue
             if spec.match_file(resolved.source_path):
                 continue
-            by_target.setdefault(resolved.target_id, []).append(resolved)
-        finding_ids = [str(finding["ID"])] if finding.get("ID") is not None else []
-        for target_id, resolved_matches in by_target.items():
-            locations = tuple(resolved.model_dump() for resolved in resolved_matches)
-            occurrence = {
-                "target_id": target_id,
-                "locations": locations,
-                "finding_ids": finding_ids,
-            }
-            existing = next(
-                (
-                    old
-                    for old in item["occurrences"]
-                    if old["target_id"] == target_id and old["locations"] == locations
-                ),
-                None,
-            )
-            if existing is None:
-                item["occurrences"].append(occurrence)
-            else:
-                existing["finding_ids"] = sorted(
-                    set(existing["finding_ids"]) | set(finding_ids)
-                )
+            if not any(
+                occurrence["locator"] == resolved.locator
+                for occurrence in item["occurrences"]
+            ):
+                item["occurrences"].append({"locator": resolved.locator})
 
     active: dict[str, Credential] = {}
     for credential_id, raw in grouped.items():

@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import aiofiles
 
-from cred_scan.scan.models import Credential, CredentialLocation, ExtractionResult
+from cred_scan.scan.models import ExtractionResult
 
 
 def evidence_path(boundary_dir: Path, credential_id: str, filename: str) -> Path:
@@ -42,12 +42,10 @@ def evidence_matches(
 
 
 async def retain_first_evidence(
-    credential: Credential,
-    location: CredentialLocation,
     content: bytes,
     destination: Path,
 ) -> tuple[Path, int, str]:
-    """Write the first resolved occurrence for a VALID credential.
+    """Write bytes for a VALID credential's first occurrence.
 
     Content retrieval belongs to the caller-owned read session. This helper owns
     only evidence bytes, atomic replacement, and the resulting integrity data.

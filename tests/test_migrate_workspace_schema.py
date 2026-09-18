@@ -91,11 +91,12 @@ def test_workspace_migration_converts_typed_provenance(
     assert json.loads(credentials.read_text())["schema_version"] == version
     assert migrate_workspace(tmp_path, apply=True) == 1
     migrated = json.loads(credentials.read_text())
-    location = migrated["credentials"]["credential"]["occurrences"][0]["locations"][0]
-    assert migrated["schema_version"] == 7
-    assert location["target_id"] == repository_inventory.targets[0].id
-    assert location["locator"].startswith("docker://")
-    assert "provenance" not in location
+    occurrence = migrated["credentials"]["credential"]["occurrences"][0]
+    assert migrated["schema_version"] == 8
+    assert occurrence["locator"].startswith("docker://")
+    assert "target_id" not in occurrence
+    assert "locations" not in occurrence
+    assert "provenance" not in occurrence
     assert ScanBoundaryInventory.model_validate(_inventory(repository_inventory))
 
 
@@ -160,7 +161,7 @@ def test_migration_allows_inventory_only_boundary(tmp_path, repository_inventory
     assert migrate_workspace(tmp_path) == 1
     assert migrate_workspace(tmp_path, apply=True) == 1
     assert migrate_workspace(tmp_path) == 0
-    assert json.loads((scanned / "credentials.json").read_text())["schema_version"] == 7
+    assert json.loads((scanned / "credentials.json").read_text())["schema_version"] == 8
     assert (new / "inventory.json").read_bytes() == inventory_bytes
     assert sorted(path.name for path in new.iterdir()) == ["inventory.json"]
 
@@ -245,14 +246,13 @@ def test_migration_removes_fingerprint_preserving_evidence_and_history(
     assert migrate_workspace(tmp_path, apply=True) == 1
     migrated = CredentialsDocument.model_validate_json(credentials_path.read_text())
     saved = migrated.credentials["credential"]
-    assert migrated.schema_version == 7
+    assert migrated.schema_version == 8
     assert saved.extraction.model_dump(mode="json") == {
         key: value for key, value in extraction.items() if key != "source_fingerprint"
     }
     assert saved.judgment.model_dump(mode="json") == candidate["judgment"]
     assert saved.credential == candidate["credential"]
-    assert saved.occurrences[0].finding_ids == tuple(candidate["occurrences"][0]["finding_ids"])
-    assert len(saved.occurrences[0].locations) == (2 if append_observations else 1)
+    assert len(saved.occurrences) == (2 if append_observations else 1)
     assert all(path.read_bytes() == content for path, content in unchanged.items())
     after = credentials_path.read_bytes()
     assert migrate_workspace(tmp_path, apply=True) == 0
@@ -274,12 +274,12 @@ def test_migration_handles_mixed_versions_without_rewriting_current(
         _seed_boundary(tmp_path, f"schema-{version}", repository_inventory, payload)
     current = tmp_path / "schema-7" / "credentials.json"
     unchanged = current.read_bytes()
-    assert migrate_workspace(tmp_path) == 2
-    assert migrate_workspace(tmp_path, apply=True) == 2
-    assert current.read_bytes() == unchanged
+    assert migrate_workspace(tmp_path) == 3
+    assert migrate_workspace(tmp_path, apply=True) == 3
+    assert current.read_bytes() != unchanged
     assert migrate_workspace(tmp_path, apply=True) == 0
     for path in tmp_path.rglob("credentials.json"):
-        assert CredentialsDocument.model_validate_json(path.read_text()).schema_version == 7
+        assert CredentialsDocument.model_validate_json(path.read_text()).schema_version == 8
 
 
 def test_current_schema_with_removed_field_fails_before_any_writes(
@@ -289,7 +289,7 @@ def test_current_schema_with_removed_field_fails_before_any_writes(
         tmp_path, "a-valid", repository_inventory, _old_credentials(repository_inventory, 6)
     )
     invalid = _old_credentials(repository_inventory, 6)
-    invalid["schema_version"] = 7
+    invalid["schema_version"] = 8
     invalid["credentials"]["credential"]["extraction"] = {
         "status": "ERROR", "error": "failure", "source_fingerprint": "obsolete"
     }
