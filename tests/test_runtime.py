@@ -5,8 +5,7 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from cred_scan.backend.adapters.artifactory.docker import parse_provenance
-from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory
+from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.models import WorkspaceConfig
 from cred_scan.common.workspace import Workspace
@@ -54,16 +53,15 @@ def make_boundary(tmp_path: Path, inventory: ScanBoundaryInventory, findings=())
     async def resolve(raw_path: str, *, target_id=None):
         source_path = raw_path.split("sha256:layer:", 1)[-1]
         resolved_target_id = target_id or inventory.targets[0].id
-        return ResolvedProvenance(
+        return ContentLocation(
             target_id=resolved_target_id,
-            provenance=parse_provenance(raw_path).model_copy(
-                update={"target_id": resolved_target_id}
-            ),
+            locator=raw_path,
             source_path=source_path,
             filename=source_path.rsplit("/", 1)[-1],
         )
 
-    reader.resolve_provenance.side_effect = resolve
+    reader.resolve_location.side_effect = resolve
+    reader.read.return_value = b"SYNTHETIC_VALUE"
     backend.content_reader.return_value = reader
     judge = create_autospec(FindingJudge, instance=True)
     boundary = ReportBoundary(inventory, workspace, backend=backend)
@@ -203,16 +201,23 @@ def test_combined_judgment_extracts_with_live_reader_without_republishing(
     monkeypatch.setattr(runtime, "merge_scan", publication)
 
     reader = create_autospec(ContentReader, instance=True)
+    content_bytes = b"SYNTHETIC_VALUE\x00\xff"
+    sessions = []
 
-    async def extract_file(_provenance, destination):
+    async def read(_location):
         reader.aclose.assert_not_awaited()
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"SYNTHETIC_VALUE")
-        return destination
+        return content_bytes
 
-    reader.extract_file.side_effect = extract_file
+    async def judge_with_content(candidate, content):
+        sessions.append(content)
+        location = candidate.occurrences[0].locations[0]
+        assert await content.read(location) == content_bytes
+        assert await content.read(location.model_copy()) == content_bytes
+        return JudgmentResult(verdict="VALID", reasoning="example")
+
+    reader.read.side_effect = read
     backend.content_reader.return_value = reader
-    judge.judge.return_value = JudgmentResult(verdict="VALID", reasoning="example")
+    judge.judge.side_effect = judge_with_content
 
     count = asyncio.run(boundary.judge(document, judge, extract_valid=True))
 
@@ -223,10 +228,16 @@ def test_combined_judgment_extracts_with_live_reader_without_republishing(
     assert candidate.judgment.verdict == "VALID"
     assert candidate.extraction is not None
     assert candidate.extraction.status == "RETAINED"
+    assert candidate.extraction.size == len(content_bytes)
+    destination = boundary.paths.boundary_dir / candidate.extraction.output_path
+    assert destination.read_bytes() == content_bytes
     publication.assert_not_called()
-    judge.judge.assert_awaited_once_with(credential, reader)
-    reader.extract_file.assert_awaited_once()
+    judge.judge.assert_awaited_once()
+    reader.read.assert_awaited_once_with(credential.occurrences[0].locations[0])
     reader.aclose.assert_awaited_once()
+    assert not sessions[0]._cache
+    with pytest.raises(RuntimeError, match="closed"):
+        asyncio.run(sessions[0].read(credential.occurrences[0].locations[0]))
 
 
 def test_combined_evidence_failure_is_retryable_without_rejudging(
@@ -245,15 +256,13 @@ def test_combined_evidence_failure_is_retryable_without_rejudging(
     readers = [create_autospec(ContentReader, instance=True) for _ in range(2)]
     for index, reader in enumerate(readers):
 
-        async def extract_file(_provenance, destination, reader=reader, index=index):
+        async def read(_location, reader=reader, index=index):
             reader.aclose.assert_not_awaited()
             if index == 0:
                 raise OSError("temporary evidence failure")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(b"SYNTHETIC_VALUE")
-            return destination
+            return b"SYNTHETIC_VALUE"
 
-        reader.extract_file.side_effect = extract_file
+        reader.read.side_effect = read
     backend.content_reader.side_effect = readers
     judge.judge.return_value = JudgmentResult(verdict="VALID", reasoning="example")
 
@@ -276,7 +285,7 @@ def test_combined_evidence_failure_is_retryable_without_rejudging(
     )
     judge.judge.assert_awaited_once()
     for reader in readers:
-        reader.extract_file.assert_awaited_once()
+        reader.read.assert_awaited_once()
         reader.aclose.assert_awaited_once()
 
 
@@ -424,13 +433,11 @@ def test_combined_processing_handles_existing_valid_and_reuses_retained_evidence
     readers = [create_autospec(ContentReader, instance=True) for _ in range(2)]
     for reader in readers:
 
-        async def extract_file(_provenance, destination, reader=reader):
+        async def read(_location, reader=reader):
             reader.aclose.assert_not_awaited()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(b"SYNTHETIC_VALUE\nSECOND_SYNTHETIC_VALUE")
-            return destination
+            return b"SYNTHETIC_VALUE\nSECOND_SYNTHETIC_VALUE"
 
-        reader.extract_file.side_effect = extract_file
+        reader.read.side_effect = read
     backend.content_reader.reset_mock()
     backend.content_reader.side_effect = readers
     judge.judge.return_value = JudgmentResult(verdict="VALID", reasoning="newly judged")
@@ -442,9 +449,9 @@ def test_combined_processing_handles_existing_valid_and_reuses_retained_evidence
         assert current.extraction is not None
         assert current.extraction.status == "RETAINED"
     assert saved.credentials[existing.credential_id].judgment == existing.judgment
-    judge.judge.assert_awaited_once_with(credential, readers[0])
+    judge.judge.assert_awaited_once()
     for reader in readers:
-        reader.extract_file.assert_awaited_once()
+        reader.read.assert_awaited_once()
         reader.aclose.assert_awaited_once()
 
     assert asyncio.run(boundary.judge(saved, judge, extract_valid=True)) == 0
@@ -468,12 +475,7 @@ def test_evidence_recovery_reports_integrity_failure_without_overwriting_history
     )
     reader = create_autospec(ContentReader, instance=True)
 
-    async def extract_file(_provenance, destination):
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"verified evidence")
-        return destination
-
-    reader.extract_file.side_effect = extract_file
+    reader.read.return_value = b"verified evidence"
     backend.content_reader.return_value = reader
     judge.judge.return_value = JudgmentResult(verdict="VALID")
     asyncio.run(
@@ -508,7 +510,7 @@ def test_evidence_recovery_reports_integrity_failure_without_overwriting_history
             else boundary.extract(document)
         )
     assert backend.content_reader.call_count == int(rejudge)
-    reader.extract_file.assert_not_awaited()  # Reset above; no new extraction.
+    reader.read.assert_not_awaited()  # No new extraction after integrity failure.
     assert boundary.paths.credentials.read_bytes() == original_document
     if damage == "missing":
         assert not evidence.exists()
@@ -579,12 +581,7 @@ def test_lifecycle_does_not_recreate_missing_persisted_state(
         )
     reader = create_autospec(ContentReader, instance=True)
 
-    async def extract_file(_provenance, destination):
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"synthetic evidence")
-        return destination
-
-    reader.extract_file.side_effect = extract_file
+    reader.read.return_value = b"synthetic evidence"
     backend.content_reader.return_value = reader
     judge.judge.return_value = JudgmentResult(verdict="VALID")
     with pytest.raises(ValueError, match="without|inactive credential"):
@@ -652,7 +649,7 @@ def test_judgment_error_boundary_keeps_fatal_failures_visible(
     current = saved.credentials[credential.credential_id]
     assert current.judgment.verdict == ("PENDING" if fatal else "ERROR")
     assert current.extraction is None
-    reader.extract_file.assert_not_awaited()
+    reader.read.assert_not_awaited()
     assert reader.aclose.await_count == int(failure == "judge")
 
 

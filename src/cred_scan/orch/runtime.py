@@ -8,13 +8,20 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
+from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.proto import WorkspaceProtocol
 from cred_scan.common.workspace import Workspace, scratch_dir
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
-from cred_scan.judge.evidence import evidence_matches, evidence_path, retain_first_evidence
+from cred_scan.judge.evidence import (
+    evidence_matches,
+    evidence_path,
+    retain_first_evidence,
+)
 from cred_scan.judge.proto import FatalJudgeError, FindingJudge
+from cred_scan.orch.credentials import merge_scan, with_extraction, with_judgment
+from cred_scan.orch.inventory import build_backend, run_inventory
+from cred_scan.orch.models import AppConfig
 from cred_scan.scan.credentials import deduplicate_report
 from cred_scan.scan.exclusions import load_exclusions
 from cred_scan.scan.models import (
@@ -24,18 +31,59 @@ from cred_scan.scan.models import (
     ExtractionResult,
     JudgmentResult,
     TitusReport,
-    credential_source_fingerprint,
 )
 from cred_scan.scan.proto import CredentialScanner
 from cred_scan.scan.titus import TitusCliScanner
 
-from cred_scan.orch.credentials import merge_scan, with_extraction, with_judgment
-from cred_scan.orch.inventory import build_backend, run_inventory
-from cred_scan.orch.models import AppConfig
-
 LOGGER = logging.getLogger(__name__)
 JUDGEABLE_VERDICTS = frozenset({"PENDING", "ERROR"})
 EVIDENCE_VERDICTS = frozenset({"VALID"})
+
+
+class ReadSession:
+    """Reuse bytes for one credential's judgment and immediate evidence only."""
+
+    def __init__(self, reader: ContentReader) -> None:
+        self.reader = reader
+        self._cache: dict[tuple[str, str, str, str], bytes] = {}
+        self._closed = False
+
+    @property
+    def boundary_id(self) -> str:
+        explicit = getattr(self.reader, "boundary_id", None)
+        if isinstance(explicit, str):
+            return explicit
+        boundary = getattr(self.reader, "boundary", None)
+        if boundary is not None and isinstance(boundary.id, str):
+            return boundary.id
+        raise AttributeError("backend reader does not expose a boundary ID")
+
+    async def resolve_location(
+        self, raw_path: str, *, target_id: str | None = None
+    ) -> ContentLocation:
+        return await self.reader.resolve_location(raw_path, target_id=target_id)
+
+    async def read(self, location: ContentLocation) -> bytes:
+        if self._closed:
+            raise RuntimeError("content session is closed")
+        key = (
+            location.target_id,
+            location.locator,
+            location.source_path,
+            location.filename,
+        )
+        cached = self._cache.get(key)
+        if cached is None:
+            cached = await self.reader.read(location)
+            self._cache[key] = cached
+        return cached
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._cache.clear()
+        await self.reader.aclose()
 
 
 class ReportBoundary:
@@ -203,7 +251,8 @@ class ReportBoundary:
                 await resolver.aclose()
         try:
             document = merge_scan(
-                self.workspace.read(self.paths.credentials, CredentialsDocument), document
+                self.workspace.read(self.paths.credentials, CredentialsDocument),
+                document,
             )
             self.workspace.write(self.paths.credentials, document, CredentialsDocument)
         except Exception:
@@ -224,6 +273,7 @@ class ReportBoundary:
     def _validate_document_targets(
         self, document: CredentialsDocument
     ) -> dict[str, ScanTarget]:
+        """Validate only references that cross the document/inventory boundary."""
         if document.boundary_id != self.boundary_id:
             raise ValueError("credentials document belongs to another boundary")
         targets = {target.id: target for target in self.inventory.targets}
@@ -253,16 +303,17 @@ class ReportBoundary:
         self,
         credential: Credential,
         targets: dict[str, ScanTarget],
-    ) -> AsyncIterator[ContentReader]:
-        """Keep one boundary reader alive for judgment or extraction."""
+    ) -> AsyncIterator[ReadSession]:
+        """Keep one byte-reuse session alive for judgment or extraction."""
         reader = self.backend.content_reader(
             self.inventory.boundary,
             self._targets_for_credential(credential, targets),
         )
+        session = ReadSession(reader)
         try:
-            yield reader
+            yield session
         finally:
-            await reader.aclose()
+            await session.aclose()
 
     @asynccontextmanager
     async def _judgment_session(
@@ -270,13 +321,15 @@ class ReportBoundary:
         credential: Credential,
         targets: dict[str, ScanTarget],
         judge: FindingJudge,
-    ) -> AsyncIterator[tuple[JudgmentResult, ContentReader | None]]:
-        reader: ContentReader | None = None
+    ) -> AsyncIterator[tuple[JudgmentResult, ReadSession | None]]:
+        reader: ReadSession | None = None
         try:
             try:
-                reader = self.backend.content_reader(
-                    self.inventory.boundary,
-                    self._targets_for_credential(credential, targets),
+                reader = ReadSession(
+                    self.backend.content_reader(
+                        self.inventory.boundary,
+                        self._targets_for_credential(credential, targets),
+                    )
                 )
             except FatalJudgeError:
                 raise
@@ -303,16 +356,16 @@ class ReportBoundary:
                 await reader.aclose()
 
     async def _extract_with_reader(
-        self, credential: Credential, reader: ContentReader
+        self, credential: Credential, reader: ReadSession
     ) -> ExtractionResult:
-        source_fingerprint = credential_source_fingerprint(credential)
         location = credential.occurrences[0].locations[0]
         try:
             destination = evidence_path(
                 self.paths.boundary_dir, credential.credential_id, location.filename
             )
+            content = await reader.read(location)
             _, size, sha256 = await retain_first_evidence(
-                credential, location, reader, destination
+                credential, location, content, destination
             )
             output_path = destination.relative_to(self.paths.boundary_dir).as_posix()
             LOGGER.info(
@@ -323,7 +376,6 @@ class ReportBoundary:
             )
             return ExtractionResult(
                 status="RETAINED",
-                source_fingerprint=source_fingerprint,
                 output_path=output_path,
                 size=size,
                 sha256=sha256,
@@ -336,7 +388,6 @@ class ReportBoundary:
             )
             return ExtractionResult(
                 status="ERROR",
-                source_fingerprint=source_fingerprint,
                 error=str(error)[:500],
             )
 
@@ -344,7 +395,7 @@ class ReportBoundary:
         self,
         credential: Credential,
         targets: dict[str, ScanTarget],
-        reader: ContentReader | None = None,
+        reader: ReadSession | None = None,
     ) -> bool:
         """Reuse verified evidence or extract and checkpoint once; return newly retained."""
         if (
@@ -380,7 +431,6 @@ class ReportBoundary:
                 )
                 extraction = ExtractionResult(
                     status="ERROR",
-                    source_fingerprint=credential_source_fingerprint(credential),
                     error=str(error)[:500],
                 )
         LOGGER.info(
@@ -588,7 +638,9 @@ class LocalRuntime:
 
                 async def scan_worker() -> None:
                     for boundary in boundaries:
-                        LOGGER.info("starting boundary scan boundary=%s", boundary.boundary_id)
+                        LOGGER.info(
+                            "starting boundary scan boundary=%s", boundary.boundary_id
+                        )
                         document = await boundary.scan(
                             self._make_scanner(boundary), policy
                         )

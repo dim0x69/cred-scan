@@ -2,12 +2,11 @@ import asyncio
 from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock
 
-from cred_scan.backend.adapters.artifactory.docker import parse_provenance
 from cred_scan.backend.models import (
     ArtifactoryRepository,
     BackendConfig,
     DockerImageScanScope,
-    ResolvedProvenance,
+    ContentLocation,
     ScanBoundaryInventory,
     ScanTarget,
     target_id_for,
@@ -17,11 +16,9 @@ from cred_scan.scan.models import ExclusionPolicy, TitusReport
 
 
 def _resolved(target_id: str, raw_path: str, source_path: str, filename: str):
-    return ResolvedProvenance(
+    return ContentLocation(
         target_id=target_id,
-        provenance=parse_provenance(raw_path).model_copy(
-            update={"target_id": target_id}
-        ),
+        locator=raw_path,
         source_path=source_path,
         filename=filename,
     )
@@ -80,7 +77,7 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
         path_file="path-exclusions.list", path_patterns=("site-packages/",)
     )
     resolver = AsyncMock()
-    resolver.resolve_provenance.side_effect = [
+    resolver.resolve_location.side_effect = [
         _resolved(
             scan_target.id, raw_path, "etc/app:prod.env", "app:prod.env"
         ),
@@ -124,7 +121,7 @@ def test_dedup_omits_credential_when_all_locations_are_excluded() -> None:
         ),
     )
     resolver = AsyncMock()
-    resolver.resolve_provenance.return_value = _resolved(
+    resolver.resolve_location.return_value = _resolved(
         scan_target.id, raw_path, "vendor/secret.env", "secret.env"
     )
     policy = ExclusionPolicy(
@@ -160,7 +157,7 @@ def test_dedup_can_exclude_every_credential_and_return_empty_document() -> None:
         ),
     )
     resolver = AsyncMock()
-    resolver.resolve_provenance.side_effect = [
+    resolver.resolve_location.side_effect = [
         _resolved(
             scan_target.id,
             path,
@@ -176,3 +173,48 @@ def test_dedup_can_exclude_every_credential_and_return_empty_document() -> None:
     document = asyncio.run(deduplicate_report(report, repository, policy, resolver))
 
     assert document.credentials == {}
+
+
+def test_unavailable_locations_remain_raw_and_produce_diagnostics():
+    inventory, scan_target = target()
+    report = TitusReport(
+        boundary_id=inventory.boundary.id,
+        generated_at="now",
+        findings=(
+            {
+                "ID": "partly-available",
+                "RuleID": "np.github.1",
+                "Groups": ["c2VjcmV0"],
+                "Matches": [{"file_path": "missing"}, {"file_path": "available"}],
+            },
+            {
+                "ID": "unavailable-only",
+                "RuleID": "np.github.1",
+                "Groups": ["b3RoZXI="],
+                "Matches": [{"file_path": "ambiguous"}],
+            },
+        ),
+    )
+    original = report.model_dump_json()
+    resolver = AsyncMock()
+    resolver.resolve_location.side_effect = [
+        ValueError("unknown retained target"),
+        _resolved(scan_target.id, "available", "etc/app.env", "app.env"),
+        ValueError("ambiguous retained target"),
+    ]
+    document = asyncio.run(deduplicate_report(
+        report, inventory, ExclusionPolicy(path_file="paths.list"), resolver
+    ))
+    assert report.model_dump_json() == original
+    assert document.incomplete
+    assert len(document.credentials) == 1
+    credential = next(iter(document.credentials.values()))
+    assert credential.paths == ("available",)
+    occurrence = credential.occurrences[0]
+    assert occurrence.target_id == occurrence.locations[0].target_id == scan_target.id
+    assert occurrence.finding_ids == ("partly-available",)
+    assert len(document.errors) == 2
+    assert "partly-available" in document.errors[0]
+    assert "unavailable-only" in document.errors[1]
+    assert all("location unavailable" in error for error in document.errors)
+    assert resolver.resolve_location.await_count == 3

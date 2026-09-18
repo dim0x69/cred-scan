@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol
 
 from cred_scan.backend.models import (
-    ContentProvenance,
-    FileContent,
-    ResolvedProvenance,
+    ContentLocation,
     ScanBoundaryRef,
     ScanBoundaryInventory,
     ScanTarget,
@@ -46,24 +43,12 @@ class ContentReader(Protocol):
     leave detached workers accessing files that aclose removes.
     """
 
-    async def resolve_provenance(
+    async def resolve_location(
         self, raw_path: str, *, target_id: str | None = None
-    ) -> ResolvedProvenance: ...
+    ) -> ContentLocation: ...
 
-    async def read_file(self, provenance: ContentProvenance) -> FileContent:
-        """Return the complete bytes of the exact pinned source file."""
-        ...
-
-    async def list_files(
-        self, provenance: ContentProvenance
-    ) -> tuple[ContentProvenance, ...]:
-        """Return typed locators accepted unchanged by ``read_file``."""
-        ...
-
-    async def extract_file(
-        self, provenance: ContentProvenance, destination: Path
-    ) -> Path:
-        """Write the complete exact source file to ``destination``."""
+    async def read(self, location: ContentLocation) -> bytes:
+        """Return complete exact bytes for one resolved pinned location."""
         ...
 
     async def aclose(self) -> None: ...

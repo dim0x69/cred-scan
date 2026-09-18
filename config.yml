@@ -19,7 +19,6 @@ judge:
   max_iterations: 10
   layer_tools:
     enabled: true
-    max_directory_entries: 100
 
 exclusions:
   paths: path-exclusions.list

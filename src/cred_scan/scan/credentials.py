@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 from pathspec import PathSpec
 
-from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory
+from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory
 from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.exclusions import match_credential_exclusion
 from cred_scan.scan.models import Credential, CredentialsDocument, ExclusionPolicy, TitusReport
@@ -143,7 +143,7 @@ async def deduplicate_report(
     if report.boundary_id != inventory.boundary.id:
         raise ValueError(f"report boundary is not in inventory: {report.boundary_id}")
     spec = _path_spec(policy)
-    target_ids = {target.id for target in inventory.targets}
+    conversion_errors: list[str] = []
     grouped: dict[str, dict[str, Any]] = {}
     for finding in report.findings:
         rule_id = str(finding.get("RuleID", "unknown"))
@@ -162,33 +162,28 @@ async def deduplicate_report(
             item["credential"] = value
         matches = finding.get("Matches", [])
         matches = matches if isinstance(matches, list) else []
-        by_target: dict[str, list[ResolvedProvenance]] = {}
+        by_target: dict[str, list[ContentLocation]] = {}
         for match in matches:
             if not isinstance(match, dict) or not match.get("file_path"):
                 continue
             raw_path = str(match["file_path"])
-            resolved = await resolver.resolve_provenance(
-                raw_path,
-                target_id=_explicit_target_id(match) or _explicit_target_id(finding),
-            )
-            if resolved.target_id not in target_ids:
-                raise ValueError(
-                    "resolved provenance references an unknown target: "
-                    f"{resolved.target_id}"
+            try:
+                resolved = await resolver.resolve_location(
+                    raw_path,
+                    target_id=_explicit_target_id(match) or _explicit_target_id(finding),
                 )
+            except Exception as error:
+                finding_id = str(finding.get("ID", "<unknown>"))
+                conversion_errors.append(
+                    f"finding {finding_id} location unavailable: {type(error).__name__}: {error}"
+                )
+                continue
             if spec.match_file(resolved.source_path):
                 continue
             by_target.setdefault(resolved.target_id, []).append(resolved)
         finding_ids = [str(finding["ID"])] if finding.get("ID") is not None else []
         for target_id, resolved_matches in by_target.items():
-            locations = tuple(
-                {
-                    "provenance": resolved.provenance,
-                    "source_path": resolved.source_path,
-                    "filename": resolved.filename,
-                }
-                for resolved in resolved_matches
-            )
+            locations = tuple(resolved.model_dump() for resolved in resolved_matches)
             occurrence = {
                 "target_id": target_id,
                 "locations": locations,
@@ -223,7 +218,7 @@ async def deduplicate_report(
     return CredentialsDocument(
         boundary_id=inventory.boundary.id,
         report_generated_at=report.generated_at,
-        incomplete=report.incomplete,
+        incomplete=report.incomplete or bool(conversion_errors),
         credentials=active,
-        errors=report.errors + inventory.errors,
+        errors=tuple(report.errors) + inventory.errors + tuple(conversion_errors),
     )

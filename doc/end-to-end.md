@@ -110,8 +110,9 @@ Each boundary owns:
 
 `inventory.json` retains current/superseded pins and scope/boundary lifecycle
 state in schema **7**, validating `target.id == target_id_for(target.scope)`.
-`report.json` uses schema **2** and `credentials.json` schema **5**; both record
-`boundary_id`, not a logical scope ID.
+`report.json` uses schema **2** and `credentials.json` schema **7**; both record
+`boundary_id`, not a logical scope ID. Credential locations carry the existing
+`ScanTarget.id`, an opaque backend locator, `source_path`, and safe `filename`.
 
 Older field names and schema versions are rejected at runtime. To reuse the
 previous workspace, stop the scanner, back it up, and preflight the operator
@@ -122,12 +123,18 @@ uv run python -m cred_scan.tools.migrate_workspace_schema workspace --dry-run
 uv run python -m cred_scan.tools.migrate_workspace_schema workspace --apply
 ```
 
-The migration handles inventory 5/report 1/credentials 3/4, including the Docker
-child-manifest target-ID correction, same-child alias reconciliation, occurrence
-references, and extraction fingerprints. It preserves boundary IDs, raw
-findings, evidence bytes, and the Titus datastore; `--apply` is required to
-write. Report wrapper keys change, but raw findings and evidence bytes are
-preserved.
+The migration upgrades credentials schema 5 or 6 to schema 7 after
+inventory/report preflight. Schema-5 typed provenance becomes source-neutral
+locations; both old versions lose the unused extraction `source_fingerprint`.
+It preserves target IDs, observations, judgments, all other extraction metadata,
+raw findings, evidence bytes, and the Titus datastore; `--apply` is required
+to write. A newly inventoried repository with no scan artifacts needs no report
+and does not block migration of other repositories. Existing reports still
+undergo preflight; a missing report alongside credentials, a datastore, or
+evidence is an error. Missing historical targets must be restored from
+authoritative prior inventory, scan state, or backup before enforcing the new
+contract. Keep a backup and the repair's source metadata; do not infer a target
+from its report locator alone.
 
 `titus.ds` is the one persistent Titus datastore for the boundary. It survives
 between manual scans and is shared by all target pins in that boundary.
@@ -204,15 +211,18 @@ instead of silently losing older findings.
 ## 5. Append credential observations
 
 Report conversion resolves every finding location through the backend-bound
-content reader. A credential occurrence contains the immutable target ID (the
-following is schematic; actual IDs are constructed with `target_id_for(scope)`):
+reader. The backend returns one source-neutral location containing the existing
+`ScanTarget.id`, an opaque locator, and display metadata. A credential occurrence
+contains the immutable target ID (the following is schematic; actual IDs are
+constructed with `target_id_for(scope)`):
 
 ```json
 {
   "target_id": "payments/api@manifest-m1",
   "locations": [
     {
-      "provenance": "...manifest-m1/layer-l1/app.env",
+      "target_id": "payments/api@manifest-m1",
+      "locator": "docker://registry/repository/payments/api@sha256:manifest-m1/sha256:layer-l1:app.env",
       "source_path": "app.env",
       "filename": "app.env"
     }
@@ -221,8 +231,15 @@ following is schematic; actual IDs are constructed with `target_id_for(scope)`):
 }
 ```
 
+Pydantic requires the location target ID to match the occurrence target ID.
+Before judgment or evidence access, report-boundary orchestration checks the
+credential document's boundary and occurrence target IDs against the retained
+inventory; it does not repeat that model-level location check.
+
 Orchestration reads the latest credentials checkpoint, calls
 `cred_scan.orch.credentials.merge_scan(previous, candidates)`, and writes the merged document.
+An unavailable raw location remains in the raw Titus report and contributes a
+credentials diagnostic, but does not create an unpinned judge candidate.
 Only a successful write permits handoff to judgment. A conversion failure keeps
 the newer raw report and the older credential checkpoint for retry. The worker and
 serial consumer use this sequence (schematic; services are supplied per phase):
@@ -279,9 +296,17 @@ replacing the artifact or its expected metadata. Restore bytes matching that
 metadata before retrying; automatic repair is not part of this workflow.
 
 Orchestration applies `with_judgment` to the latest checkpoint and writes it before
-extracting, then persists `with_extraction` separately. Readers remain alive through
-judgment and immediate VALID extraction. An evidence error leaves a saved VALID
-judgment and retryable extraction ERROR, without requiring another LLM judgment.
+extracting, then persists `with_extraction` separately. One Python-owned content
+session remains alive through judgment and immediate VALID extraction, so evidence
+uses the exact bytes already retrieved for judgment. The cache belongs to this
+one credential only, keys all four location fields, and is cleared on session
+close; it is not an image or cross-credential cache. Evidence writing and hashing
+are centralized in Python. Extraction records contain only status, output path,
+size, SHA-256, and error; there is no source-set fingerprint to compute or compare.
+Migration removes that unused field without changing these integrity values,
+even when later observations have been appended.
+An evidence error leaves a saved VALID judgment and retryable extraction ERROR,
+without requiring another LLM judgment.
 Every update preserves other credentials' already-saved results, rather than
 writing a stale queued document over them. The separate `judge` and `extract` commands
 remain available for recovery but are not required for normal use. They call

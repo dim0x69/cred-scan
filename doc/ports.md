@@ -103,7 +103,7 @@ evidence. `TitusCliScanner.export_report` converts raw Titus JSON and returns th
 typed `TitusReport` required by the port; orchestration does not accept a second
 raw-export representation or repeat that conversion.
 
-## Provenance
+## Content locations
 
 `BackendAdapter.content_reader(boundary: ScanBoundaryRef,
 targets: tuple[ScanTarget, ...])` creates a reader bound to one report boundary
@@ -111,29 +111,31 @@ and a nonempty set of its retained pins, including superseded targets. The
 boundary parameter must not be a logical `ScanScope`.
 
 ```python
-ContentReader.resolve_provenance(
+ContentReader.resolve_location(
     raw_path: str,
     *,
     target_id: str | None = None,
-) -> ResolvedProvenance
+) -> ContentLocation
 
-ContentReader.read_file(provenance: ContentProvenance) -> FileContent
-ContentReader.list_files(
-    provenance: ContentProvenance,
-) -> tuple[ContentProvenance, ...]
-ContentReader.extract_file(
-    provenance: ContentProvenance,
-    destination: Path,
-) -> Path
+ContentReader.read(location: ContentLocation) -> bytes
+ContentReader.aclose() -> None
 ```
 
-The resolver must return a target ID belonging to a retained immutable target
-in the current boundary and a typed provenance object. Historical report
-locations must therefore resolve to superseded targets as well as current
- targets. Docker provenance distinguishes layer files from manifest/config
-metadata. Complete file bytes are returned and written for evidence. The LLM
-judge uses session-local location IDs which the orchestration layer resolves to
-these typed values before invoking the reader.
+The resolver returns a source-neutral location whose target ID belongs to a
+retained immutable target in the current boundary. Historical report locations
+may therefore resolve to superseded targets as well as current targets. The
+opaque locator is interpreted only by the backend. Docker distinguishes layer
+files from manifest/config metadata internally; Git and package adapters provide
+equivalent backend-owned locator strings.
+
+`read()` returns complete exact bytes. It does not write evidence or expose text
+encoding. A Python content session caches bytes only for one credential's
+judgment and immediate evidence extraction, keyed by all location fields. It
+clears the cache and closes the reader on exit, including failed or cancelled
+judgment. There is no cross-credential or cross-run cache. Evidence helpers own
+writing and hashing. The LLM
+judge uses session-local location IDs which orchestration resolves to these
+source-neutral values before invoking the reader.
 
 `FindingJudge.judge(credential, content)` is awaited directly and must propagate
 cancellation and keep all reader use within its awaitable. Ordinary judgment/reader
@@ -184,18 +186,21 @@ expected metadata remain untouched; restore the verified artifact offline
 before retrying. No automatic evidence repair is performed.
 
 `evidence_path(boundary_dir, credential_id, filename)` resolves a plain safe filename
-under the encoded credential directory. Runtime passes that destination to
-`retain_first_evidence(credential, location, reader, destination)`, which requires
-VALID and returns `(path, size, sha256)`. Only credentials without retained evidence
-reach this extraction call. Metadata is stored separately in `credentials.json`.
+under the encoded credential directory. Runtime reads the location through the
+short-lived content session, then passes the raw bytes to
+`retain_first_evidence(credential, location, content, destination)`, which requires
+VALID, writes atomically, and returns `(path, size, sha256)`. Only credentials
+without retained evidence reach this extraction call. Metadata is stored
+separately in `credentials.json`.
 
 `ReportBoundary._ensure_evidence` is the one orchestration path for immediate and
-recovery extraction: verify RETAINED first; otherwise borrow the live judgment reader
-or open/close a fresh reader, extract, read the latest credentials, and checkpoint
-one extraction outcome. A borrowed reader is not closed by this helper. A matching
-artifact returns false (no new extraction); new RETAINED returns true. Ordinary
-retrieval failures persist ERROR. Integrity failures and checkpoint-write failures
-escape without replacing historical metadata.
+recovery extraction: verify RETAINED first; otherwise borrow the live judgment
+session or open/close a fresh session, read bytes, write evidence, read the latest
+credentials, and checkpoint one extraction outcome. A borrowed session is not
+closed by this helper. A matching artifact returns false (no new extraction);
+new RETAINED returns true. Ordinary retrieval failures persist ERROR. Integrity
+failures and checkpoint-write failures escape without replacing historical
+metadata.
 
 `cred_scan.common.workspace.scratch_dir(parent)` is the sole temporary-directory primitive.
 The caller owns the context through target attempts or the complete content-reader
@@ -214,20 +219,28 @@ failures into successful checkpoints.
 
 ## Persisted inventory precondition
 
-Runtime operations require inventory **7**, report **2**, and credential **5**
+Runtime operations require inventory **7**, report **2**, and credential **7**
 models. Inventory/target `boundary` is the report owner; target `scope` is the
 logical scope snapshot. Reports and credentials carry `boundary_id`.
 `Workspace.boundary(boundary_id)` returns `BoundaryPaths` with that unchanged
 report-boundary ID and directory encoding.
 
 Older keys/versions are rejected with no runtime aliases or automatic migration.
-The operator-only `cred_scan.tools.migrate_workspace_schema` utility performs the
-authorized offline upgrade from inventory 5/report 1/credentials 3/4, including
-Docker child-manifest reconciliation and dependent occurrence/fingerprint
-updates. It preflights all documents and writes only with `--apply`, without
-losing findings, evidence, or datastore files. The historical schema-2→3
-credential utility still validates/writes only its old formats; it does not
-upgrade to this runtime.
+The operator-only `cred_scan.tools.migrate_workspace_schema` utility performs an
+authorized offline upgrade from credentials 5 or 6 to 7 after inventory/report
+preflight. It converts schema-5 typed provenance to target-bearing opaque
+locators and removes the unused extraction `source_fingerprint` from both old
+versions. No source-fingerprint helper remains. All other extraction metadata,
+observations, judgments, findings, evidence, and datastore files are preserved.
+Evidence reuse still checks stored path, size, and SHA-256 before backend reads.
+Inventory-only boundaries are skipped after validating inventory;
+existing reports are validated even without credentials. Missing reports with
+credential, datastore, or evidence artifacts fail the complete preflight before
+any writes. The tool writes only with `--apply`. Missing historical targets must
+be restored from authoritative inventory, prior scan state, or backup before
+the new location contract is enforced.
+The historical schema-2→3 credential utility still validates/writes only its old
+formats; it does not upgrade to this runtime.
 
 ## Workspace persistence and operation ownership
 
@@ -252,8 +265,9 @@ boundaries; orchestration, not persistence, decides eligibility.
 Inventory orchestration reads/merges/writes `ScanBoundaryInventory`. ReportBoundary
 writes `TitusReport` before conversion and reads/transforms/writes
 `CredentialsDocument` afterward. It reads the latest credential checkpoint for each
-judgment/extraction update, rejects missing documents, and validates boundary/target
-references before content access. Paths come from `BoundaryPaths`, never a reader's
+judgment/extraction update, rejects missing documents, and validates the document
+boundary and occurrence target references before content access. Pydantic already
+validates location-to-occurrence target consistency. Paths come from `BoundaryPaths`, never a reader's
 untrusted locator. Direct read/modify/write callers must hold operation ownership;
 a per-write lock alone is not a transaction across the read and transformation.
 
@@ -281,8 +295,9 @@ It never reclaims a still-retryable failure within that invocation; retries with
 target retain the existing three-attempt policy. It writes the final typed report
 before converting/appending credentials and returns only after publication succeeds.
 
-`judge` validates document target references, attempts PENDING/ERROR credentials,
-and returns attempted judgment count. With `extract_valid=True`, it also ensures
+`judge` validates the document boundary and occurrence target references, attempts
+PENDING/ERROR credentials, and returns attempted judgment count. With
+`extract_valid=True`, it also ensures
 evidence for existing VALID credentials and newly VALID judgments while their
 readers are live; it does not change the returned count. `extract` validates the
 same references, processes only VALID credentials, and returns newly retained

@@ -11,7 +11,6 @@ from cred_scan.scan.models import (
     ExclusionPolicy,
     ExtractionResult,
     JudgmentResult,
-    credential_source_fingerprint,
 )
 
 
@@ -35,7 +34,6 @@ def retained_document(inventory, credential):
         credential.credential_id,
         ExtractionResult(
             status="RETAINED",
-            source_fingerprint=credential_source_fingerprint(credential),
             output_path="evidence/credential/app.env",
             size=17,
             sha256="a" * 64,
@@ -48,30 +46,6 @@ def test_credential_exclusion_matches_without_persisted_ledger():
         ExclusionPolicy(path_file="paths.list", credential_patterns=("SECRET",)),
         "SECRET_VALUE",
     ) == ("SECRET",)
-
-
-def test_source_fingerprint_includes_raw_provenance(credential):
-    occurrence = credential.occurrences[0]
-    location = occurrence.locations[0]
-    changed_location = location.model_copy(
-        update={
-            "provenance": location.provenance.model_copy(
-                update={"raw_path": location.provenance.raw_path.replace(
-                    "sha256:layer", "sha256:other"
-                )}
-            )
-        }
-    )
-    changed = credential.model_copy(
-        update={
-            "occurrences": (
-                occurrence.model_copy(update={"locations": (changed_location,)}),
-            )
-        }
-    )
-    assert credential_source_fingerprint(credential) != credential_source_fingerprint(
-        changed
-    )
 
 
 def test_credential_lifecycle_is_nested(repository_inventory, credential):
@@ -115,11 +89,7 @@ def test_non_valid_judgment_retains_historical_evidence(
         with_extraction(
             changed,
             credential.credential_id,
-            ExtractionResult(
-                status="ERROR",
-                source_fingerprint="new",
-                error="failure",
-            ),
+            ExtractionResult(status="ERROR", error="failure"),
         )
 
 
@@ -158,13 +128,7 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
             "locations": (
                 location.model_copy(
                     update={
-                        "provenance": location.provenance.model_copy(
-                            update={
-                                "raw_path": location.provenance.raw_path.replace(
-                                    "app.env", "b.env"
-                                )
-                            }
-                        ),
+                        "locator": location.locator.replace("app.env", "b.env"),
                         "source_path": "etc/b.env",
                         "filename": "b.env",
                     }
@@ -278,11 +242,7 @@ def test_lifecycle_rejects_unknown_credentials(repository_inventory, credential)
         with_extraction(
             document,
             "unknown",
-            ExtractionResult(
-                status="ERROR",
-                source_fingerprint="new",
-                error="failure",
-            ),
+            ExtractionResult(status="ERROR", error="failure"),
         )
 
 
@@ -301,3 +261,14 @@ def test_pending_judgment_and_missing_value_accept_candidate_state(
         published.credentials[credential.credential_id].credential
         == credential.credential
     )
+
+
+@pytest.mark.parametrize("status", ["RETAINED", "ERROR"])
+def test_extraction_metadata_has_no_source_fingerprint(status):
+    extraction = ExtractionResult(status=status)
+    payload = extraction.model_dump(mode="json")
+    assert set(payload) == {"status", "output_path", "size", "sha256", "error"}
+    assert "source_fingerprint" not in ExtractionResult.model_json_schema()["properties"]
+    assert ExtractionResult.model_validate(payload) == extraction
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ExtractionResult.model_validate({**payload, "source_fingerprint": "obsolete"})

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from cred_scan.backend.models import ContentProvenance
+from cred_scan.backend.models import ContentLocation
 
 
 class ExclusionFiles(BaseModel):
@@ -25,12 +23,10 @@ class ExclusionPolicy(BaseModel):
     credential_patterns: tuple[str, ...] = ()
 
 
-class CredentialLocation(BaseModel):
-    """One typed source location after backend-specific resolution."""
-
-    provenance: ContentProvenance
-    source_path: str
-    filename: str
+# Credential locations are the source-neutral backend locations persisted with
+# each occurrence. Keep the historical import name for internal callers while
+# using one model for resolution, judgment, evidence, and persistence.
+CredentialLocation = ContentLocation
 
 
 class CredentialOccurrence(BaseModel):
@@ -39,6 +35,12 @@ class CredentialOccurrence(BaseModel):
     target_id: str = Field(min_length=1)
     locations: tuple[CredentialLocation, ...] = Field(min_length=1)
     finding_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_location_targets(self) -> "CredentialOccurrence":
+        if any(location.target_id != self.target_id for location in self.locations):
+            raise ValueError("location target IDs must match the occurrence target")
+        return self
 
 
 class JudgmentResult(BaseModel):
@@ -49,8 +51,9 @@ class JudgmentResult(BaseModel):
 class ExtractionResult(BaseModel):
     """Evidence metadata; evidence bytes live outside credentials.json."""
 
+    model_config = ConfigDict(extra="forbid")
+
     status: Literal["RETAINED", "ERROR"]
-    source_fingerprint: str
     output_path: str | None = None
     size: int | None = Field(default=None, ge=0)
     sha256: str | None = None
@@ -70,7 +73,7 @@ class Credential(BaseModel):
     def paths(self) -> tuple[str, ...]:
         """Raw Titus paths retained for the source-aware content reader."""
         return tuple(
-            location.provenance.raw_path
+            location.locator
             for occurrence in self.occurrences
             for location in occurrence.locations
         )
@@ -90,25 +93,6 @@ class Credential(BaseModel):
         return self
 
 
-def credential_source_fingerprint(credential: Credential) -> str:
-    payload = [
-        {
-            "target_id": occurrence.target_id,
-            "locations": tuple(
-                {
-                    "provenance": location.provenance.raw_path,
-                    "source_path": location.source_path,
-                }
-                for location in occurrence.locations
-            ),
-        }
-        for occurrence in credential.occurrences
-    ]
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
 class TitusReport(BaseModel):
     """The complete final Titus export for one report boundary."""
 
@@ -123,7 +107,7 @@ class TitusReport(BaseModel):
 class CredentialsDocument(BaseModel):
     """The append-only ID-indexed credentials document for one boundary."""
 
-    schema_version: Literal[5] = 5
+    schema_version: Literal[7] = 7
     boundary_id: str
     report_generated_at: str
     incomplete: bool = False

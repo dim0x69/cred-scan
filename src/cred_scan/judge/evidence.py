@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import aiofiles
 
-from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.models import Credential, CredentialLocation, ExtractionResult
 
 
@@ -44,15 +44,26 @@ def evidence_matches(
 async def retain_first_evidence(
     credential: Credential,
     location: CredentialLocation,
-    tools: ContentReader,
+    content: bytes,
     destination: Path,
 ) -> tuple[Path, int, str]:
-    """Retain the first resolved occurrence for a VALID credential."""
+    """Write the first resolved occurrence for a VALID credential.
+
+    Content retrieval belongs to the caller-owned read session. This helper owns
+    only evidence bytes, atomic replacement, and the resulting integrity data.
+    """
     if credential.judgment.verdict != "VALID":
         raise ValueError("evidence retention requires a VALID judgment")
-    # Only invoked without retained evidence; never deletes an earlier artifact.
-    result = await tools.extract_file(location.provenance, destination)
-    async with aiofiles.open(destination, mode="rb") as stream:
-        content = await stream.read()
-    # credentials.json is the sole index; bytes remain outside the document.
-    return result, len(content), hashlib.sha256(content).hexdigest()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    try:
+        async with aiofiles.open(temporary, mode="wb") as stream:
+            await stream.write(content)
+            await stream.flush()
+        await asyncio.to_thread(temporary.replace, destination)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return destination, len(content), hashlib.sha256(content).hexdigest()

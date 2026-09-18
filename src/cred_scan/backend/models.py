@@ -3,23 +3,34 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryBackendConfig as ArtifactoryBackendConfig,
+)
+from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository as ArtifactoryRepository,
+)
+from cred_scan.backend.adapters.artifactory.models import (
     DockerImageScanScope as DockerImageScanScope,
 )
 from cred_scan.backend.base_models import (
     BackendConfig as BackendConfig,
+)
+from cred_scan.backend.base_models import (
     ScanBoundary as ScanBoundary,
+)
+from cred_scan.backend.base_models import (
     ScanScope as ScanScope,
+)
+from cred_scan.backend.base_models import (
     _pin_hash,
 )
 
 
+# H move to a GHES adapter.ghes module
 class GitOrganization(ScanBoundary):
     """A GHES organization containing Git repository targets."""
 
@@ -29,6 +40,7 @@ class GitOrganization(ScanBoundary):
 ScanBoundaryRef = ArtifactoryRepository | GitOrganization
 
 
+# H move to a adapters.artifactory.package module.
 class PackageScanScope(ScanScope):
     """Future package scan-scope shape."""
 
@@ -49,6 +61,7 @@ class PackageScanScope(ScanScope):
         return _pin_hash((self.uri, self.digest))
 
 
+# H move to a GHES adapter.ghes module
 class GitRepositoryScanScope(ScanScope):
     """A Git repository scan scope pinned to a commit."""
 
@@ -72,80 +85,18 @@ class GitRepositoryScanScope(ScanScope):
 ScanScopeRef = DockerImageScanScope | PackageScanScope | GitRepositoryScanScope
 
 
-class DockerLayerProvenance(BaseModel):
-    """A Titus location inside one immutable Docker filesystem layer."""
-
-    kind: Literal["docker-layer"] = "docker-layer"
-    raw_path: str
-    registry: str
-    repository: str
-    image: str
-    manifest: str
-    layer: str
-    path: str
-
-
-class DockerMetadataProvenance(BaseModel):
-    """A Titus location for an image manifest or config blob."""
-
-    kind: Literal["docker-manifest", "docker-config"]
-    raw_path: str
-    registry: str
-    repository: str
-    image: str
-    manifest: str
-    path: Literal["manifest.json", "config.json"]
-
-
-class GitFileProvenance(BaseModel):
-    """A future Git file location on one immutable commit."""
-
-    kind: Literal["git-file"] = "git-file"
-    raw_path: str
-    remote: str
-    commit: str
-    path: str
-
-
-class PackageFileProvenance(BaseModel):
-    """A future package-file location on one immutable artifact."""
-
-    kind: Literal["package-file"] = "package-file"
-    raw_path: str
-    uri: str
-    digest: str
-    path: str
-
-
-ContentProvenance = Annotated[
-    DockerLayerProvenance
-    | DockerMetadataProvenance
-    | GitFileProvenance
-    | PackageFileProvenance,
-    Field(discriminator="kind"),
-]
-
-
 def target_id_for(scope: ScanScope) -> str:
     """Return the stable ID for one immutable scan-scope pin."""
     return f"{scope.id}@{scope.pin_id}"
 
 
-class ResolvedProvenance(BaseModel):
-    """Backend-owned typed interpretation of one raw Titus location."""
+class ContentLocation(BaseModel):
+    """Source-neutral locator for one file in one immutable target."""
 
-    target_id: str
-    provenance: ContentProvenance
+    target_id: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
     source_path: str
     filename: str
-
-
-class FileContent(BaseModel):
-    """Complete file returned by a repository-bound reader."""
-
-    path: str
-    content: str
-    encoding: Literal["utf-8", "base64"]
 
 
 class ScanTargetResult(BaseModel):

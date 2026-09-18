@@ -1,10 +1,7 @@
 import asyncio
 import hashlib
-from unittest.mock import create_autospec
-
 import pytest
 
-from cred_scan.backend.proto import ContentReader
 from cred_scan.judge.evidence import evidence_matches, evidence_path, retain_first_evidence
 from cred_scan.scan.models import ExtractionResult, JudgmentResult
 
@@ -31,7 +28,6 @@ def test_evidence_integrity_checks_do_not_modify_artifacts_or_metadata(
     destination.write_bytes(content)
     metadata = ExtractionResult(
         status="RETAINED",
-        source_fingerprint="first-source",
         output_path=destination.relative_to(boundary).as_posix(),
         size=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
@@ -70,15 +66,8 @@ def test_new_filename_does_not_delete_old_evidence(tmp_path, credential):
     old.write_bytes(b"historical artifact")
     renamed = location.model_copy(update={"filename": "renamed.env"})
     destination = evidence_path(tmp_path, credential.credential_id, renamed.filename)
-    reader = create_autospec(ContentReader, instance=True)
-
-    async def extract(_path, output):
-        output.write_bytes(b"new evidence")
-        return output
-
-    reader.extract_file.side_effect = extract
     result, size, sha256 = asyncio.run(
-        retain_first_evidence(credential, renamed, reader, destination)
+        retain_first_evidence(credential, renamed, b"new evidence", destination)
     )
     assert result == destination
     assert size == len(b"new evidence")
@@ -88,15 +77,13 @@ def test_new_filename_does_not_delete_old_evidence(tmp_path, credential):
 
 
 def test_non_valid_credential_cannot_trigger_evidence_extraction(tmp_path, credential):
-    reader = create_autospec(ContentReader, instance=True)
     with pytest.raises(ValueError, match="VALID"):
         asyncio.run(
             retain_first_evidence(
                 credential,
                 credential.occurrences[0].locations[0],
-                reader,
+                b"unused",
                 tmp_path / "unused",
             )
         )
-    reader.extract_file.assert_not_awaited()
     assert list(tmp_path.iterdir()) == []

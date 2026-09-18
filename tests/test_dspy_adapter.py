@@ -51,9 +51,8 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
         update={
             "locations": tuple(
                 CredentialLocation(
-                    provenance=credential.occurrences[0].locations[0].provenance.model_copy(
-                        update={"raw_path": f"path-{index}"}
-                    ),
+                    target_id=credential.occurrences[0].target_id,
+                    locator=f"path-{index}",
                     source_path=f"path-{index}",
                     filename=f"path-{index}",
                 )
@@ -63,13 +62,13 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
     )
     expanded = credential.model_copy(update={"occurrences": (occurrence,)})
 
-    serialized, registry, _directories = _judge_input(expanded)
+    serialized, registry = _judge_input(expanded)
 
     assert len(serialized) <= 120_000
     payload = json.loads(serialized)
     assert set(payload) == {"credential", "locations"}
     assert len(payload["locations"]) == 100
-    assert len(registry) == 200
+    assert len(registry) == 100
 
 
 def test_missing_judge_configuration_is_fatal(app_config: AppConfig) -> None:
@@ -77,8 +76,12 @@ def test_missing_judge_configuration_is_fatal(app_config: AppConfig) -> None:
         DspyFindingJudge(app_config)._configuration()
 
 
+@pytest.mark.parametrize(
+    ("raw_bytes", "encoding", "text"),
+    [(b"SECRET", "utf-8", "SECRET"), (b"\xff\x00", "base64", "/wA=")],
+)
 def test_judge_uses_native_async_dspy_and_content_tools(
-    app_config: AppConfig, credential, monkeypatch
+    app_config: AppConfig, credential, monkeypatch, raw_bytes, encoding, text
 ) -> None:
     config = app_config.model_copy(
         update={
@@ -89,14 +92,7 @@ def test_judge_uses_native_async_dspy_and_content_tools(
         }
     )
     content = Mock()
-    content.read_file = AsyncMock(
-        return_value=SimpleNamespace(
-            path="docker://source/file", encoding="utf-8", content="SECRET"
-        )
-    )
-    content.list_files = AsyncMock(
-        return_value=(credential.occurrences[0].locations[0].provenance,)
-    )
+    content.read = AsyncMock(return_value=raw_bytes)
     captured: dict[str, object] = {}
 
     class Program:
@@ -104,14 +100,13 @@ def test_judge_uses_native_async_dspy_and_content_tools(
             captured["kwargs"] = kwargs
             tools = captured["tools"]
             assert isinstance(tools, (list, tuple))
-            read_file, list_files = tools
-            assert await read_file("location-0") == {
-                "path": "docker://source/file",
-                "encoding": "utf-8",
-                "content": "SECRET",
+            assert len(tools) == 1
+            read = tools[0]
+            assert await read("location-0") == {
+                "path": credential.occurrences[0].locations[0].source_path,
+                "encoding": encoding,
+                "content": text,
             }
-            listed = await list_files("location-0")
-            assert listed[0]["kind"] == "docker-layer"
             return SimpleNamespace(verdict="VALID", reason="synthetic judgment")
 
     def make_react(_signature, *, tools, max_iters):
@@ -128,8 +123,7 @@ def test_judge_uses_native_async_dspy_and_content_tools(
     assert judged.verdict == "VALID"
     assert judged.reasoning == "synthetic judgment"
     assert captured["max_iters"] == config.judge.max_iterations
-    assert content.read_file.await_count == 1
-    assert content.list_files.await_count == 1
+    assert content.read.await_count == 1
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
     assert "credential_json" in kwargs

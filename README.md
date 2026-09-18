@@ -28,7 +28,7 @@ Current implemented scope:
 - Current adjusted-Titus credential identity and source-neutral occurrence deduplication.
 - `path-exclusions.list` passed to Titus and reapplied during deduplication.
 - Old-style regex-search `cred-value-exclusions.list` before judgment.
-- Native asynchronous DSPy judgment with exact repository-bound Artifactory file tools.
+- Native asynchronous DSPy judgment with one exact repository-bound Artifactory read tool.
 - `aiofiles` regular content/evidence file I/O with worker-thread tar parsing.
 - First-occurrence evidence retention without scan-time historical deletion.
 
@@ -36,7 +36,7 @@ Not included yet: GHES/Git, package scanning, OpenShift, user acceptance and
 mitigation, the former CLI workflow, human review, and training export. The
 existing workspace was previously migrated offline to inventory schema 5 and
 append-only credential behavior. A dedicated offline migration upgrades
-inventory 5/report 1/credentials 3/4 to inventory 7/report 2/credentials 5;
+credentials schema 5 or 6 to schema 7 after inventory/report preflight;
 see the upgrade warning below. `report.json` is the cumulative raw Titus and
 rule-metadata store; `credentials.json` contains append-only normalized
 observations, judgment, and finding references. Future source adapters must use
@@ -59,7 +59,7 @@ See [model ownership](doc/interfaces.md#model-ownership-and-imports).
 ## Configuration and commands
 
 **Existing-workspace warning:** current schemas are inventory **7**, Titus report
-**2**, and credentials **5**. They distinguish report `boundary` from logical
+**2**, and credentials **7**. They distinguish report `boundary` from logical
 `scope` and replace report/workspace `scope_id` with `boundary_id`. Old keys and
 versions are rejected by the runtime; migration is never automatic. Stop the
 scanner and back up the workspace before using the operator migration tool:
@@ -70,17 +70,16 @@ uv run python -m cred_scan.tools.migrate_workspace_schema workspace --apply
 ```
 
 The tool preflights every inventory, report, and credential document before
-writing atomically. It also rewrites canonical target references and retained
-evidence fingerprints after the schema-5 Docker child-manifest correction.
-
-The naming refactor preserves boundary IDs, canonical target IDs, evidence
-fingerprints, and directory paths. Separately authorize and preflight
-[the offline field mapping](doc/interfaces.md#persistence-and-stale-state)
-before reusing existing results. Schema-5 inventories additionally need the
-previous Docker child-manifest ID correction and alias reconciliation, including
-occurrence/fingerprint updates. Preserve raw findings and evidence bytes even
-though report wrapper JSON keys change. Do not merely bump schema numbers or
-discard history; the older credential-schema utility does not perform this upgrade.
+writing atomically. Schema 5 typed provenance becomes target-bearing opaque
+locators. Both schema 5 and 6 lose the unused extraction `source_fingerprint`;
+all remaining evidence metadata, observations, judgments, raw findings, evidence
+bytes, and datastore paths are preserved. Evidence integrity continues to use
+path, size, and SHA-256. Inventory-only repositories need no report;
+existing scan artifacts without a report still fail preflight. Missing historical
+targets must be restored from authoritative prior inventory, scan state, or backup
+before enforcing the new contract. Do not merely bump
+schema numbers or discard history; the historical credential-schema utility does
+not perform this upgrade.
 
 Relative paths in `config.yml` resolve against that file. Results default to
 `<workspace-dir>`; `workspace.results-dir` is an optional override.
@@ -128,12 +127,14 @@ overwriting bytes or metadata. Restore the verified artifact before retrying.
 `LocalRuntime` scheduler. A `ScanBoundaryInventory` carries a serializable
 `BackendConfig` name; the runtime resolves and caches the corresponding
 `BackendAdapter` while constructing the boundary. The same backend is passed to the
-boundary-bound Titus scanner and content-reader flow. A boundary holds inventory,
-workspace paths, and backend; its `scan(scanner, policy)`,
+boundary-bound Titus scanner and source-neutral content-reader flow. A boundary
+holds inventory, workspace paths, and backend; its `scan(scanner, policy)`,
 `judge(document, judge, extract_valid=...)`, and `extract(document)` operations
 receive only the phase services they need. The scheduler hands a boundary to the
 judger only after successful publication, without an additional completion flag.
-One evidence operation serves immediate extraction and recovery. `Workspace` exposes typed
+One Python-owned byte session serves one credential's judgment and immediate
+evidence extraction, then clears its cache and closes the reader. It is not shared
+across credentials or runs. One evidence operation serves recovery. `Workspace` exposes typed
 validated JSON read/write, inventory-path discovery, and the operation lock.
 It returns an immutable `BoundaryPaths` value, not nested document/resource handles.
 `src/cred_scan/orch/credentials.py` owns pure append/lifecycle transformations; orchestration

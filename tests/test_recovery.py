@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from cred_scan.backend.adapters.artifactory.docker import parse_provenance
-from cred_scan.backend.models import ResolvedProvenance, ScanBoundaryInventory, target_id_for
+from cred_scan.backend.models import ContentLocation, ScanBoundaryInventory, target_id_for
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.workspace import Workspace, WorkspaceBusyError
 from cred_scan.judge.proto import FindingJudge
@@ -67,23 +66,19 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
             async def resolve(raw_path, *, target_id=None):
                 reader.aclose.assert_not_awaited()
                 resolved_target_id = target_id or targets[0].id
-                return ResolvedProvenance(
+                return ContentLocation(
                     target_id=resolved_target_id,
-                    provenance=parse_provenance(raw_path).model_copy(
-                        update={"target_id": resolved_target_id}
-                    ),
+                    locator=raw_path,
                     source_path="etc/app.env",
                     filename="app.env",
                 )
 
-            async def extract_file(_provenance, destination):
+            async def read(_location):
                 reader.aclose.assert_not_awaited()
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(b"synthetic evidence")
-                return destination
+                return b"synthetic evidence"
 
-            reader.resolve_provenance.side_effect = resolve
-            reader.extract_file.side_effect = extract_file
+            reader.resolve_location.side_effect = resolve
+            reader.read.side_effect = read
             readers.append(reader)
             return reader
 
@@ -450,7 +445,13 @@ def test_multiple_boundaries_scan_concurrently_but_judge_serially_after_publicat
             update={
                 "occurrences": (
                     h.credential.occurrences[0].model_copy(
-                        update={"target_id": target.id}
+                        update={
+                            "target_id": target.id,
+                            "locations": tuple(
+                                location.model_copy(update={"target_id": target.id})
+                                for location in h.credential.occurrences[0].locations
+                            ),
+                        }
                     ),
                 )
             }
@@ -550,7 +551,15 @@ def test_worker_or_judger_failure_cancels_sibling_scan(harness, failure_phase):
     candidate = h.credential.model_copy(
         update={
             "occurrences": (
-                h.credential.occurrences[0].model_copy(update={"target_id": target.id}),
+                h.credential.occurrences[0].model_copy(
+                    update={
+                        "target_id": target.id,
+                        "locations": tuple(
+                            location.model_copy(update={"target_id": target.id})
+                            for location in h.credential.occurrences[0].locations
+                        ),
+                    }
+                ),
             )
         }
     )

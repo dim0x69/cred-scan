@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from cred_scan.backend.adapters.artifactory.docker import parse_provenance
 from cred_scan.backend.models import (
     ArtifactoryBackendConfig,
     ArtifactoryRepository,
@@ -53,10 +52,10 @@ def repository_inventory() -> ScanBoundaryInventory:
 @pytest.fixture
 def credential(repository_inventory: ScanBoundaryInventory) -> Credential:
     target = repository_inventory.targets[0]
-    provenance = parse_provenance(
+    locator = (
         "docker://registry/docker-local/team/api@sha256:manifest/"
         "sha256:layer:etc/app.env"
-    ).model_copy(update={"target_id": target.id})
+    )
     return Credential(
         credential_id="synthetic-credential",
         credential="SYNTHETIC_VALUE",
@@ -65,7 +64,8 @@ def credential(repository_inventory: ScanBoundaryInventory) -> Credential:
                 target_id=target.id,
                 locations=(
                     CredentialLocation(
-                        provenance=provenance,
+                        target_id=target.id,
+                        locator=locator,
                         source_path="etc/app.env",
                         filename="app.env",
                     ),

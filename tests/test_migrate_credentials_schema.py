@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from cred_scan.scan.models import CredentialsDocument, credential_source_fingerprint
+from cred_scan.scan.models import CredentialsDocument
 from cred_scan.tools import migrate_credentials_schema as migration
 from cred_scan.tools.migrate_credentials_schema import migrate_payload, migrate_results_dir
 
@@ -81,13 +81,9 @@ def test_migrate_payload_removes_redundant_fields(tmp_path: Path) -> None:
 
 def test_migrate_results_dir_writes_schema_three(tmp_path: Path) -> None:
     payload = _legacy_payload()
-    before = migration._validate_document(
-        {**payload, "schema_version": 3}, tmp_path / "credentials.json"
-    )
-    fingerprint = credential_source_fingerprint(before.credentials["credential-id"])
     extraction = {
         "status": "RETAINED",
-        "source_fingerprint": fingerprint,
+        "source_fingerprint": "legacy-source-fingerprint",
         "output_path": "evidence/credential-id/file",
         "size": 4,
         "sha256": "existing-checksum",
@@ -112,7 +108,9 @@ def test_migrate_results_dir_writes_schema_three(tmp_path: Path) -> None:
     assert "titus_findings" not in candidate
     assert candidate["judgment"] == payload["credentials"]["credential-id"]["judgment"]
     assert candidate["extraction"] == extraction
-    assert credential_source_fingerprint(document.credentials["credential-id"]) == fingerprint
+    assert "source_fingerprint" not in (
+        document.credentials["credential-id"].extraction.model_dump()
+    )
     assert report.read_bytes() == report_bytes
     assert evidence.read_bytes() == b"test"
 

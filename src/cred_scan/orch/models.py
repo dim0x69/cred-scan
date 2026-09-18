@@ -21,8 +21,9 @@ class TitusConfig(BaseModel):
 
 
 class JudgeLayerToolsConfig(BaseModel):
+    """Whether the judge may read reported source locations."""
+
     enabled: bool = True
-    max_directory_entries: int = Field(default=100, ge=1, le=100)
 
 
 class JudgeConfig(BaseModel):

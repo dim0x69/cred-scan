@@ -185,9 +185,13 @@ location. Historical evidence is
 also not removed by scanning. Future mitigation may change the active user view
 but is separate from this scan lifecycle.
 
-Every occurrence references an immutable target ID and retains raw provenance,
-source-relative path, and filename. Therefore old findings continue to resolve
-to the image manifest/layer, Git commit, or package artifact that produced them.
+Every occurrence and every location reference the same immutable `ScanTarget.id`
+and retain an opaque backend locator, source-relative path, and filename.
+Pydantic enforces the location-to-occurrence relationship; report-boundary
+orchestration enforces the document boundary and occurrence-target membership
+against the retained inventory. Therefore old findings continue to resolve to
+the image manifest/layer, Git commit, or package artifact that produced them
+without exposing backend syntax to scan or judgment.
 
 ## Scan/judge/evidence lifecycle
 
@@ -197,7 +201,8 @@ For an active boundary:
 2. Run all Titus attempts for the target using the shared boundary datastore.
 3. Export the cumulative Titus report after target processing.
 4. Persist `report.json`.
-5. Resolve provenance against all retained target pins.
+5. Resolve each raw Titus path against all retained target pins and construct a
+   target-bearing source-neutral location.
 6. Append normalized credential observations to `credentials.json`.
 7. Judge pending/error credentials.
 8. Retain first-occurrence evidence for valid credentials. Before reusing a
@@ -222,9 +227,13 @@ caller-supplied bypass switch duplicates it.
 
 `judge(document, judge, extract_valid=False)` returns attempted judgment count;
 `extract(document)` returns newly retained evidence count. Normal scan uses
-`extract_valid=True` and keeps the same reader through judgment and extraction.
-Both normal and recovery paths call one evidence operation that checks retained
-integrity before opening a reader and owns the single extraction checkpoint.
+`extract_valid=True` and keeps one Python-owned byte session for one credential's
+judgment and immediate extraction. The cache key includes target ID, locator,
+source path, and filename, so changed metadata must be validated by the backend.
+Closing the session clears all cached bytes and closes its reader; nothing is
+shared across credentials or runs. Both normal and recovery paths call one
+evidence operation that checks retained integrity before opening a session and
+owns the single extraction checkpoint.
 
 Cancellation propagates through native async judgment; it is not shielded for the
 whole LLM call. Docker reader methods join only their blocking archive-parsing
@@ -241,7 +250,7 @@ but remain available to overview generation.
 
 Current runtime construction is Artifactory-Docker-specific. Git/GHES,
 package, and OpenShift adapters are future capability work. They must provide
-the same backend, scope, pin, provenance, content-reader, Titus, and judgment
+the same backend, scope, pin, source-neutral location/read, Titus, and judgment
 ports without changing the source-neutral credential occurrence contract.
 
 ## Configuration and persistence
@@ -266,16 +275,22 @@ are separate checkpoints: conversion failure can leave a newer raw report beside
 older credentials for the next run.
 
 Current schemas are inventory **7**, Titus report **2**, and credentials
-**4**. They use `boundary` for the report owner, `scope` for the target's logical
-source snapshot, and `boundary_id` for document/workspace identity. Boundary ID
-values, canonical target IDs, datastore paths, and evidence fingerprints do not
-change merely because these fields were renamed.
+**7**. They use `boundary` for the report owner, `scope` for the target's logical
+source snapshot, and `boundary_id` for document/workspace identity. Credential
+locations use `target_id`, opaque `locator`, `source_path`, and `filename`.
+Boundary ID values, canonical target IDs, datastore paths, and evidence integrity
+metadata remain stable. Extraction results contain status, output path, size,
+SHA-256, and error only; the unused source-set fingerprint has been removed.
 
 Earlier documents are rejected rather than interpreted via legacy aliases.
 `cred_scan.tools.migrate_workspace_schema` is the separate operator-only
-migration for the previous inventory 5/report 1/credentials 3/4 workspace. It
-preflights every document, corrects schema-5 Docker target IDs and aliases, and
-updates all dependent occurrence/fingerprint references before optional atomic
-writes with `--apply`. Preserve raw findings, evidence bytes, and execution
-history. The historical schema-2→3 utility retains its old output and does not
-perform this upgrade.
+migration from credentials 5 or 6 to 7. It preflights inventory/report/credential
+relationships, converts schema-5 typed provenance to target-bearing opaque
+locators, and removes the unused extraction `source_fingerprint` from both old
+versions before optional atomic writes with `--apply`. All other extraction
+metadata and observations are preserved; no source content is fetched and no
+evidence is re-extracted. Inventory-only boundaries need no report;
+existing reports are still validated, and result artifacts without a report
+fail preflight. Preserve raw findings, evidence bytes, and execution history. The
+historical schema-2→3 utility retains its old output and does not perform this
+upgrade.

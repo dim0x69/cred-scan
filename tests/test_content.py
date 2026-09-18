@@ -18,6 +18,7 @@ from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import (
     ArtifactoryBackendConfig,
     ArtifactoryRepository,
+    ContentLocation,
     DockerImageScanScope,
     ScanBoundaryInventory,
     target_id_for,
@@ -37,9 +38,13 @@ COLON_PROVENANCE = (
 )
 
 
-def _locator(raw: str, inventory: ScanBoundaryInventory):
-    return docker.parse_provenance(raw).model_copy(
-        update={"target_id": inventory.targets[0].id}
+def _locator(raw: str, inventory: ScanBoundaryInventory) -> ContentLocation:
+    parsed = docker.parse_provenance(raw)
+    return ContentLocation(
+        target_id=inventory.targets[0].id,
+        locator=raw,
+        source_path=parsed.path,
+        filename=Path(parsed.path).name,
     )
 
 
@@ -51,7 +56,6 @@ def backend(tmp_path: Path):
         workspace=Workspace(
             WorkspaceConfig(workspace_dir=tmp_path, results_dir=tmp_path / "results")
         ),
-        max_directory_entries=5,
     )
     yield backend
     asyncio.run(backend.aclose())
@@ -76,7 +80,7 @@ def test_reader_resolves_colon_filename_without_losing_prefix(
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
     )
-    resolved = asyncio.run(reader.resolve_provenance(COLON_PROVENANCE))
+    resolved = asyncio.run(reader.resolve_location(COLON_PROVENANCE))
     assert resolved.target_id == repository_inventory.targets[0].id
     assert resolved.source_path == "etc/app:prod.env"
     assert resolved.filename == "app:prod.env"
@@ -98,7 +102,7 @@ def test_new_root_index_with_same_child_manifest_reuses_resolvable_target(
     )
     reader = backend.content_reader(merged.boundary, merged.targets)
     try:
-        resolved = asyncio.run(reader.resolve_provenance(PROVENANCE))
+        resolved = asyncio.run(reader.resolve_location(PROVENANCE))
         assert resolved.target_id == original.id
     finally:
         asyncio.run(reader.aclose())
@@ -147,24 +151,20 @@ def test_cumulative_report_resolves_current_and_superseded_docker_pins(
         asyncio.run(reader.aclose())
 
 
-def test_reader_reuses_complete_bytes_for_evidence(
-    tmp_path: Path, backend, repository_inventory: ScanBoundaryInventory
+def test_reader_returns_complete_bytes(
+    backend, repository_inventory: ScanBoundaryInventory
 ) -> None:
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
     )
-    assert reader.max_directory_entries == 5
     retrieved = b"A" * 512_001
-    reader._cache[PROVENANCE] = retrieved
+    reader._find_file = AsyncMock(return_value=retrieved)
 
-    content = asyncio.run(reader.read_file(_locator(PROVENANCE, repository_inventory)))
-    destination = tmp_path / "evidence.bin"
-    asyncio.run(reader.extract_file(_locator(PROVENANCE, repository_inventory), destination))
+    content = asyncio.run(reader.read(_locator(PROVENANCE, repository_inventory)))
 
-    assert content.content == retrieved.decode("utf-8")
-    assert destination.read_bytes() == retrieved
+    assert content == retrieved
+    reader._find_file.assert_awaited_once()
     asyncio.run(reader.aclose())
-    assert not reader._cache
 
 
 def test_direct_reader_creation_requires_target_context(
@@ -179,16 +179,16 @@ def test_direct_reader_creation_requires_target_context(
         )
 
 
-def test_reader_validates_provenance_even_for_cached_bytes(
+def test_reader_validates_provenance_target(
     backend, repository_inventory: ScanBoundaryInventory
 ) -> None:
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
     )
     unpinned = PROVENANCE.replace("sha256:manifest", "sha256:other")
-    reader._cache[unpinned] = b"untrusted"
+    location = _locator(unpinned, repository_inventory)
     with pytest.raises(LayerEvidenceError, match="pinned target"):
-        asyncio.run(reader.read_file(_locator(unpinned, repository_inventory)))
+        asyncio.run(reader.read(location))
     asyncio.run(reader.aclose())
 
 
@@ -201,10 +201,10 @@ def test_metadata_provenance_resolves_as_config_blob(
     raw_path = (
         "docker://registry/docker-local/team/api@sha256:manifest/config.json"
     )
-    resolved = asyncio.run(reader.resolve_provenance(raw_path))
+    resolved = asyncio.run(reader.resolve_location(raw_path))
     asyncio.run(reader.aclose())
-    assert resolved.provenance.kind == "docker-config"
-    assert resolved.provenance.raw_path == raw_path
+    assert resolved.locator == raw_path
+    assert resolved.source_path == "config.json"
 
 
 def _layer_bytes(
@@ -277,7 +277,7 @@ def test_reader_rejects_unmapped_layer_instead_of_searching_other_layers(
     unmapped = PROVENANCE.replace("sha256:layer", "sha256:missing")
     try:
         with pytest.raises(LayerEvidenceError, match="requested Docker layer"):
-            asyncio.run(reader.read_file(_locator(unmapped, repository_inventory)))
+            asyncio.run(reader.read(_locator(unmapped, repository_inventory)))
         assert not any(path.endswith("/blobs/sha256:older") for path in requests)
         assert not any(path.endswith("/blobs/sha256:newer") for path in requests)
     finally:
@@ -338,22 +338,15 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
         workspace=workspace,
     )
     try:
-        content = asyncio.run(reader.read_file(_locator(PROVENANCE, repository_inventory)))
+        content = asyncio.run(reader.read(_locator(PROVENANCE, repository_inventory)))
         config_path = (
             "docker://registry/docker-local/team/api@sha256:manifest/config.json"
         )
         config_content = asyncio.run(
-            reader.read_file(_locator(config_path, repository_inventory))
+            reader.read(_locator(config_path, repository_inventory))
         )
-        files = asyncio.run(
-            reader.list_files(_locator(PROVENANCE.replace(":etc/app.env", ":etc"), repository_inventory))
-        )
-        listed_content = asyncio.run(reader.read_file(files[0]))
-        assert content.content == layer_content.decode("utf-8")
-        assert config_content.content == json.dumps(config)
-        assert files == (_locator(PROVENANCE, repository_inventory),)
-        assert listed_content.path == files[0].raw_path
-        assert listed_content.content == layer_content.decode("utf-8")
+        assert content == layer_content
+        assert config_content == json.dumps(config).encode()
     finally:
         asyncio.run(reader.aclose())
         asyncio.run(backend.aclose())
@@ -362,24 +355,18 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
     assert not scratch_parent.exists()
 
 
-def test_listed_locators_preserve_the_selected_layer(
+def test_reader_reads_the_selected_layer(
     repository_inventory: ScanBoundaryInventory, tmp_path: Path
 ) -> None:
-    older = _layer_bytes(b"SECRET=older\n")
     newer = _layer_bytes(b"SECRET=newer\n")
     manifest = {
         "config": {"digest": "sha256:config"},
-        "layers": [
-            {"digest": "sha256:older"},
-            {"digest": "sha256:newer"},
-        ],
+        "layers": [{"digest": "sha256:newer"}],
     }
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/manifests/sha256:manifest"):
             return httpx.Response(200, json=manifest)
-        if request.url.path.endswith("/blobs/sha256:older"):
-            return httpx.Response(200, content=older)
         if request.url.path.endswith("/blobs/sha256:newer"):
             return httpx.Response(200, content=newer)
         raise AssertionError(f"unexpected request: {request.url}")
@@ -392,42 +379,26 @@ def test_listed_locators_preserve_the_selected_layer(
         "synthetic-token",
         workspace=workspace,
     )
-
-    async def replace_session() -> None:
-        await backend.session.aclose()
-        backend.session = httpx.AsyncClient(
-            transport=httpx.MockTransport(handler),
-            headers={
-                "User-Agent": "cred-scan/0.1",
-                "X-JFrog-Art-Api": "synthetic-token",
-            },
-            follow_redirects=True,
-            timeout=120,
-            trust_env=False,
-        )
-
-    asyncio.run(replace_session())
+    asyncio.run(backend.session.aclose())
+    backend.session = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        headers={"User-Agent": "cred-scan/0.1", "X-JFrog-Art-Api": "synthetic-token"},
+        follow_redirects=True,
+        timeout=120,
+        trust_env=False,
+    )
     reader = ArtifactoryDockerReader(
-        backend,
-        repository_inventory.boundary,
-        repository_inventory.targets,
-        workspace=workspace,
+        backend, repository_inventory.boundary, repository_inventory.targets, workspace=workspace
     )
     try:
-        directory = PROVENANCE.replace(":etc/app.env", ":etc")
-        files = asyncio.run(reader.list_files(_locator(directory, repository_inventory)))
-        listed = asyncio.run(reader.read_file(files[0]))
-
         expected = PROVENANCE.replace("sha256:layer", "sha256:newer")
-        assert files == (_locator(expected, repository_inventory),)
-        assert listed.path == expected
-        assert listed.content == "SECRET=newer\n"
+        assert asyncio.run(reader.read(_locator(expected, repository_inventory))) == b"SECRET=newer\n"
     finally:
         asyncio.run(reader.aclose())
         asyncio.run(backend.aclose())
 
 
-@pytest.mark.parametrize("operation", ["read", "list"])
+@pytest.mark.parametrize("operation", ["read"])
 @pytest.mark.parametrize("cancel_count", [1, 2])
 @pytest.mark.parametrize("worker_error", [False, True])
 def test_cancelled_archive_work_finishes_before_reader_scratch_is_removed(
@@ -452,7 +423,7 @@ def test_cancelled_archive_work_finishes_before_reader_scratch_is_removed(
             finished.set()
             if worker_error:
                 raise ValueError("archive parser failed")
-            return (b"content", {}) if operation == "read" else ["etc/app.env"]
+            return (b"content", {})
 
         monkeypatch.setattr(
             reader,
@@ -467,18 +438,13 @@ def test_cancelled_archive_work_finishes_before_reader_scratch_is_removed(
         monkeypatch.setattr(reader, "_download_blob", AsyncMock(return_value=archive))
         monkeypatch.setattr(
             reader,
-            "_find_file_in_archive"
-            if operation == "read"
-            else "_list_files_in_archive",
+            "_find_file_in_archive",
             parse,
         )
 
         async def request():
             try:
-                if operation == "read":
-                    await reader.read_file(_locator(PROVENANCE, repository_inventory))
-                else:
-                    await reader.list_files(_locator(PROVENANCE.replace(":etc/app.env", ":etc"), repository_inventory))
+                await reader.read(_locator(PROVENANCE, repository_inventory))
             finally:
                 await reader.aclose()
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
@@ -15,10 +14,11 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import aiofiles
+from pydantic import BaseModel
 import httpx
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
@@ -29,11 +29,7 @@ from cred_scan.backend.adapters.artifactory.models import (
 )
 from cred_scan.backend.models import (
     BackendConfig,
-    ContentProvenance,
-    DockerLayerProvenance,
-    DockerMetadataProvenance,
-    FileContent,
-    ResolvedProvenance,
+    ContentLocation,
     ScanBoundaryRef,
     ScanBoundaryInventory,
     ScanTarget,
@@ -78,6 +74,31 @@ def _parse_http_timestamp(value: str | None) -> datetime | None:
 
 class LayerEvidenceError(RuntimeError):
     pass
+
+
+class DockerLayerProvenance(BaseModel):
+    """Docker adapter-internal interpretation of a layer locator."""
+
+    kind: Literal["docker-layer"] = "docker-layer"
+    raw_path: str
+    registry: str
+    repository: str
+    image: str
+    manifest: str
+    layer: str
+    path: str
+
+
+class DockerMetadataProvenance(BaseModel):
+    """Docker adapter-internal interpretation of metadata locators."""
+
+    kind: Literal["docker-manifest", "docker-config"]
+    raw_path: str
+    registry: str
+    repository: str
+    image: str
+    manifest: str
+    path: Literal["manifest.json", "config.json"]
 
 
 DockerProvenance = DockerLayerProvenance | DockerMetadataProvenance
@@ -154,17 +175,14 @@ class ArtifactoryDockerReader(ContentReader):
         targets: tuple[ScanTarget, ...],
         *,
         workspace: WorkspaceProtocol,
-        max_directory_entries: int = 100,
     ) -> None:
         if not targets:
             raise ValueError("a content reader requires at least one target")
         if any(target.boundary.id != boundary.id for target in targets):
             raise ValueError("content-reader targets must belong to the boundary")
         self.backend = backend
-        self.max_directory_entries = max_directory_entries
         self.boundary = boundary
         self.targets = targets
-        self._cache: dict[str, bytes] = {}
         self._closed = False
         self._scratch_context = scratch_dir(
             workspace.boundary(boundary.id).scratch_parent
@@ -344,30 +362,10 @@ class ArtifactoryDockerReader(ContentReader):
                     )
         return None
 
-    async def _find_file(
-        self, provenance: DockerProvenance
-    ) -> tuple[bytes, dict[str, Any]]:
+    async def _find_file(self, provenance: DockerProvenance) -> bytes:
         self._validate_provenance(provenance)
-        cached = self._cache.get(provenance.raw_path)
-        if cached is not None:
-            return cached, {
-                "path": provenance.path,
-                "layer": (
-                    provenance.layer
-                    if isinstance(provenance, DockerLayerProvenance)
-                    else None
-                ),
-                "requested_provenance": provenance.raw_path,
-                "size": len(cached),
-            }
         if isinstance(provenance, DockerMetadataProvenance):
-            content = await self._metadata_bytes(provenance)
-            self._cache[provenance.raw_path] = content
-            return content, {
-                "path": provenance.path,
-                "requested_provenance": provenance.raw_path,
-                "size": len(content),
-            }
+            return await self._metadata_bytes(provenance)
 
         manifest = await self._manifest(provenance)
         descriptor = await self._matching_layer(provenance, manifest)
@@ -381,58 +379,12 @@ class ArtifactoryDockerReader(ContentReader):
         )
         if result is None:
             raise LayerEvidenceError(f"file was not found: {provenance.path}")
-        content, metadata = result
-        self._cache[provenance.raw_path] = content
-        metadata["requested_provenance"] = provenance.raw_path
-        return content, metadata
+        content, _ = result
+        return content
 
-    def _list_files_in_archive(
-        self,
-        archive_path: Path,
-        prefix: str,
-        seen: set[str],
-    ) -> tuple[str, ...]:
-        entries: list[str] = []
-        with archive_path.open("rb") as stream:
-            with tarfile.open(fileobj=stream, mode="r|*") as archive:
-                for member in archive:
-                    if not member.isfile():
-                        continue
-                    try:
-                        path = safe_member_path(member.name)
-                    except LayerEvidenceError:
-                        continue
-                    if (
-                        path.startswith(prefix)
-                        and path not in seen
-                        and not any(part.startswith(".wh.") for part in path.split("/"))
-                    ):
-                        seen.add(path)
-                        entries.append(path)
-                        if len(seen) >= self.max_directory_entries:
-                            return tuple(entries)
-        return tuple(entries)
-
-    @staticmethod
-    def _file_locator(
-        provenance: DockerProvenance, layer_digest: str, member_path: str
-    ) -> DockerLayerProvenance:
-        if not isinstance(provenance, DockerLayerProvenance):
-            raise LayerEvidenceError("image metadata cannot list filesystem files")
-        locator = (
-            f"docker://{provenance.registry}/{provenance.repository}/"
-            f"{provenance.image}@{provenance.manifest}/"
-            f"{layer_digest}:{member_path}"
-        )
-        # Keep the list/read contract local to the backend and fail closed if
-        # malformed manifest data would produce an unreadable locator.
-        parsed = parse_provenance(locator)
-        assert isinstance(parsed, DockerLayerProvenance)
-        return parsed
-
-    async def resolve_provenance(
+    async def resolve_location(
         self, raw_path: str, *, target_id: str | None = None
-    ) -> ResolvedProvenance:
+    ) -> ContentLocation:
         try:
             provenance = parse_provenance(raw_path)
         except LayerEvidenceError:
@@ -443,74 +395,29 @@ class ArtifactoryDockerReader(ContentReader):
             )
             raise
         target = self._target_for_provenance(provenance, target_id)
-        return ResolvedProvenance(
+        source_path = provenance.path
+        return ContentLocation(
             target_id=target.id,
-            provenance=provenance,
-            source_path=provenance.path,
-            filename=PurePosixPath(provenance.path).name,
+            locator=raw_path.strip(),
+            source_path=source_path,
+            filename=PurePosixPath(source_path).name,
         )
 
-    async def read_file(self, provenance: ContentProvenance) -> FileContent:
-        if not isinstance(provenance, (DockerLayerProvenance, DockerMetadataProvenance)):
-            raise LayerEvidenceError("unsupported Docker content provenance")
-        content, _ = await self._find_file(provenance)
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            return FileContent(
-                path=provenance.raw_path,
-                content=base64.b64encode(content).decode("ascii"),
-                encoding="base64",
-            )
-        return FileContent(path=provenance.raw_path, content=text, encoding="utf-8")
-
-    async def list_files(
-        self, provenance: ContentProvenance
-    ) -> tuple[ContentProvenance, ...]:
-        if not isinstance(provenance, DockerLayerProvenance):
-            raise LayerEvidenceError("cannot list files for Docker metadata")
-        self._validate_provenance(provenance)
-        prefix = provenance.path.rstrip("/") + "/"
-        manifest = await self._manifest(provenance)
-        entries: list[ContentProvenance] = []
-        seen: set[str] = set()
-        for descriptor in reversed(
-            [item for item in manifest.get("layers", []) if isinstance(item, dict)]
-        ):
-            digest = descriptor.get("digest")
-            if not isinstance(digest, str):
-                continue
-            archive_path = await self._download_blob(provenance, digest)
-            layer_entries = await _read_archive(
-                archive_path,
-                lambda: self._list_files_in_archive(archive_path, prefix, seen),
-            )
-            entries.extend(
-                self._file_locator(provenance, digest, path) for path in layer_entries
-            )
-            if len(entries) >= self.max_directory_entries:
-                return tuple(entries)
-        return tuple(entries)
-
-    async def extract_file(
-        self, provenance: ContentProvenance, destination: Path
-    ) -> Path:
-        if not isinstance(provenance, (DockerLayerProvenance, DockerMetadataProvenance)):
-            raise LayerEvidenceError("unsupported Docker content provenance")
-        content, _ = await self._find_file(provenance)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.tmp")
-        async with aiofiles.open(temporary, mode="wb") as stream:
-            await stream.write(content)
-            await stream.flush()
-        await asyncio.to_thread(temporary.replace, destination)
-        return destination
+    async def read(self, location: ContentLocation) -> bytes:
+        provenance = parse_provenance(location.locator)
+        target = self._target_for_provenance(provenance, location.target_id)
+        if location.source_path != provenance.path:
+            raise LayerEvidenceError("content location source path does not match locator")
+        if location.filename != PurePosixPath(provenance.path).name:
+            raise LayerEvidenceError("content location filename does not match locator")
+        if target.id != location.target_id:
+            raise LayerEvidenceError("content location target does not match locator")
+        return await self._find_file(provenance)
 
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._cache.clear()
         self._scratch_context.__exit__(None, None, None)
 
 
@@ -523,12 +430,10 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         token: str,
         *,
         workspace: WorkspaceProtocol,
-        max_directory_entries: int = 100,
     ) -> None:
         super().__init__(config, token, workspace=workspace)
         # Platform selection is a Docker concern, not common Artifactory setup.
         self.platform = config.platform
-        self.max_directory_entries = max_directory_entries
 
     async def _manifest_bytes(
         self, repository: str, image: str, reference: str
@@ -631,7 +536,6 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             boundary,
             targets,
             workspace=self.workspace,
-            max_directory_entries=self.max_directory_entries,
         )
 
     def _repository(self, name: str) -> ArtifactoryRepository:

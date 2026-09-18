@@ -24,7 +24,6 @@ def build_backend(
         backend_config,
         config.artifactory_api_key or "",
         workspace=workspace,
-        max_directory_entries=config.judge.layer_tools.max_directory_entries,
     )
 
 

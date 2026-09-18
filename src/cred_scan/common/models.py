@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -12,6 +13,7 @@ class WorkspaceConfig(BaseModel):
     model_config = ConfigDict(validate_by_name=True)
 
     workspace_dir: Path = Field(alias="workspace-dir")
+    # H: results_dir, used? if not: drop.!
     results_dir: Path = Field(
         alias="results-dir",
         default_factory=lambda data: data["workspace_dir"],

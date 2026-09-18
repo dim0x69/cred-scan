@@ -22,8 +22,9 @@ state the logical source explicitly: `DockerImageScanScope`,
 `GitRepositoryScanScope`, and `PackageScanScope`. Fields, discriminator values
 (`docker`, `git`, `package`), computed identity, and inheritance are unchanged.
 Generated JSON Schema titles and definition references use the new class names;
-persisted JSON does not store Python class names. Inventory 7, report 2,
-credentials 5, and the central configuration shape remain unchanged. No aliases
+persisted JSON does not store Python class names. Inventory 7, report 2, and
+the central configuration shape remain unchanged; source-neutral locations use
+credentials schema 7. No aliases
 for the old class names, legacy persisted fields, or runtime migration are added.
 
 ## Boundary, scope, and target identity
@@ -108,30 +109,33 @@ identity.
 ## Credential occurrence
 
 ```python
-class CredentialLocation(BaseModel):
-    provenance: ContentProvenance
+class ContentLocation(BaseModel):
+    target_id: str
+    locator: str
     source_path: str
     filename: str
 
 class CredentialOccurrence(BaseModel):
     target_id: str
-    locations: tuple[CredentialLocation, ...]
+    locations: tuple[ContentLocation, ...]
     finding_ids: tuple[str, ...]
 ```
 
-The target ID identifies the exact source pin. `ContentProvenance` is a
-backend-owned discriminated union. The current Docker variants are
-`DockerLayerProvenance` and `DockerMetadataProvenance` for layer files,
-`manifest.json`, and `config.json`; future Git/package readers provide their
-own variants. Each provenance retains the raw Titus path plus the immutable
-source fields needed by its reader. Locations retain the typed provenance and
-the resolved path accepted by the backend reader.
+`target_id` is the existing authoritative `ScanTarget.id`; it is not generated
+from a Titus report match. The backend-bound reader resolves the raw Titus path
+to exactly one retained target and constructs the location with that ID. The
+opaque `locator` is a backend-owned string. Scan, judgment, evidence, and
+persistence do not parse it. `source_path` and `filename` are separate display
+and evidence metadata.
 
-The LLM judge is given short session-local location IDs and display paths, not
-backend provenance objects. Its `read_file(location_id)` and
-`list_files(location_id)` tools resolve through a runtime registry and pass the
-typed provenance to the boundary reader. Evidence extraction uses the typed
-provenance directly and is not LLM-controlled.
+Pydantic requires a nonempty target ID and locator, and occurrence validation
+requires every location target ID to equal the occurrence target ID. Runtime
+validation checks the document boundary and occurrence target IDs against the
+retained inventory; location membership follows from those two invariants.
+The LLM judge receives short session-local location IDs and display paths. Its
+only content tool is `read(location_id)`, which resolves through a session
+registry and returns UTF-8 or base64 representation of raw bytes. Evidence uses
+the same location and byte session directly; it is not LLM-controlled.
 
 Occurrences
 from repeated scans are merged idempotently by target, location, and finding
@@ -179,24 +183,33 @@ Evidence metadata remains in `credentials.json`; evidence bytes live under the
 boundary evidence directory. `cred_scan.judge.evidence` owns safe destinations and integrity
 checks; no evidence workspace object or separate index is persisted. Scan-time historical cleanup is disabled. The
 initial policy retains first-occurrence evidence while all source occurrences
-are retained in the credential document. Its extraction fingerprint records the
-source set at extraction time; appending observations does not rewrite it.
+are retained in the credential document. `ExtractionResult` contains only
+`status`, `output_path`, `size`, `sha256`, and `error`; it rejects extra fields.
+There is no source-set fingerprint or source-hash calculation. Appending
+observations does not rewrite historical extraction metadata.
 `RETAINED` metadata is not proof that bytes still exist: reuse verifies the
 stored path, size, and SHA-256. Missing or mismatched evidence raises an integrity
 failure while retaining the expected metadata and any existing artifact.
 
 ## Content reader locators
 
-`ContentReader.list_files(provenance)` returns backend-owned typed locators
-that can be passed unchanged to `read_file()`. A Docker locator retains the
-exact manifest and either layer identity or metadata kind (`manifest.json` or
-`config.json`). Git and package adapters provide equivalent immutable locators.
+`ContentReader.resolve_location(raw_path, target_id=...)` returns a
+source-neutral `ContentLocation`. The backend owns interpretation of the opaque
+locator and validates that its target ID matches one retained immutable target.
 
-`read_file()` returns complete exact file bytes. `extract_file()` writes those
-bytes unchanged to evidence. Callers do not reconstruct provenance from a
-relative path. Reader operations propagate cancellation after joining any blocking
-archive worker still accessing temporary bytes. The caller closes the reader only
-after that operation has unwound; no detached parser may outlive reader scratch.
+```python
+async def read(location: ContentLocation) -> bytes: ...
+```
+
+`read()` returns complete exact bytes. There is no public directory-listing or
+evidence-extraction operation. A Python content session caches those bytes for
+one credential's judgment and immediate evidence only, keyed by all four location
+fields. It closes the reader and clears the cache when that operation ends;
+changed display metadata cannot bypass backend validation through a cache hit.
+Reader operations propagate
+cancellation after joining any blocking archive worker still accessing
+temporary bytes. The caller closes the reader only after that operation has
+unwound; no detached parser may outlive reader scratch.
 
 ## Workspace path value
 
@@ -236,16 +249,25 @@ lock. Current document versions and field changes are:
 |---|---|---|
 | Inventory | **7** | inventory `scope` → `boundary`; target `scope` → `boundary`, `source` → `scope` |
 | Titus report | **2** | `scope_id` → `boundary_id` |
-| Credentials | **5** | `scope_id` → `boundary_id`; raw provenance → typed ContentProvenance |
+| Credentials | **7** | source-neutral locations from schema 6; unused extraction `source_fingerprint` removed |
 
 Old field names are not runtime aliases. Older versions are rejected; a schema
-number alone cannot upgrade their payloads. This refactor leaves `workspace/`
-untouched. The operator-only `cred_scan.tools.migrate_workspace_schema` utility performs
-an authorized offline migration from inventory 5/report 1/credentials 3. It
-preflights all documents, renames these fields and versions, corrects Docker
-child-manifest target IDs, reconciles same-child aliases, and updates occurrence
-references and extraction fingerprints. It preserves raw findings, evidence
-bytes, boundary IDs, and datastore paths. It is read-only unless `--apply` is
-provided, and writes each converted document atomically. No runtime migration
-or legacy-ID fallback is provided. The historical schema-2→3 credential
-utility still emits its old format, not this upgrade.
+number alone cannot upgrade their payloads. The operator-only
+`cred_scan.tools.migrate_workspace_schema` utility performs an authorized
+offline migration from credentials schema 5 or 6 to 7 after inventory and report
+preflight. Schema-5 typed provenance `raw_path` values become opaque locators,
+with occurrence target IDs copied onto locations. Both old versions lose only
+the unused extraction `source_fingerprint`; remaining extraction metadata,
+observations, judgments, raw findings, evidence bytes, boundary IDs, and datastore
+paths are preserved. Runtime loading rejects old schema versions and extraction
+records containing the removed field, even with a schema-7 wrapper. The tool is
+read-only unless `--apply` is provided and writes each converted document
+atomically. Inventory-only boundaries can have neither report nor credentials;
+existing reports must validate even without credentials, and credentials,
+datastores, or evidence without a report fail preflight. Missing historical
+target records must be restored from authoritative inventory, prior scan state,
+or backup before the new contract is enforced. If prior scan state omits required
+manifest metadata, recover it from the exact digest and verify the returned
+manifest bytes against that digest; never substitute current-pin metadata. No
+runtime migration or legacy-ID fallback is provided. The historical
+schema-2→3 credential utility still emits its old format, not this upgrade.
