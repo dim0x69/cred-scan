@@ -15,10 +15,10 @@ artifact and must be kept synchronized with code changes.
 uv sync --locked
 uv run pytest
 cred-scan --help
-cred-scan inventory BOUNDARY_ID
-cred-scan scan [BOUNDARY_ID]
-cred-scan judge [BOUNDARY_ID]
-cred-scan extract [BOUNDARY_ID]
+cred-scan inventory
+cred-scan scan
+cred-scan judge
+cred-scan extract
 ```
 
 The repository remains a design-stage project. Current runtime behavior and

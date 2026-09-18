@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Protocol
 
 from cred_scan.backend.models import (
@@ -11,6 +14,9 @@ from cred_scan.backend.models import (
     ScanBoundaryInventory,
     ScanTarget,
 )
+
+
+ScratchDirectory = Callable[[], AbstractContextManager[Path]]
 
 
 class UnsupportedTitusTargetError(RuntimeError):
@@ -28,9 +34,12 @@ class BackendAdapter(Protocol):
     ) -> tuple[str, ...]: ...
 
     def content_reader(
-        self, boundary: ScanBoundaryRef, targets: tuple[ScanTarget, ...]
+        self,
+        boundary: ScanBoundaryRef,
+        targets: tuple[ScanTarget, ...],
+        scratch_dir: ScratchDirectory,
     ) -> ContentReader:
-        """Create a reader bound to a report boundary and nonempty pinned targets."""
+        """Create a reader bound to a boundary and pinned targets."""
         ...
 
     async def inventory(self, boundary_id: str) -> ScanBoundaryInventory: ...

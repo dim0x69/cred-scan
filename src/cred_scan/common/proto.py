@@ -1,11 +1,5 @@
-"""Storage port required by backend adapters."""
+"""Common protocols.
 
-from typing import Protocol
-
-from cred_scan.common.models import BoundaryPaths
-
-
-class WorkspaceProtocol(Protocol):
-    """Only the boundary path lookup needed by backend adapters."""
-
-    def boundary(self, boundary_id: str) -> BoundaryPaths: ...
+Boundary storage is owned by Boundary. Backend adapters receive the
+boundary-owned scratch context they need and do not depend on Workspace.
+"""

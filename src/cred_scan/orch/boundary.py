@@ -1,24 +1,38 @@
-"""One boundary's inventory, scan, judgment, and evidence operations."""
+"""One fully loaded boundary's inventory, scan, judgment, and evidence operations."""
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, TypeVar
+from urllib.parse import unquote
+
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from cred_scan.orch.workspace import Workspace
 
+from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.models import BoundaryPaths
+from cred_scan.common.filesystem import (
+    ResourceBusyError,
+    fsync_directory,
+    scratch_dir as create_scratch_dir,
+)
+from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.judge.evidence import (
     EvidenceConflictError,
     evidence_path,
     retain_first_evidence,
 )
-from cred_scan.judge.proto import FatalJudgeError, FindingJudge
-from cred_scan.backend.inventory import merge_inventory
+from cred_scan.judge.proto import FatalJudgeError
 from cred_scan.orch.credentials import merge_scan
 from cred_scan.scan.credentials import deduplicate_report
 from cred_scan.scan.models import (
@@ -31,10 +45,29 @@ from cred_scan.scan.models import (
 from cred_scan.scan.titus import TitusScannerPool
 
 LOGGER = logging.getLogger(__name__)
+DocumentT = TypeVar("DocumentT", bound=BaseModel)
+
+
+@contextmanager
+def _boundary_lock(path: Path) -> Iterator[None]:
+    """Own a boundary with an atomically created sentinel file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write("locked\n")
+    except FileExistsError as error:
+        raise ResourceBusyError(
+            f"boundary operation already active: {path.parent}"
+        ) from error
+
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
 
 
 class ReadSession:
-    """Reuse bytes for one credential's judgment and immediate evidence only."""
+    """Reuse bytes for one credential's judgment session."""
 
     def __init__(self, reader: ContentReader) -> None:
         self.reader = reader
@@ -87,42 +120,192 @@ class ReadSession:
 
 
 class Boundary:
-    """Mutable aggregate for one report boundary."""
+    """Fully loaded mutable aggregate for one persisted report boundary."""
 
-    def __init__(
-        self,
-        inventory: ScanBoundaryInventory,
-        workspace: Workspace,
-        *,
-        paths: BoundaryPaths,
-        backend: BackendAdapter,
-        document: CredentialsDocument | None,
-        report: TitusReport | None,
-        scanners: TitusScannerPool,
-        judge: FindingJudge,
-        policy: ExclusionPolicy,
-    ) -> None:
-        self.inventory = inventory
+    def __init__(self, workspace: Workspace, path: Path) -> None:
         self.workspace = workspace
-        self.paths = paths
-        self.backend = backend
-        self.document = document
-        self.report = report
-        self.scanners = scanners
-        self.judge_service = judge
-        self.policy = policy
-        if document is not None:
-            self._validate_document_boundary(document)
+        self.boundary_id = unquote(path.name)
+        self.paths = BoundaryPaths(
+            boundary_id=self.boundary_id,
+            boundary_dir=path,
+        )
 
-    @property
-    def boundary_id(self) -> str:
-        return self.inventory.boundary.id
+        # Construction reads one consistent boundary snapshot. The lock is a
+        # simple sentinel because Workspace is the sole process owner.
+        with _boundary_lock(self.paths.operation_lock):
+            inventory = self._read(
+                self.paths.inventory,
+                ScanBoundaryInventory,
+            )
+            if inventory is None:
+                raise ValueError(
+                    f"missing boundary inventory: {self.paths.inventory}"
+                )
+            if inventory.boundary.id != self.boundary_id:
+                raise ValueError(
+                    "boundary inventory does not match boundary path: "
+                    f"{self.paths.inventory}"
+                )
+            if inventory.backend.name != workspace.backend.name:
+                raise ValueError(
+                    "boundary inventory belongs to another configured backend"
+                )
 
+            report = self._read(self.paths.report, TitusReport)
+            if report is not None and report.boundary_id != self.boundary_id:
+                raise ValueError(
+                    f"report belongs to another boundary: {self.paths.report}"
+                )
+
+            credentials = self._read(
+                self.paths.credentials,
+                CredentialsDocument,
+            )
+            if (
+                credentials is not None
+                and credentials.boundary_id != self.boundary_id
+            ):
+                raise ValueError(
+                    "credentials belong to another boundary: "
+                    f"{self.paths.credentials}"
+                )
+
+            self.inventory: ScanBoundaryInventory = inventory
+            self.report: TitusReport = report or TitusReport(
+                boundary_id=self.boundary_id,
+                generated_at="",
+                incomplete=True,
+            )
+            self.credentials: CredentialsDocument = credentials or (
+                CredentialsDocument(
+                    boundary_id=self.boundary_id,
+                    report_generated_at="",
+                    incomplete=True,
+                )
+            )
+            self._has_report = report is not None
+            self._has_credentials = credentials is not None
+
+        self.backend: BackendAdapter = workspace.backend
+        self.policy: ExclusionPolicy = workspace.policy
+        self.judge_service = DspyFindingJudge(workspace.config)
+        self.scanners = TitusScannerPool(
+            workspace.config.titus,
+            self.inventory,
+            self.backend,
+            concurrency=workspace.config.scan_concurrency,
+            environment={
+                "ARTIFACTORY_PASSWORD": (
+                    workspace.config.artifactory_api_key or ""
+                ),
+                "ARTIFACTORY_TOKEN": (
+                    workspace.config.artifactory_api_key or ""
+                ),
+                "ARTIFACTORY_API_KEY": (
+                    workspace.config.artifactory_api_key or ""
+                ),
+            },
+            scratch_dir=self.scratch_dir,
+        )
+        self._operation_active = False
+
+    @staticmethod
+    def _read(
+        path: Path,
+        model_type: type[DocumentT],
+    ) -> DocumentT | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        return model_type.model_validate(payload)
+
+    def _write(
+        self,
+        path: Path,
+        document: DocumentT,
+        model_type: type[DocumentT],
+    ) -> None:
+        """Atomically write one document while this boundary owns its lock."""
+        if not self._operation_active:
+            raise RuntimeError(
+                "boundary document write requires the boundary operation"
+            )
+        if not isinstance(document, model_type):
+            raise TypeError(
+                f"expected {model_type.__name__}, got {type(document).__name__}"
+            )
+
+        validated = model_type.model_validate(
+            document.model_dump(mode="json")
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(
+                    validated.model_dump(mode="json"),
+                    stream,
+                    indent=2,
+                    sort_keys=True,
+                )
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+            fsync_directory(path.parent)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @contextmanager
+    def scratch_dir(self) -> Iterator[Path]:
+        """Own one temporary scratch child for this boundary."""
+        with create_scratch_dir(self.paths.scratch_parent) as directory:
+            yield directory
+
+    @contextmanager
+    def operation(self) -> Iterator[Boundary]:
+        """Own this boundary for one serialized operation."""
+        if self._operation_active:
+            raise RuntimeError(
+                f"boundary operation already active: {self.boundary_id}"
+            )
+
+        self._operation_active = True
+        try:
+            with _boundary_lock(self.paths.operation_lock):
+                yield self
+        finally:
+            self._operation_active = False
+
+    def checkpoint(self) -> None:
+        """Persist this boundary's current aggregate."""
+        if not self._operation_active:
+            raise RuntimeError(
+                "boundary checkpoint requires the boundary operation"
+            )
+
+        self._write(
+            self.paths.inventory,
+            self.inventory,
+            ScanBoundaryInventory,
+        )
+        if self._has_report:
+            self._write(self.paths.report, self.report, TitusReport)
+        if self._has_credentials:
+            self._write(
+                self.paths.credentials,
+                self.credentials,
+                CredentialsDocument,
+            )
 
     def needs_scan(self) -> bool:
         if self.inventory.lifecycle == "stale":
             return False
-        return self.report is None or self.document is None or any(
+        return not self._has_report or not self._has_credentials or any(
             target.lifecycle == "current"
             and target.scope.lifecycle == "active"
             and (
@@ -136,42 +319,54 @@ class Boundary:
         )
 
     def needs_judge(self) -> bool:
-        return self.document is not None and any(
+        return any(
             credential.judgment.verdict in {"PENDING", "ERROR"}
-            for credential in self.document.credentials.values()
+            for credential in self.credentials.credentials.values()
         )
 
     def needs_extract(self) -> bool:
-        return self.document is not None and any(
+        return any(
             credential.judgment.verdict == "VALID"
             and (
                 credential.extraction is None
                 or credential.extraction.status == "ERROR"
             )
-            for credential in self.document.credentials.values()
+            for credential in self.credentials.credentials.values()
         )
 
-    def checkpoint(self) -> None:
-        self.workspace.checkpoint(self)
+    async def refresh_inventory(self) -> bool:
+        with self.operation():
+            try:
+                discovered = await self.backend.inventory(self.boundary_id)
+            except KeyError:
+                self.inventory.lifecycle = "stale"
+                self.inventory.stale_reason = (
+                    "boundary absent from authoritative inventory"
+                )
+                self.checkpoint()
+                return True
 
-    async def refresh_inventory(self) -> None:
-        """Refresh this boundary's pins and persist the in-memory aggregate."""
-        try:
-            discovered = await self.backend.inventory(self.boundary_id)
-        except KeyError:
-            self.inventory.lifecycle = "stale"
-            self.inventory.stale_reason = "boundary absent from authoritative inventory"
+            if discovered.boundary.id != self.boundary_id:
+                raise ValueError(
+                    "backend returned inventory for another boundary"
+                )
+
+            self.inventory = merge_inventory(self.inventory, discovered)
+            self.scanners.inventory = self.inventory
             self.checkpoint()
-            return
-        if discovered.boundary.id != self.boundary_id:
-            raise ValueError("backend returned inventory for another boundary")
-        self.inventory = merge_inventory(self.inventory, discovered)
-        self.checkpoint()
+            return True
 
-    async def scan(self) -> None:
-        """Scan this boundary and publish its final credential checkpoint."""
+    async def scan(self) -> bool:
+        with self.operation():
+            if not self.needs_scan():
+                return False
+            await self._scan()
+            return True
+
+    async def _scan(self) -> None:
         if self.inventory.lifecycle == "stale":
             raise ValueError("cannot scan a stale boundary")
+
         self.scanners.inventory = self.inventory
         interrupted = [
             target
@@ -213,7 +408,6 @@ class Boundary:
         )
         results = await self.scanners.scan(
             tuple(target.model_copy(deep=True) for target in eligible),
-            self.paths.scratch_parent,
             self.paths.datastore,
             self.policy,
         )
@@ -236,11 +430,13 @@ class Boundary:
         active_targets = tuple(
             target
             for target in self.inventory.targets
-            if target.lifecycle == "current" and target.scope.lifecycle == "active"
+            if target.lifecycle == "current"
+            and target.scope.lifecycle == "active"
         )
         incomplete = bool(self.inventory.errors) or any(
             target.result.status != "scanned" for target in active_targets
         )
+
         if not self.inventory.targets:
             generated_at = datetime.now(UTC).isoformat()
             self.report = TitusReport(
@@ -249,12 +445,14 @@ class Boundary:
                 incomplete=True,
                 errors=self.inventory.errors,
             )
-            self.document = CredentialsDocument(
+            self.credentials = CredentialsDocument(
                 boundary_id=self.boundary_id,
                 report_generated_at=generated_at,
                 incomplete=True,
                 errors=self.inventory.errors,
             )
+            self._has_report = True
+            self._has_credentials = True
             self.checkpoint()
         else:
             report = await self.scanners.export_report(self.paths.datastore)
@@ -264,9 +462,13 @@ class Boundary:
                     "errors": tuple(report.errors) + self.inventory.errors,
                 }
             )
+            self._has_report = True
             self.checkpoint()
+
             resolver = self.backend.content_reader(
-                self.inventory.boundary, self.inventory.targets
+                self.inventory.boundary,
+                self.inventory.targets,
+                self.scratch_dir,
             )
             try:
                 candidates = await deduplicate_report(
@@ -277,33 +479,30 @@ class Boundary:
                 )
             finally:
                 await resolver.aclose()
-            self.document = merge_scan(self.document, candidates)
+
+            self.credentials = merge_scan(self.credentials, candidates)
+            self._has_credentials = True
             self.checkpoint()
 
         LOGGER.info(
             "scan complete boundary=%s candidates=%d incomplete=%s",
             self.boundary_id,
-            len(self.document.credentials) if self.document is not None else 0,
-            self.document.incomplete if self.document is not None else True,
+            len(self.credentials.credentials),
+            self.credentials.incomplete,
         )
 
-    def _validate_document_boundary(self, document: CredentialsDocument) -> None:
-        if document.boundary_id != self.boundary_id:
-            raise ValueError("credentials document belongs to another boundary")
-
-    @staticmethod
-    def _error_result(error: BaseException) -> JudgmentResult:
-        return JudgmentResult(verdict="ERROR", reasoning=str(error)[:500])
-
     async def judge(self) -> int:
-        """Judge pending and failed candidates without extracting evidence."""
-        if self.document is None:
-            raise RuntimeError("boundary has no published credentials")
-        self._validate_document_boundary(self.document)
+        with self.operation():
+            if not self.needs_judge():
+                return 0
+            return await self._judge()
+
+    async def _judge(self) -> int:
         judged = 0
-        for credential in tuple(self.document.credentials.values()):
+        for credential in tuple(self.credentials.credentials.values()):
             if credential.judgment.verdict not in {"PENDING", "ERROR"}:
                 continue
+
             judged += 1
             reader: ReadSession | None = None
             try:
@@ -312,9 +511,13 @@ class Boundary:
                         self.backend.content_reader(
                             self.inventory.boundary,
                             self.inventory.targets,
+                            self.scratch_dir,
                         )
                     )
-                    result = await self.judge_service.judge(credential, reader)
+                    result = await self.judge_service.judge(
+                        credential,
+                        reader,
+                    )
                 except FatalJudgeError:
                     raise
                 except Exception as error:
@@ -323,7 +526,11 @@ class Boundary:
                         self.boundary_id,
                         credential.credential_id,
                     )
-                    result = self._error_result(error)
+                    result = JudgmentResult(
+                        verdict="ERROR",
+                        reasoning=str(error)[:500],
+                    )
+
                 credential.judgment = result
                 self.checkpoint()
             finally:
@@ -332,17 +539,22 @@ class Boundary:
         return judged
 
     async def extract(self) -> int:
-        """Retain evidence for VALID candidates with missing or failed extraction."""
-        if self.document is None:
-            raise RuntimeError("boundary has no published credentials")
-        self._validate_document_boundary(self.document)
+        with self.operation():
+            if not self.needs_extract():
+                return 0
+            return await self._extract()
+
+    async def _extract(self) -> int:
         retained = 0
-        for credential in tuple(self.document.credentials.values()):
-            if credential.judgment.verdict != "VALID" or not (
+        for credential in tuple(self.credentials.credentials.values()):
+            if credential.judgment.verdict != "VALID":
+                continue
+            if not (
                 credential.extraction is None
                 or credential.extraction.status == "ERROR"
             ):
                 continue
+
             reader: ReadSession | None = None
             try:
                 try:
@@ -350,6 +562,7 @@ class Boundary:
                         self.backend.content_reader(
                             self.inventory.boundary,
                             self.inventory.targets,
+                            self.scratch_dir,
                         )
                     )
                     location = await reader.resolve_location(
@@ -386,6 +599,7 @@ class Boundary:
                         status="ERROR",
                         error=str(error)[:500],
                     )
+
                 credential.extraction = extraction
                 self.checkpoint()
             finally:

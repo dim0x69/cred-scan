@@ -36,9 +36,11 @@ from cred_scan.backend.models import (
     ScanTarget,
     target_id_for,
 )
-from cred_scan.backend.proto import ContentReader, UnsupportedTitusTargetError
-from cred_scan.common.proto import WorkspaceProtocol
-from cred_scan.common.workspace import scratch_dir
+from cred_scan.backend.proto import (
+    ContentReader,
+    ScratchDirectory,
+    UnsupportedTitusTargetError,
+)
 
 MANIFEST_ACCEPT = ", ".join(
     (
@@ -175,7 +177,7 @@ class ArtifactoryDockerReader(ContentReader):
         boundary: ScanBoundaryRef,
         targets: tuple[ScanTarget, ...],
         *,
-        workspace: WorkspaceProtocol,
+        scratch_dir: ScratchDirectory,
     ) -> None:
         if not targets:
             raise ValueError("a content reader requires at least one target")
@@ -183,9 +185,7 @@ class ArtifactoryDockerReader(ContentReader):
         self.boundary = boundary
         self.targets = targets
         self._closed = False
-        self._scratch_context = scratch_dir(
-            workspace.boundary(boundary.id).scratch_parent
-        )
+        self._scratch_context = scratch_dir()
         self._scratch_dir = Path(self._scratch_context.__enter__())
 
     async def _manifest(self, provenance: DockerProvenance) -> dict[str, Any]:
@@ -413,10 +413,8 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         self,
         config: ArtifactoryBackendConfig,
         token: str,
-        *,
-        workspace: WorkspaceProtocol,
     ) -> None:
-        super().__init__(config, token, workspace=workspace)
+        super().__init__(config, token)
         # Platform selection is a Docker concern, not common Artifactory setup.
         self.platform = config.platform
 
@@ -514,13 +512,16 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         )
 
     def content_reader(
-        self, boundary: ScanBoundaryRef, targets: tuple[ScanTarget, ...]
+        self,
+        boundary: ScanBoundaryRef,
+        targets: tuple[ScanTarget, ...],
+        scratch_dir: ScratchDirectory,
     ) -> ArtifactoryDockerReader:
         return ArtifactoryDockerReader(
             self,
             boundary,
             targets,
-            workspace=self.workspace,
+            scratch_dir=scratch_dir,
         )
 
     def _repository(self, name: str) -> ArtifactoryRepository:

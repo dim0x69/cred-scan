@@ -238,7 +238,7 @@
         <ul class="nodes">
           <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Pinned targets + retained history<br><code>inventory.json</code></small></li>
         </ul>
-        <p class="stage-foot"><code>cred-scan inventory BOUNDARY_ID</code><br>Refreshes exactly one boundary. Inventory is a Boundary operation and must run alone.</p>
+        <p class="stage-foot"><code>cred-scan inventory</code><br>Refreshes the next persisted boundary. Inventory is a Boundary operation and must run alone.</p>
       </li>
       <li class="stage scan">
         <span class="number">02 / DETECTION</span>
@@ -258,7 +258,7 @@
           <li><a href="#model-credentials">CredentialsDocument</a><small>Append-only observations · <code>credentials.json</code></small></li>
           <li class="artifact"><code>titus.ds/</code><small>One persistent boundary datastore</small></li>
         </ul>
-        <p class="stage-foot"><code>cred-scan scan BOUNDARY_ID</code><br>Scan only. Judge and Extract are separate commands.</p>
+        <p class="stage-foot"><code>cred-scan scan</code><br>Scans the next eligible boundary. Judge and Extract are separate commands.</p>
       </li>
       <li class="stage judge">
         <span class="number">03 / ASSESSMENT</span>
@@ -295,9 +295,9 @@
         <p class="stage-foot">Trust and skip RETAINED records. For missing/error extraction, retrieve exact pinned bytes; never overwrite an existing conflicting artifact.</p>
       </li>
     </ol>
-    <div class="gate"><strong>Operator sequence:</strong> <code>inventory BOUNDARY_ID</code>, then <code>scan [BOUNDARY_ID]</code>, <code>judge [BOUNDARY_ID]</code>, and <code>extract [BOUNDARY_ID]</code>. With an ID, a command owns that boundary; without one, <code>BoundarySelector</code> selects one eligible boundary while holding its live lock. Inventory is run only when no other command is active. Different boundaries may run in parallel. Judge never extracts evidence; Extract only consumes saved VALID judgments.</div>
+    <div class="gate"><strong>Operator sequence:</strong> <code>inventory</code>, then <code>scan</code>, <code>judge</code>, and <code>extract</code>. One Workspace owns one serialized command loop. It constructs each Boundary once; the Boundary loads its documents at construction, creates its boundary-local <code>.operation.lock</code> sentinel for an operation, checkpoints its own files, and removes the sentinel on release. Judge never extracts evidence; Extract only consumes saved VALID judgments.</div>
     <p class="port">The Boundary is the mutable aggregate. Its inventory, report, and credentials are checkpointed together; there is no scheduler checkpoint or cross-boundary handoff.</p>
-    <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; <a href="#model-paths"><code>BoundaryPaths</code></a> selects storage; <code>BackendAdapter</code>, <code>ContentReader</code>, and <code>WorkspaceProtocol</code> are service ports, not serialized models.</p>
+    <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; the Boundary derives its own storage paths from its directory; <code>BackendAdapter</code> and <code>ContentReader</code> are service ports, not serialized models.</p>
   </section>
 
   <section id="contracts" aria-labelledby="contracts-title">
@@ -377,51 +377,52 @@ retain_first_evidence(
   <section id="execution" aria-labelledby="execution-title">
     <p class="eyebrow">Execution / Persisted obligations, exclusive live ownership</p>
     <h2 id="execution-title">One boundary can owe work in several phases.</h2>
-    <p class="section-intro">The runtime <code>Boundary</code> is the mutable aggregate for one boundary. Workspace constructs it from the inventory and credential documents and supplies the workspace's single backend. Inventory, report, and credentials are changed in memory and written together at checkpoints. There is no cross-boundary scheduler state.</p>
+    <p class="section-intro">The runtime <code>Boundary</code> is the fully loaded mutable aggregate for one boundary. Workspace supplies configuration, the single backend, policy, and boundary discovery; the Boundary reads its inventory, report, and credentials during construction. Inventory, report, and credentials are changed in memory and written together at Boundary-owned checkpoints. There is no cross-boundary scheduler state.</p>
     <div class="grid-two">
       <article class="panel">
         <h3>Boundary ownership</h3>
         <pre>Boundary
   inventory: ScanBoundaryInventory
-  report: TitusReport?
-  document: CredentialsDocument?
+  report: TitusReport
+  credentials: CredentialsDocument
   scan()
   judge()
   extract()
   checkpoint()</pre>
-        <p>The boundary lock gives one command exclusive ownership of this aggregate. Target results, credential verdicts, and extraction metadata are the durable work state; no separate phase-readiness document is needed.</p>
+        <p>The Boundary owns its operation sentinel and its checkpoint. Target results, credential verdicts, and extraction metadata are the durable work state; no separate phase-readiness document is needed.</p>
       </article>
       <article class="panel">
         <h3>Loading is owning</h3>
-        <pre>workspace.boundary_session(boundary_id)
-  → one Boundary
+        <pre>workspace.boundaries
+  → tuple[Boundary, ...]
+  → each Boundary loads its documents once
 
-workspace.selector.next_scan()
-workspace.selector.next_judge()
-workspace.selector.next_extract()
-  → one locked Boundary | None</pre>
+boundary.scan()
+boundary.judge()
+boundary.extract()
+  → Boundary-owned operation and checkpoint</pre>
         <ol>
-          <li>Acquire <code>boundary/.operation.lock</code>.</li>
-          <li>Load exactly one inventory, report, and credentials document.</li>
+          <li>Construct one fully loaded <code>Boundary</code>.</li>
+          <li>Create the boundary-local <code>.operation.lock</code> sentinel.</li>
           <li>Run exactly one requested operation on that Boundary.</li>
-          <li>Mutate the in-memory aggregate and checkpoint it.</li>
-          <li>Release the lock after backend and Titus cleanup.</li>
+          <li>Mutate the in-memory aggregate and call <code>Boundary.checkpoint()</code>.</li>
+          <li>Remove the sentinel after backend and Titus cleanup.</li>
         </ol>
-        <p>Different boundary IDs may run in parallel. Selector methods try boundary locks in deterministic order and skip busy boundaries. They do not persist scheduler claims. Inventory is boundary-scoped and is run only when no other command is active.</p>
+        <p>The single Workspace command loop serializes boundary operations. No workspace-wide lock or scheduler claim is persisted. Inventory is boundary-scoped and is run only when no other command is active.</p>
       </article>
     </div>
     <div class="panel" style="margin-top: 1.25rem">
       <h3>Ownership and dependency direction</h3>
       <pre>cli.py → orch/runtime.py → orch/workspace.py → orch/boundary.py
                                         ↓                     ↓
-                              common/workspace.py     storage + checkpoint ports
+                              common/filesystem.py    boundary-owned storage
 
-common: WorkspaceProtocol, BoundaryPaths, scratch/fsync helpers
-Workspace: one backend, paths, atomic I/O, boundary locks, documents, backend lifetime, Boundary construction
-Boundary: one mutable inventory/report/credentials aggregate and four operations
+common: scratch/fsync helpers
+Workspace: one backend, Boundary discovery, Boundary construction, backend lifetime
+Boundary: one fully loaded inventory/report/credentials aggregate, derived paths, sentinel lock, atomic I/O, checkpoint, and four operations
 TitusScannerPool: bounded concurrent Titus processes for one boundary scan
 LocalRuntime: one boundary command at a time</pre>
-      <p>Boundary uses the concrete Workspace supplied by its owner; there is no second claim-checkpoint protocol. Backend adapters retain the small storage-only <code>WorkspaceProtocol</code>, which exposes only boundary path lookup. Backend discovery never imports orchestration; scan never imports judge/orchestration; configuration loading never imports scheduling. Boundary's type-only Workspace reference avoids a runtime cycle.</p>
+      <p>Boundary uses the concrete Workspace supplied by its owner; there is no second claim-checkpoint protocol. Backend content readers receive the Boundary's scratch context directly and do not depend on Workspace or BoundaryPaths. Backend discovery never imports orchestration; scan never imports judge/orchestration; configuration loading never imports scheduling. Boundary's type-only Workspace reference avoids a runtime cycle.</p>
       <p>Workspace owns one configured backend and one backend lifetime. Boundary receives the Titus scanner pool, judge, and exclusion policy. Boundary closes its readers; Workspace closes the backend after the command. Scan concurrency is managed inside <code>TitusScannerPool</code>, not across boundaries.</p>
     </div>
     <div class="table-scroll" style="margin-top: 1.25rem" role="region" aria-label="Execution transitions" tabindex="0">
@@ -458,8 +459,8 @@ LocalRuntime: one boundary command at a time</pre>
         <h3>Reconciliation and resource recovery</h3>
         <p>At boundary-session entry, validate the selected inventory and document identities. Target, judgment, and extraction status are read from their canonical documents. Invalid schemas, missing required documents, and mismatched identities fail explicitly.</p>
         <p>Standalone recovery may park an orphaned scan as READY, keeping publication intent, and process the previously published credential checkpoint. It never converts the newer unpublished report as judge input.</p>
-        <p>Titus inherits the operation-lock descriptor for scan and export. If the parent process dies, the surviving child keeps the workspace locked until it exits. After acquiring the lock, a new operation removes abandoned scratch. Graceful cancellation reaps children before cleanup. Hard process death cannot execute Python backend-close handlers.</p>
-        <p>The inherited-lock mechanism is covered by synthetic subprocess tests. The adjusted Titus build must still be verified to preserve the descriptor and cumulative datastore guarantees in deployment.</p>
+        <p>The Boundary owns a simple create/remove operation sentinel. Normal cleanup removes it after backend and Titus cleanup. Atomic document replacement preserves the last complete individual checkpoint. A hard process death can leave a stale sentinel, so startup or operations must use the documented stale-sentinel recovery policy.</p>
+        <p>Titus receives no lock descriptor. The adjusted Titus build must still be verified for cumulative datastore guarantees and normal child cleanup in deployment.</p>
       </article>
     </div>
   </section>
@@ -467,7 +468,7 @@ LocalRuntime: one boundary command at a time</pre>
   <section id="upgrade" aria-labelledby="upgrade-title">
     <p class="eyebrow">Upgrade / Explicit operator action</p>
     <h2 id="upgrade-title">Preserve existing workspaces; reject obsolete formats.</h2>
-    <p><strong>Stop all scanners and any surviving old Titus subprocesses before upgrading.</strong> Older versions did not pass the operation lock to Titus children. Back up the complete workspace, including the datastore, before applying the upgrade.</p>
+    <p><strong>Stop all scanners and any surviving old Titus subprocesses before upgrading.</strong> Remove only a confirmed stale boundary sentinel; never remove a sentinel belonging to a live operation. Back up the complete workspace, including the datastore, before applying the upgrade.</p>
     <p>Current contracts are <strong>inventory 8 · report 2 · credentials 8</strong>. Runtime commands do not require an execution checkpoint; target, judgment, and extraction results are the source of truth.</p>
     <pre>uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --dry-run
 # Back up the complete workspace before applying:
@@ -665,15 +666,16 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
           </div>
         </details>
         <details class="model" id="model-paths" open style="margin-top: 1.25rem">
-          <summary><code>BoundaryPaths</code> <span class="chip">nonpersisted value</span></summary>
+          <summary><code>BoundaryPaths</code> <span class="chip">Boundary-internal nonpersisted value</span></summary>
           <div class="model-body">
-            <p class="owner">Owner: <code>common/models.py</code>. Frozen, I/O-free path value; not another inventory or service handle.</p>
+            <p class="owner">Used only by <code>orch/boundary.py</code>. Frozen, I/O-free path value; not another inventory or service handle.</p>
             <ul class="tree">
               <li><code>boundary_id: str</code></li>
               <li><code>boundary_dir: Path</code></li>
-              <li>Derived properties: <code>inventory</code>, <code>operation_lock</code>, <code>report</code>, <code>credentials</code>, <code>datastore</code>, <code>scratch_parent</code></li>
+              <li>Derived properties: <code>inventory</code>, <code>operation_lock</code>, <code>report</code>, <code>credentials</code>, <code>datastore</code></li>
+              <li><code>Boundary.scratch_dir()</code> owns one temporary scratch child</li>
             </ul>
-            <p>Common owns the path model and small scratch/fsync helpers; orchestration has one concrete Workspace that owns directory encoding, typed document I/O, boundary locking, one backend lifetime, and Boundary construction. Evidence destinations belong to <code>judge/evidence.py</code>, not to a nested evidence workspace model.</p>
+            <p>Boundary owns its derived path value, typed document I/O, the boundary-local operation sentinel, checkpoints, and evidence-adjacent persistence. Common owns only small scratch/fsync helpers. Workspace owns directory discovery, one backend lifetime, and Boundary construction. Evidence destinations belong to <code>judge/evidence.py</code>, not to a nested evidence workspace model.</p>
           </div>
         </details>
       </div>
@@ -701,9 +703,9 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
       <article class="panel">
         <h3>Scheduling and handoff</h3>
         <ul>
-          <li>Each command owns one boundary lock. Inventory, scan, judge, and extract are independent boundary operations; inventory is run only when no other command is active.</li>
+          <li>The single Workspace command loop serializes inventory, scan, judge, and extract operations. Each Boundary owns a simple operation sentinel for its active operation.</li>
           <li>One Titus worker owns one target and all its attempts; <code>scan_concurrency</code> bounds concurrent Titus workers within the selected boundary.</li>
-          <li>Independent boundaries may run concurrently. A single boundary scan owns a <code>TitusScannerPool</code> with up to <code>scan_concurrency</code> Titus processes; results are applied to the in-memory inventory and checkpointed by the Boundary coordinator.</li>
+          <li>A single boundary scan owns a <code>TitusScannerPool</code> with up to <code>scan_concurrency</code> Titus processes; results are applied to the in-memory inventory and checkpointed by the Boundary coordinator.</li>
           <li>Normal scan also drains previously published unfinished judgment/evidence on active boundaries without another Titus export. Fully completed boundaries and RETAINED artifacts are skipped.</li>
           <li>Stale boundaries/scopes, superseded pins, and already-scanned current targets do not start new target scans.</li>
         </ul>
@@ -738,7 +740,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
   </section>
 
   <footer>
-    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>orch/models.py</code>, <code>common/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Low-level storage: <code>common/workspace.py</code>.</p>
+    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>orch/models.py</code>, <code>common/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Low-level filesystem helpers: <code>common/filesystem.py</code>.</p>
     <p>This HTML is the authoritative architecture, workflow, port, and model guide, intentionally self-contained and readable outside the repository. Retired Markdown documents are not maintained. Current document schemas: inventory 8 · report 2 · credentials 8.</p>
   </footer>
 </main>

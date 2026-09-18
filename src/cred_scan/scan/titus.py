@@ -13,8 +13,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
-from cred_scan.common.workspace import scratch_dir
-from cred_scan.backend.proto import BackendAdapter, UnsupportedTitusTargetError
+from cred_scan.backend.proto import (
+    BackendAdapter,
+    ScratchDirectory,
+    UnsupportedTitusTargetError,
+)
 from cred_scan.scan.credentials import report_from_export
 from cred_scan.scan.models import ExclusionPolicy, TitusReport
 from cred_scan.scan.proto import CredentialScanner
@@ -57,14 +60,11 @@ class TitusCliScanner(CredentialScanner):
         inventory: ScanBoundaryInventory,
         backend: BackendAdapter,
         environment: Mapping[str, str] | None = None,
-        *,
-        boundary_lock_fd: int | None = None,
     ) -> None:
         self.config = config
         self.inventory = inventory
         self.backend = backend
         self.environment = dict(environment or {})
-        self._pass_fds = () if boundary_lock_fd is None else (boundary_lock_fd,)
 
     async def scan(
         self,
@@ -119,7 +119,6 @@ class TitusCliScanner(CredentialScanner):
                 *command,
                 cwd=work_dir,
                 env=environment,
-                pass_fds=self._pass_fds,
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as error:
@@ -193,7 +192,6 @@ class TitusCliScanner(CredentialScanner):
                 "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                pass_fds=self._pass_fds,
             )
         except OSError:
             LOGGER.exception("Titus report process could not start datastore=%s", datastore)
@@ -237,8 +235,8 @@ class TitusScannerPool:
         backend: BackendAdapter,
         *,
         concurrency: int,
-        boundary_lock_fd: int,
         environment: Mapping[str, str],
+        scratch_dir: ScratchDirectory,
     ) -> None:
         if concurrency < 1:
             raise ValueError("Titus scanner concurrency must be positive")
@@ -246,27 +244,25 @@ class TitusScannerPool:
         self.inventory = inventory
         self.backend = backend
         self.concurrency = concurrency
-        self.boundary_lock_fd = boundary_lock_fd
         self.environment = dict(environment)
+        self.scratch_dir = scratch_dir
 
     def _scanner(self) -> TitusCliScanner:
         return TitusCliScanner(
             self.config,
             self.inventory,
             self.backend,
-            boundary_lock_fd=self.boundary_lock_fd,
             environment=self.environment,
         )
 
     async def _scan_one(
         self,
         target: ScanTarget,
-        scratch_parent: Path,
         datastore: Path,
         exclusions: ExclusionPolicy,
     ) -> ScanTarget:
         scanner = self._scanner()
-        with scratch_dir(scratch_parent) as work_dir:
+        with self.scratch_dir() as work_dir:
             current = target
             for attempt in range(3):
                 LOGGER.info(
@@ -288,7 +284,6 @@ class TitusScannerPool:
     async def scan(
         self,
         targets: Sequence[ScanTarget],
-        scratch_parent: Path,
         datastore: Path,
         exclusions: ExclusionPolicy,
     ) -> tuple[ScanTarget, ...]:
@@ -298,7 +293,6 @@ class TitusScannerPool:
             async with semaphore:
                 return await self._scan_one(
                     target,
-                    scratch_parent,
                     datastore,
                     exclusions,
                 )

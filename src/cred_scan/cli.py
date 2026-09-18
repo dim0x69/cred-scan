@@ -1,9 +1,10 @@
-"""Thin local CLI for one-boundary operations."""
+"""Thin local CLI for one-boundary workflow operations."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -15,7 +16,7 @@ from cred_scan.orch.runtime import LocalRuntime
 LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(
-    help="Backend-agnostic credential scanner; each command operates on one boundary.",
+    help="Backend-agnostic credential scanner; each invocation advances one boundary.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -37,115 +38,85 @@ def _existing_config(config: Path) -> Path:
     return path
 
 
-def _run_command(
+def _run(
     command: str,
-    boundary_id: str | None,
     config: Path,
-    message: str,
-    operation: str,
+    operation: Callable[[LocalRuntime], Awaitable[int]],
+    output: str,
 ) -> None:
-    async def run() -> None:
-        loaded = await YamlConfigLoader().load(config)
-        result = await getattr(LocalRuntime(loaded), operation)(boundary_id)
-        if result is None:
-            typer.echo(message.format(boundary_id=boundary_id))
-        else:
-            typer.echo(message.format(boundary_id=boundary_id, count=result))
-
     config = _existing_config(config)
     _configure_logging()
-    LOGGER.info(
-        "starting command=%s boundary=%s config=%s",
-        command,
-        boundary_id or "<next>",
-        config,
-    )
+    LOGGER.info("starting command=%s config=%s", command, config)
+
+    async def execute() -> None:
+        loaded = await YamlConfigLoader().load(config)
+        count = await operation(LocalRuntime(loaded))
+        typer.echo(output.format(count=count))
+
     try:
-        asyncio.run(run())
+        asyncio.run(execute())
     except Exception:
-        LOGGER.error(
-            "command failed command=%s boundary=%s config=%s",
-            command,
-            boundary_id or "<next>",
-            config,
-        )
+        LOGGER.error("command failed command=%s config=%s", command, config)
         raise typer.Exit(1)
 
 
 @app.command()
 def inventory(
-    boundary_id: Annotated[str, typer.Argument(help="Report boundary identifier.")],
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Refresh the inventory for one report boundary."""
-    _run_command(
+    """Refresh the next persisted boundary inventory."""
+    _run(
         "inventory",
-        boundary_id,
         config,
-        "refreshed inventory for {boundary_id}",
-        "inventory",
+        lambda runtime: runtime.inventory(),
+        "refreshed inventory for {count} boundary(ies)",
     )
 
 
 @app.command()
 def scan(
-    boundary_id: Annotated[
-        str | None,
-        typer.Argument(help="Boundary identifier; omit to select the next boundary."),
-    ] = None,
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Scan pending targets for one report boundary."""
-    _run_command(
+    """Scan the next boundary with pending targets."""
+    _run(
         "scan",
-        boundary_id,
         config,
+        lambda runtime: runtime.scan(),
         "scanned {count} boundary(ies)",
-        "scan",
     )
 
 
 @app.command()
 def judge(
-    boundary_id: Annotated[
-        str | None,
-        typer.Argument(help="Boundary identifier; omit to select the next boundary."),
-    ] = None,
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Judge saved PENDING or ERROR credentials for one boundary."""
-    _run_command(
+    """Judge credentials in the next boundary with pending judgments."""
+    _run(
         "judge",
-        boundary_id,
         config,
+        lambda runtime: runtime.judge(),
         "judged {count} credential(s)",
-        "judge",
     )
 
 
 @app.command()
 def extract(
-    boundary_id: Annotated[
-        str | None,
-        typer.Argument(help="Boundary identifier; omit to select the next boundary."),
-    ] = None,
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Extract evidence for VALID credentials in one boundary."""
-    _run_command(
+    """Extract evidence in the next boundary with eligible credentials."""
+    _run(
         "extract",
-        boundary_id,
         config,
+        lambda runtime: runtime.extract(),
         "extracted {count} credential(s)",
-        "extract",
     )
 
 

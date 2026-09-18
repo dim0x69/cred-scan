@@ -1,4 +1,4 @@
-"""Low-level filesystem helpers shared by backend and evidence adapters."""
+"""Small filesystem primitives shared by boundary-owned adapters."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
-class WorkspaceBusyError(RuntimeError):
-    """Another operation owns the workspace or requested boundary."""
+class ResourceBusyError(RuntimeError):
+    """Another operation owns a requested filesystem resource."""
 
 
 @contextmanager
@@ -28,6 +28,7 @@ def scratch_dir(parent: Path) -> Iterator[Path]:
 
 
 def fsync_directory(directory: Path) -> None:
+    """Flush directory metadata after an atomic replacement."""
     descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)

@@ -8,7 +8,6 @@ import httpx
 
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryBackendConfig
 from cred_scan.backend.proto import BackendAdapter
-from cred_scan.common.proto import WorkspaceProtocol
 
 
 class ArtifactoryError(RuntimeError):
@@ -22,11 +21,8 @@ class ArtifactoryBackend(BackendAdapter):
         self,
         config: ArtifactoryBackendConfig,
         token: str,
-        *,
-        workspace: WorkspaceProtocol,
     ) -> None:
         self.config = config
-        self.workspace = workspace
         normalized = config.base_url.rstrip("/")
         self.base_url = (
             normalized
