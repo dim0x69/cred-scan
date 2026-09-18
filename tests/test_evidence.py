@@ -2,7 +2,12 @@ import asyncio
 import hashlib
 import pytest
 
-from cred_scan.judge.evidence import evidence_matches, evidence_path, retain_first_evidence
+from cred_scan.judge.evidence import (
+    EvidenceConflictError,
+    evidence_matches,
+    evidence_path,
+    retain_first_evidence,
+)
 from cred_scan.scan.models import ExtractionResult, JudgmentResult
 
 
@@ -72,3 +77,23 @@ def test_new_filename_does_not_delete_old_evidence(tmp_path, credential):
     assert sha256 == hashlib.sha256(b"new evidence").hexdigest()
     assert old.read_bytes() == b"historical artifact"
     assert destination.read_bytes() == b"new evidence"
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_orphaned_evidence_is_adopted_only_if_identical_never_overwritten(
+    tmp_path, matching
+):
+    destination = evidence_path(tmp_path, "credential", "app.env")
+    destination.parent.mkdir(parents=True)
+    original = b"same" if matching else b"different"
+    destination.write_bytes(original)
+    inode = destination.stat().st_ino
+    if matching:
+        _, size, digest = asyncio.run(retain_first_evidence(b"same", destination))
+        assert size == 4 and digest == hashlib.sha256(b"same").hexdigest()
+    else:
+        with pytest.raises(EvidenceConflictError):
+            asyncio.run(retain_first_evidence(b"same", destination))
+    assert destination.read_bytes() == original
+    assert destination.stat().st_ino == inode
+    assert not list(destination.parent.glob(".*.tmp"))

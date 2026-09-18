@@ -1,4 +1,4 @@
-"""Thin local CLI for manual inventory and append-only boundary scans."""
+"""Thin local CLI for one-boundary operations."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from cred_scan.orch.runtime import LocalRuntime
 LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(
-    help="Backend-agnostic credential scanner; inventory is manual and scan is append-only.",
+    help="Backend-agnostic credential scanner; each command operates on one boundary.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -37,119 +37,116 @@ def _existing_config(config: Path) -> Path:
     return path
 
 
+def _run_command(
+    command: str,
+    boundary_id: str | None,
+    config: Path,
+    message: str,
+    operation: str,
+) -> None:
+    async def run() -> None:
+        loaded = await YamlConfigLoader().load(config)
+        result = await getattr(LocalRuntime(loaded), operation)(boundary_id)
+        if result is None:
+            typer.echo(message.format(boundary_id=boundary_id))
+        else:
+            typer.echo(message.format(boundary_id=boundary_id, count=result))
+
+    config = _existing_config(config)
+    _configure_logging()
+    LOGGER.info(
+        "starting command=%s boundary=%s config=%s",
+        command,
+        boundary_id or "<next>",
+        config,
+    )
+    try:
+        asyncio.run(run())
+    except Exception:
+        LOGGER.error(
+            "command failed command=%s boundary=%s config=%s",
+            command,
+            boundary_id or "<next>",
+            config,
+        )
+        raise typer.Exit(1)
+
+
 @app.command()
 def inventory(
+    boundary_id: Annotated[str, typer.Argument(help="Report boundary identifier.")],
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Manually discover sources, update pins, and mark stale boundaries."""
-
-    async def run() -> None:
-        loaded = await YamlConfigLoader().load(config)
-        completed = await LocalRuntime(loaded).inventory()
-        typer.echo(f"wrote inventory with {completed} report boundary(ies)")
-
-    config = _existing_config(config)
-    _configure_logging()
-    LOGGER.info("starting command=inventory config=%s", config)
-    try:
-        asyncio.run(run())
-    except Exception:
-        LOGGER.error("command failed command=inventory config=%s", config)
-        raise typer.Exit(1)
-
-
-@app.command()
-def judge(
-    config: Annotated[
-        Path, typer.Option("--config", "-c", help="Central configuration file.")
-    ] = Path("config.yml"),
-) -> None:
-    """Judge persisted PENDING and ERROR credentials without scanning."""
-
-    async def run() -> None:
-        loaded = await YamlConfigLoader().load(config)
-        completed = await LocalRuntime(loaded).judge()
-        typer.echo(f"judged {completed} credential(s)")
-
-    config = _existing_config(config)
-    _configure_logging()
-    LOGGER.info("starting command=judge config=%s", config)
-    try:
-        asyncio.run(run())
-    except Exception:
-        LOGGER.error("command failed command=judge config=%s", config)
-        raise typer.Exit(1)
+    """Refresh the inventory for one report boundary."""
+    _run_command(
+        "inventory",
+        boundary_id,
+        config,
+        "refreshed inventory for {boundary_id}",
+        "inventory",
+    )
 
 
 @app.command()
 def scan(
+    boundary_id: Annotated[
+        str | None,
+        typer.Argument(help="Boundary identifier; omit to select the next boundary."),
+    ] = None,
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Scan persisted targets, judge findings, and retain evidence."""
+    """Scan pending targets for one report boundary."""
+    _run_command(
+        "scan",
+        boundary_id,
+        config,
+        "scanned {count} boundary(ies)",
+        "scan",
+    )
 
-    async def run() -> None:
-        loaded = await YamlConfigLoader().load(config)
-        completed = await LocalRuntime(loaded).scan()
-        typer.echo(f"scanned {completed} report boundary(ies)")
 
-    config = _existing_config(config)
-    _configure_logging()
-    LOGGER.info("starting command=scan config=%s", config)
-    try:
-        asyncio.run(run())
-    except Exception:
-        LOGGER.error("command failed command=scan config=%s", config)
-        raise typer.Exit(1)
+@app.command()
+def judge(
+    boundary_id: Annotated[
+        str | None,
+        typer.Argument(help="Boundary identifier; omit to select the next boundary."),
+    ] = None,
+    config: Annotated[
+        Path, typer.Option("--config", "-c", help="Central configuration file.")
+    ] = Path("config.yml"),
+) -> None:
+    """Judge saved PENDING or ERROR credentials for one boundary."""
+    _run_command(
+        "judge",
+        boundary_id,
+        config,
+        "judged {count} credential(s)",
+        "judge",
+    )
 
 
 @app.command()
 def extract(
+    boundary_id: Annotated[
+        str | None,
+        typer.Argument(help="Boundary identifier; omit to select the next boundary."),
+    ] = None,
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Extract first-occurrence evidence for persisted VALID credentials."""
-
-    async def run() -> None:
-        loaded = await YamlConfigLoader().load(config)
-        completed = await LocalRuntime(loaded).extract()
-        typer.echo(f"extracted {completed} credential(s)")
-
-    config = _existing_config(config)
-    _configure_logging()
-    LOGGER.info("starting command=extract config=%s", config)
-    try:
-        asyncio.run(run())
-    except Exception:
-        LOGGER.error("command failed command=extract config=%s", config)
-        raise typer.Exit(1)
-
-
-@app.command()
-def run(
-    config: Annotated[
-        Path, typer.Option("--config", "-c", help="Central configuration file.")
-    ] = Path("config.yml"),
-) -> None:
-    """Compatibility alias for the complete scan workflow."""
-
-    async def execute() -> None:
-        loaded = await YamlConfigLoader().load(config)
-        completed = await LocalRuntime(loaded).run()
-        typer.echo(f"completed {completed} report boundary(ies)")
-
-    config = _existing_config(config)
-    _configure_logging()
-    LOGGER.info("starting command=run config=%s", config)
-    try:
-        asyncio.run(execute())
-    except Exception:
-        LOGGER.error("command failed command=run config=%s", config)
-        raise typer.Exit(1)
+    """Extract evidence for VALID credentials in one boundary."""
+    _run_command(
+        "extract",
+        boundary_id,
+        config,
+        "extracted {count} credential(s)",
+        "extract",
+    )
 
 
 if __name__ == "__main__":

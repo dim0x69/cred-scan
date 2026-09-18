@@ -78,9 +78,7 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
     )
     resolver = AsyncMock()
     resolver.resolve_location.side_effect = [
-        _resolved(
-            scan_target.id, raw_path, "etc/app:prod.env", "app:prod.env"
-        ),
+        _resolved(scan_target.id, raw_path, "etc/app:prod.env", "app:prod.env"),
         _resolved(
             scan_target.id,
             raw[0]["Matches"][1]["file_path"],
@@ -199,9 +197,11 @@ def test_unavailable_locations_remain_raw_and_produce_diagnostics():
         _resolved(scan_target.id, "available", "etc/app.env", "app.env"),
         ValueError("ambiguous retained target"),
     ]
-    document = asyncio.run(deduplicate_report(
-        report, inventory, ExclusionPolicy(path_file="paths.list"), resolver
-    ))
+    document = asyncio.run(
+        deduplicate_report(
+            report, inventory, ExclusionPolicy(path_file="paths.list"), resolver
+        )
+    )
     assert report.model_dump_json() == original
     assert document.incomplete
     assert len(document.credentials) == 1

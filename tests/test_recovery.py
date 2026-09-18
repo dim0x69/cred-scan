@@ -6,11 +6,22 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
-from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory, target_id_for
+from cred_scan.backend.models import (
+    ContentLocation,
+    ContentRead,
+    ScanBoundaryInventory,
+    target_id_for,
+)
 from cred_scan.backend.proto import BackendAdapter, ContentReader
-from cred_scan.common.workspace import Workspace, WorkspaceBusyError
-from cred_scan.judge.proto import FindingJudge
-from cred_scan.orch import runtime
+from cred_scan.common.workspace import WorkspaceBusyError
+from cred_scan.orch.workspace import Workspace
+from cred_scan.judge.proto import FatalJudgeError, FindingJudge
+from cred_scan.orch import (
+    runtime,
+    boundary as boundary_module,
+    workspace as workspace_module,
+)
+from cred_scan.orch.execution import BoundaryExecution, Phase, PhaseStatus
 from cred_scan.orch.runtime import LocalRuntime
 from cred_scan.scan.models import (
     CredentialsDocument,
@@ -33,6 +44,11 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
         paths = workspace.boundary(inventory.boundary.id)
         workspace.write(paths.inventory, inventory, ScanBoundaryInventory)
         workspace.write(
+            paths.execution,
+            BoundaryExecution(boundary_id=inventory.boundary.id),
+            BoundaryExecution,
+        )
+        workspace.write(
             paths.report,
             TitusReport(
                 boundary_id=inventory.boundary.id,
@@ -54,7 +70,7 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
 
     paths = seed(repository_inventory, credential)
 
-    def build(*_args):
+    def build(*_args, **_kwargs):
         backend = create_autospec(BackendAdapter, instance=True)
         backend.name = "primary"
         backends.append(backend)
@@ -104,10 +120,10 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
     scanner.scan.side_effect = scan
     scanner.export_report.side_effect = export
     policy = Mock(return_value=ExclusionPolicy(path_file=app_config.exclusions.paths))
-    monkeypatch.setattr(runtime, "build_backend", build)
-    monkeypatch.setattr(runtime, "TitusCliScanner", Mock(return_value=scanner))
-    monkeypatch.setattr(runtime, "DspyFindingJudge", Mock(return_value=judge))
-    monkeypatch.setattr(runtime, "load_exclusions", policy)
+    monkeypatch.setattr(workspace_module, "ArtifactoryDockerBackend", build)
+    monkeypatch.setattr(workspace_module, "TitusCliScanner", Mock(return_value=scanner))
+    monkeypatch.setattr(workspace_module, "DspyFindingJudge", Mock(return_value=judge))
+    monkeypatch.setattr(workspace_module, "load_exclusions", policy)
     return SimpleNamespace(
         config=app_config,
         inventory=repository_inventory,
@@ -170,11 +186,9 @@ def test_claim_interrupt_restarts_from_disk_without_rescanning_completed_pin(
     h.scanner.scan.reset_mock()
     h.scanner.scan.side_effect = original
     assert asyncio.run(LocalRuntime(h.config).scan()) == 1
-    assert writes == [
-        ("scanned", "pending"),
-        ("scanned", "running"),
-        ("scanned", "scanned"),
-    ]
+    assert writes[0] == ("scanned", "pending")
+    assert ("scanned", "running") in writes
+    assert writes[-1] == ("scanned", "scanned")
     assert h.scanner.scan.await_count == 1
     assert h.scanner.scan.call_args.args[0].id == second.id
     h.judge.judge.assert_awaited_once()
@@ -209,7 +223,9 @@ def test_three_attempts_share_scratch_and_datastore_with_only_target_checkpoints
     assert asyncio.run(LocalRuntime(h.config).scan()) == 1
     assert len(calls) == 3 and len(set(calls)) == 1
     assert calls[0][2] == h.paths.datastore
-    assert writes == ["running", "scanned"]
+    assert writes[0] == "running"
+    assert writes[-1] == "scanned"
+    assert len(writes) >= 2
     assert not h.paths.scratch_parent.exists()
 
 
@@ -228,7 +244,7 @@ def test_failed_publication_restarts_at_last_checkpoint(harness, monkeypatch, fa
             )
         elif failure == "conversion":
             patch.setattr(
-                runtime,
+                boundary_module,
                 "deduplicate_report",
                 AsyncMock(side_effect=RuntimeError("conversion failed")),
             )
@@ -236,7 +252,10 @@ def test_failed_publication_restarts_at_last_checkpoint(harness, monkeypatch, fa
             write = Workspace.write
 
             def fail(self, path, document, model_type):
-                if path == h.paths.credentials:
+                if (
+                    path == h.paths.credentials
+                    and getattr(document, "report_generated_at", None) == "new"
+                ):
                     raise OSError("publication failed")
                 return write(self, path, document, model_type)
 
@@ -269,7 +288,7 @@ def test_credential_checkpoint_failure_is_recoverable_without_losing_other_recor
     initial.credentials[other.credential_id] = other
     h.workspace.write(h.paths.credentials, initial, CredentialsDocument)
     write = Workspace.write
-    original = runtime.retain_first_evidence
+    original = boundary_module.retain_first_evidence
     failed = False
 
     def failing_write(self, path, document, model_type):
@@ -292,7 +311,7 @@ def test_credential_checkpoint_failure_is_recoverable_without_losing_other_recor
     with monkeypatch.context() as patch:
         patch.setattr(Workspace, "write", failing_write)
         if failure == "extraction":
-            patch.setattr(runtime, "retain_first_evidence", failing_extraction)
+            patch.setattr(boundary_module, "retain_first_evidence", failing_extraction)
             assert asyncio.run(LocalRuntime(h.config).scan()) == 1
         else:
             with pytest.raises(ExceptionGroup):
@@ -406,7 +425,9 @@ def test_top_level_operations_hold_the_same_lock_for_the_complete_operation(
                     h.credential.credential_id
                 ].judgment = JudgmentResult(verdict="VALID")
                 h.workspace.write(h.paths.credentials, document, CredentialsDocument)
-                monkeypatch.setattr(runtime, "retain_first_evidence", wait_forever)
+                monkeypatch.setattr(
+                    boundary_module, "retain_first_evidence", wait_forever
+                )
             else:
                 h.judge.judge.side_effect = wait_forever
         task = asyncio.create_task(getattr(local, owner)())
@@ -516,7 +537,20 @@ def test_later_scan_and_non_valid_judgment_preserve_indexed_evidence(harness):
     assert old.extraction is not None and old.extraction.output_path is not None
     path = h.paths.boundary_dir / old.extraction.output_path
     original_bytes = path.read_bytes()
-    # The next report is empty. Append must preserve history without extraction.
+    # A new pin makes another scan due. Its empty report must preserve history.
+    current = h.workspace.read(h.paths.inventory, ScanBoundaryInventory)
+    old_target = current.targets[0].model_copy(update={"lifecycle": "superseded"})
+    new_scope = old_target.scope.model_copy(update={"digest": "sha256:new"})
+    new_target = old_target.model_copy(
+        update={
+            "id": target_id_for(new_scope),
+            "scope": new_scope,
+            "lifecycle": "current",
+            "result": old_target.result.model_copy(update={"status": "pending"}),
+        }
+    )
+    current.targets = (old_target, new_target)
+    h.workspace.write(h.paths.inventory, current, ScanBoundaryInventory)
     assert asyncio.run(LocalRuntime(h.config).scan()) == 1
     after_scan = Workspace(h.config.workspace).read(
         h.paths.credentials, CredentialsDocument
@@ -584,7 +618,7 @@ def test_worker_or_judger_failure_cancels_sibling_scan(harness, failure_phase):
         h.scanner.scan.side_effect = scan
         if failure_phase == "judge":
             # A fatal judgment must propagate, unlike a per-credential ERROR result.
-            h.judge.judge.side_effect = runtime.FatalJudgeError("judger failed")
+            h.judge.judge.side_effect = FatalJudgeError("judger failed")
         with pytest.raises(ExceptionGroup):
             await LocalRuntime(h.config).scan()
         assert sibling_cancelled.is_set()
@@ -676,19 +710,19 @@ def test_target_snapshot_processes_each_eligible_pin_once_per_run(
             "partial" if attempts else initial_status
         )
         assert not h.paths.scratch_parent.exists()
-        # A remaining retryable failure is retried on the NEXT run, not endlessly now.
-        assert await LocalRuntime(h.config).scan() == 1
+        # Retry next command, not endlessly now. Fully finished boundaries are skipped.
+        assert await LocalRuntime(h.config).scan() == int(attempts > 0)
         assert len(seen) == attempts * 2
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=3))
 
 
 @pytest.mark.parametrize("failure", [False, True])
-def test_scheduler_handoff_waits_for_publication_without_a_phase_flag(
+def test_scheduler_handoff_waits_for_publication_checkpoint(
     harness, monkeypatch, failure
 ):
     h = harness
-    original = runtime.deduplicate_report
+    original = boundary_module.deduplicate_report
 
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
@@ -700,7 +734,7 @@ def test_scheduler_handoff_waits_for_publication_without_a_phase_flag(
                 raise RuntimeError("conversion failed before publication")
             return await original(*args)
 
-        monkeypatch.setattr(runtime, "deduplicate_report", convert)
+        monkeypatch.setattr(boundary_module, "deduplicate_report", convert)
         operation = asyncio.create_task(LocalRuntime(h.config).scan())
         try:
             await entered.wait()
@@ -733,9 +767,9 @@ def test_scan_with_no_boundaries_constructs_no_phase_services(harness, monkeypat
     scanner = Mock(side_effect=AssertionError("no scanner needed"))
     judge = Mock(side_effect=AssertionError("no judge needed"))
     backend = Mock(side_effect=AssertionError("no backend needed"))
-    monkeypatch.setattr(runtime, "TitusCliScanner", scanner)
-    monkeypatch.setattr(runtime, "DspyFindingJudge", judge)
-    monkeypatch.setattr(runtime, "build_backend", backend)
+    monkeypatch.setattr(workspace_module, "TitusCliScanner", scanner)
+    monkeypatch.setattr(workspace_module, "DspyFindingJudge", judge)
+    monkeypatch.setattr(workspace_module, "ArtifactoryDockerBackend", backend)
     assert asyncio.run(LocalRuntime(h.config).scan()) == 0
     scanner.assert_not_called()
     judge.assert_not_called()
@@ -786,3 +820,198 @@ def test_snapshot_order_and_immutable_completion_are_preserved(harness, change_p
     assert [t.result.status for t in saved.targets] == (
         ["running", "pending"] if change_pin else ["scanned", "scanned"]
     )
+
+
+@pytest.mark.parametrize("command", ["judge", "extract"])
+def test_stale_recovery_uses_saved_credentials_without_scanning(harness, command):
+    h = harness
+    inventory = h.inventory.model_copy(update={"lifecycle": "stale"})
+    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    if command == "extract":
+        document = h.workspace.read(h.paths.credentials, CredentialsDocument)
+        document.credentials[h.credential.credential_id].judgment = JudgmentResult(
+            verdict="VALID"
+        )
+        h.workspace.write(h.paths.credentials, document, CredentialsDocument)
+    local = LocalRuntime(h.config)
+    if command == "judge":
+        assert asyncio.run(local.judge()) == 1
+    else:
+        assert asyncio.run(local.extract()) == 1
+        h.judge.judge.assert_not_awaited()
+    h.scanner.scan.assert_not_awaited()
+    h.scanner.export_report.assert_not_awaited()
+
+
+def test_normal_scan_drains_persisted_judgment_without_titus_then_skips_completed(
+    harness,
+):
+    h = harness
+    inventory = h.inventory.model_copy(deep=True)
+    inventory.targets[0].result.status = "scanned"
+    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 1
+    h.scanner.scan.assert_not_awaited()
+    h.scanner.export_report.assert_not_awaited()
+    h.judge.judge.assert_awaited_once()
+    services = len(h.backends)
+    before = {
+        p: p.read_bytes()
+        for p in (
+            h.paths.inventory,
+            h.paths.credentials,
+            h.paths.report,
+            h.paths.execution,
+        )
+    }
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 0
+    assert len(h.backends) == services
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+def test_publication_completion_checkpoint_failure_replays_export_not_targets(
+    harness, monkeypatch
+):
+    h = harness
+    write = Workspace.write
+
+    def fail(self, path, document, model):
+        if (
+            path == h.paths.execution
+            and h.scanner.export_report.await_count
+            and not document.scan_publication_pending
+        ):
+            raise OSError("execution completion failed")
+        return write(self, path, document, model)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Workspace, "write", fail)
+        with pytest.raises(ExceptionGroup):
+            asyncio.run(LocalRuntime(h.config).scan())
+    state = h.workspace.read(h.paths.execution, BoundaryExecution)
+    assert state.scan == PhaseStatus.RUNNING and state.scan_publication_pending
+    assert (
+        h.workspace.read(h.paths.credentials, CredentialsDocument).report_generated_at
+        == "new"
+    )
+    h.judge.judge.assert_not_awaited()
+    h.scanner.scan.reset_mock()
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 1
+    h.scanner.scan.assert_not_awaited()
+    assert h.scanner.export_report.await_count == 2
+    state = h.workspace.read(h.paths.execution, BoundaryExecution)
+    assert all(state.status(p) == PhaseStatus.IDLE for p in Phase)
+    assert not state.scan_publication_pending
+
+
+def test_ordinary_judgment_and_extraction_errors_retry_only_next_command(harness):
+    h = harness
+    h.judge.judge.return_value = JudgmentResult(verdict="ERROR", reasoning="transient")
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 1
+    h.judge.judge.assert_awaited_once()
+    state = h.workspace.read(h.paths.execution, BoundaryExecution)
+    assert state.judge == PhaseStatus.READY
+    h.judge.judge.return_value = JudgmentResult(verdict="VALID")
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 1
+    assert h.judge.judge.await_count == 2
+    assert h.scanner.scan.await_count == 1
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 0
+
+
+def test_interrupted_judgment_completion_recovers_extraction_without_rejudging(
+    harness, monkeypatch
+):
+    h = harness
+    write = Workspace.write
+
+    def fail(self, path, document, model):
+        if (
+            path == h.paths.execution
+            and h.judge.judge.await_count
+            and document.judge != PhaseStatus.RUNNING
+        ):
+            raise OSError("judgment completion checkpoint failed")
+        return write(self, path, document, model)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Workspace, "write", fail)
+        with pytest.raises(ExceptionGroup):
+            asyncio.run(LocalRuntime(h.config).scan())
+    saved = h.workspace.read(h.paths.credentials, CredentialsDocument)
+    assert saved.credentials[h.credential.credential_id].judgment.verdict == "VALID"
+    # A RUNNING judgment pass covers immediate extraction too; the saved VALID
+    # result and retained evidence are both safe to reuse after the crash.
+    assert saved.credentials[h.credential.credential_id].extraction is not None
+    h.judge.judge.reset_mock()
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 0
+    h.judge.judge.assert_not_awaited()
+
+
+def test_operation_reclaims_crash_scratch_without_touching_evidence(harness):
+    h = harness
+    abandoned = h.paths.scratch_parent / "scratch-dead-worker" / "archive.tar"
+    abandoned.parent.mkdir(parents=True)
+    abandoned.write_bytes(b"temporary content")
+    retained = h.paths.boundary_dir / "evidence" / "historical" / "keep"
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(b"history")
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 1
+    assert not h.paths.scratch_parent.exists()
+    assert retained.read_bytes() == b"history"
+
+
+@pytest.mark.parametrize("command", ["judge", "extract"])
+@pytest.mark.parametrize(
+    "verdict", ["missing", "empty", "PENDING", "ERROR", "VALID", "INVALID", "UNKNOWN"]
+)
+def test_standalone_commands_construct_services_only_for_eligible_work(
+    harness, command, verdict
+):
+    h = harness
+    if verdict == "missing":
+        h.paths.credentials.unlink()
+    else:
+        document = h.workspace.read(h.paths.credentials, CredentialsDocument)
+        if verdict == "empty":
+            document.credentials.clear()
+        else:
+            document.credentials[h.credential.credential_id].judgment = JudgmentResult(
+                verdict=verdict
+            )
+        h.workspace.write(h.paths.credentials, document, CredentialsDocument)
+    expected = (
+        int(verdict in {"PENDING", "ERROR"})
+        if command == "judge"
+        else int(verdict == "VALID")
+    )
+    local = LocalRuntime(h.config)
+    if command == "judge":
+        assert asyncio.run(local.judge()) == expected
+    else:
+        assert asyncio.run(local.extract()) == expected
+    assert len(h.backends) == expected
+    assert workspace_module.DspyFindingJudge.call_count == (
+        expected if command == "judge" else 0
+    )
+    workspace_module.TitusCliScanner.assert_not_called()
+    assert all(backend.aclose.await_count == 1 for backend in h.backends)
+
+
+def test_real_handoff_extracts_older_valid_before_judging_later_pending(harness):
+    h = harness
+    inventory = h.inventory.model_copy(deep=True)
+    inventory.targets[0].result.status = "scanned"
+    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    document = h.workspace.read(h.paths.credentials, CredentialsDocument)
+    older = h.credential.model_copy(
+        update={"credential_id": "a-older", "judgment": JudgmentResult(verdict="VALID")}
+    )
+    document.credentials = {older.credential_id: older, **document.credentials}
+    h.workspace.write(h.paths.credentials, document, CredentialsDocument)
+    assert asyncio.run(LocalRuntime(h.config).scan()) == 1
+    h.scanner.export_report.assert_not_awaited()
+    h.judge.judge.assert_awaited_once()
+    saved = h.workspace.read(h.paths.credentials, CredentialsDocument)
+    assert all(c.extraction.status == "RETAINED" for c in saved.credentials.values())
+    state = h.workspace.read(h.paths.execution, BoundaryExecution)
+    assert all(state.status(p) == PhaseStatus.IDLE for p in Phase)

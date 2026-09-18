@@ -23,8 +23,8 @@ exclusions:
   paths: path-exclusions.list
   credentials: cred-value-exclusions.list
 
-backends:
-  - name: artifactory-primary
-    kind: artifactory
-    base_url: https://rb-artifactory.bosch.com/artifactory
-    platform: linux/amd64
+backend:
+  name: artifactory-primary
+  kind: artifactory
+  base_url: https://rb-artifactory.bosch.com/artifactory
+  platform: linux/amd64

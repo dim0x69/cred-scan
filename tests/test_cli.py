@@ -89,7 +89,7 @@ def test_scan_command_displays_returned_count(
     result = CliRunner().invoke(cli.app, ["scan"])
 
     assert result.exit_code == 0
-    assert "scanned 2 report boundary(ies)" in result.output
+    assert "processed 2 report boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
     runtime.scan.assert_awaited_once()
 

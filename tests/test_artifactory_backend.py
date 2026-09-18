@@ -6,12 +6,15 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
+from cred_scan.backend.adapters.artifactory.common import (
+    ArtifactoryBackend,
+    ArtifactoryError,
+)
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryBackendConfig
 from cred_scan.backend.proto import BackendAdapter
 from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import Workspace
+from cred_scan.orch.workspace import Workspace
 
 
 def run(coroutine):

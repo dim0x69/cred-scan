@@ -605,15 +605,16 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             manifest_timestamp=newest_timestamp,
         )
 
-    async def inventory(self) -> list[ScanBoundaryInventory]:
+    async def inventory(self, boundary_id: str) -> ScanBoundaryInventory:
         generated_at = datetime.now(UTC)
-        reports: list[ScanBoundaryInventory] = []
         repositories = await self.repositories()
         for metadata in repositories:
             name = metadata.get("key") or metadata.get("name")
             if not isinstance(name, str):
                 continue
             repository = self._repository(name)
+            if repository.id != boundary_id:
+                continue
             package_type = str(metadata.get("packageType", "")).lower()
             repository_type = str(
                 metadata.get("type", metadata.get("rclass", ""))
@@ -633,14 +634,11 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                 images = sorted(await self.list_images(name))
                 if not images:
                     LOGGER.info("skipping empty Artifactory repository %s", name)
-                    reports.append(
-                        ScanBoundaryInventory(
-                            generated_at=generated_at,
-                            backend=BackendConfig(name=self.name),
-                            boundary=repository,
-                        )
+                    return ScanBoundaryInventory(
+                        generated_at=generated_at,
+                        backend=BackendConfig(name=self.name),
+                        boundary=repository,
                     )
-                    continue
                 targets: list[ScanTarget] = []
                 for image_name in images:
                     scope = await self._select_latest(name, image_name, self.platform)
@@ -654,22 +652,18 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                             scope=scope,
                         )
                     )
-                reports.append(
-                    ScanBoundaryInventory(
-                        generated_at=generated_at,
-                        backend=BackendConfig(name=self.name),
-                        boundary=repository,
-                        targets=tuple(targets),
-                    )
+                return ScanBoundaryInventory(
+                    generated_at=generated_at,
+                    backend=BackendConfig(name=self.name),
+                    boundary=repository,
+                    targets=tuple(targets),
                 )
             except Exception as error:
                 message = str(error)
-                reports.append(
-                    ScanBoundaryInventory(
-                        generated_at=generated_at,
-                        backend=BackendConfig(name=self.name),
-                        boundary=repository,
-                        errors=(message,),
-                    )
+                return ScanBoundaryInventory(
+                    generated_at=generated_at,
+                    backend=BackendConfig(name=self.name),
+                    boundary=repository,
+                    errors=(message,),
                 )
-        return reports
+        raise KeyError(f"boundary not found: {boundary_id}")

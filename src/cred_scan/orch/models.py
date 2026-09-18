@@ -41,7 +41,7 @@ class AppConfig(BaseSettings):
     titus: TitusConfig
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles
-    backends: tuple[ArtifactoryBackendConfig, ...]
+    backend: ArtifactoryBackendConfig
     artifactory_api_key: str | None = Field(
         default=None,
         validation_alias="ARTIFACTORY_API_KEY",

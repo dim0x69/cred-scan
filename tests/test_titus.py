@@ -1,5 +1,9 @@
 import asyncio
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -7,6 +11,9 @@ import pytest
 
 from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.backend.proto import UnsupportedTitusTargetError
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.common.workspace import WorkspaceBusyError
+from cred_scan.orch.workspace import Workspace
 from cred_scan.orch.models import AppConfig
 from cred_scan.scan.models import ExclusionPolicy
 from cred_scan.scan.titus import TitusCliScanner, _is_permanent_titus_error
@@ -120,3 +127,82 @@ def test_cancelled_titus_call_reaps_child_before_returning(
                     await child.wait()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+@pytest.mark.parametrize("phase", ["scan", "export"])
+def test_orphaned_titus_child_keeps_operation_lock_after_parent_crash(
+    tmp_path, repository_inventory, phase
+):
+    inventory_path = tmp_path / "inventory-input.json"
+    inventory_path.write_text(repository_inventory.model_dump_json())
+    parent_code = r"""
+import asyncio
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.workspace import Workspace
+from cred_scan.scan.models import ExclusionPolicy
+from cred_scan.scan.titus import TitusCliScanner
+
+root = Path(sys.argv[1])
+inventory = ScanBoundaryInventory.model_validate_json((root / 'inventory-input.json').read_text())
+child_code = "import sys,time; from pathlib import Path; p=Path(sys.argv[1]); (p/'ready').touch(); deadline=time.monotonic()+10\nwhile not (p/'release').exists() and time.monotonic()<deadline: time.sleep(.01)"
+spawn = asyncio.create_subprocess_exec
+async def synthetic_titus(*args, **kwargs):
+    # Do not let the orphan inherit the harness parent's captured stdout pipe.
+    kwargs['stdout'] = asyncio.subprocess.DEVNULL
+    child = await spawn(sys.executable, '-c', child_code, str(root), **kwargs)
+    print(child.pid, flush=True)
+    os._exit(23)  # No finally blocks or explicit flock release.
+asyncio.create_subprocess_exec = synthetic_titus
+store = Workspace(WorkspaceConfig(workspace_dir=root))
+with store.operation_lock() as descriptor:
+    scanner = TitusCliScanner(
+        SimpleNamespace(executable='unused', arguments=(), internal_workers=1),
+        inventory, Mock(titus_scan_arguments=Mock(return_value=('synthetic',))),
+        operation_lock_fd=descriptor,
+    )
+    if sys.argv[2] == 'scan':
+        asyncio.run(scanner.scan(inventory.targets[0], root/'scratch', root/'titus.ds', ExclusionPolicy(path_file=root/'paths')))
+    else:
+        asyncio.run(scanner.export_report(root/'titus.ds'))
+"""
+    parent = subprocess.run(
+        [sys.executable, "-B", "-c", parent_code, str(tmp_path), phase],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert parent.returncode == 23, parent.stderr
+    child_pid = int(parent.stdout.strip())
+    workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
+    lock_released = False
+    try:
+        deadline = time.monotonic() + 5
+        while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (tmp_path / "ready").exists()
+        with pytest.raises(WorkspaceBusyError):
+            with workspace.operation_lock():
+                pytest.fail("orphaned Titus writer did not retain the lock")
+        (tmp_path / "release").touch()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                with workspace.operation_lock():
+                    lock_released = True
+                    return
+            except WorkspaceBusyError:
+                time.sleep(0.01)
+        pytest.fail("child exit did not release the operation lock")
+    finally:
+        (tmp_path / "release").touch()
+        if not lock_released:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

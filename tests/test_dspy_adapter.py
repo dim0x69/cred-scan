@@ -50,7 +50,9 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
     expanded = credential.model_copy(
         update={
             "occurrences": tuple(
-                credential.occurrences[0].model_copy(update={"locator": f"path-{index}"})
+                credential.occurrences[0].model_copy(
+                    update={"locator": f"path-{index}"}
+                )
                 for index in range(100)
             )
         }

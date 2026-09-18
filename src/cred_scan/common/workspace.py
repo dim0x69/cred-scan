@@ -1,77 +1,16 @@
-"""Boundary paths, validated atomic JSON checkpoints, locking, and scratch."""
+"""Low-level filesystem helpers shared by backend and evidence adapters."""
 
 from __future__ import annotations
 
-import fcntl
-import json
 import os
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib.parse import quote, unquote
-
-from cred_scan.common.models import BoundaryPaths, WorkspaceConfig
-from cred_scan.common.proto import DocumentT, WorkspaceProtocol
 
 
 class WorkspaceBusyError(RuntimeError):
-    """Another inventory, scan, judge, or extract operation owns the workspace."""
-
-
-class Workspace(WorkspaceProtocol):
-    def __init__(self, config: WorkspaceConfig) -> None:
-        self._workspace_dir = config.workspace_dir
-
-    @property
-    def workspace_dir(self) -> Path:
-        return self._workspace_dir
-
-    def boundary(self, boundary_id: str) -> BoundaryPaths:
-        return BoundaryPaths(
-            boundary_id=boundary_id,
-            boundary_dir=self.workspace_dir / quote(boundary_id, safe=""),
-        )
-
-    def inventory_boundaries(self) -> Iterator[BoundaryPaths]:
-        for inventory in self.workspace_dir.glob("*/inventory.json"):
-            yield self.boundary(unquote(inventory.parent.name))
-
-    def operation_lock(self) -> AbstractContextManager[None]:
-        return _operation_lock(self.workspace_dir / ".operation.lock")
-
-    def read(self, path: Path, model_type: type[DocumentT]) -> DocumentT | None:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        return model_type.model_validate(payload)
-
-    def write(
-        self, path: Path, document: DocumentT, model_type: type[DocumentT]
-    ) -> None:
-        if not isinstance(document, model_type):
-            raise TypeError(
-                f"expected {model_type.__name__}, got {type(document).__name__}"
-            )
-        # model_copy bypasses validation. Revalidate before touching the destination.
-        validated = model_type.model_validate(document.model_dump(mode="json"))
-        payload = validated.model_dump(mode="json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with _exclusive_lock(path.parent):
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            try:
-                with temporary.open("w", encoding="utf-8") as stream:
-                    json.dump(payload, stream, indent=2, sort_keys=True)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                temporary.replace(path)
-            finally:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass  # Cleanup must not hide the write failure.
+    """Another operation owns the workspace or requested boundary."""
 
 
 @contextmanager
@@ -88,33 +27,9 @@ def scratch_dir(parent: Path) -> Iterator[Path]:
             pass
 
 
-@contextmanager
-def _operation_lock(path: Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise WorkspaceBusyError(
-                f"workspace operation already active: {path.parent}"
-            ) from error
-        try:
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
-
-
-@contextmanager
-def _exclusive_lock(directory: Path) -> Iterator[None]:
+def fsync_directory(directory: Path) -> None:
     descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.fsync(descriptor)
     finally:
         os.close(descriptor)

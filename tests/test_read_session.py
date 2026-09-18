@@ -5,7 +5,7 @@ import pytest
 
 from cred_scan.backend.models import ContentLocation, ContentRead
 from cred_scan.backend.proto import ContentReader
-from cred_scan.orch.runtime import ReadSession
+from cred_scan.orch.boundary import ReadSession
 
 
 def _location(locator: str) -> ContentLocation:
@@ -76,9 +76,7 @@ def test_read_session_does_not_cache_failures(credential):
     reader.resolve_location.side_effect = lambda value: _location(value)
     reader.read.side_effect = [
         OSError("temporary failure"),
-        ContentRead(
-            content=b"retried", source_path="etc/app.env", filename="app.env"
-        ),
+        ContentRead(content=b"retried", source_path="etc/app.env", filename="app.env"),
     ]
     session = ReadSession(reader)
 

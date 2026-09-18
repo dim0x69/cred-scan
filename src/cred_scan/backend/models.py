@@ -93,7 +93,7 @@ class ScanTarget(BaseModel):
 class ScanBoundaryInventory(BaseModel):
     """One complete boundary inventory with retained scan-scope pins."""
 
-    schema_version: Literal[7] = 7
+    schema_version: Literal[8] = 8
     generated_at: datetime
     backend: BackendConfig
     boundary: ScanBoundaryRef

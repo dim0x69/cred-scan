@@ -6,12 +6,14 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
+from cred_scan.common.workspace import scratch_dir
 from cred_scan.backend.proto import BackendAdapter, UnsupportedTitusTargetError
 from cred_scan.scan.credentials import report_from_export
 from cred_scan.scan.models import ExclusionPolicy, TitusReport
@@ -55,11 +57,14 @@ class TitusCliScanner(CredentialScanner):
         inventory: ScanBoundaryInventory,
         backend: BackendAdapter,
         environment: Mapping[str, str] | None = None,
+        *,
+        boundary_lock_fd: int | None = None,
     ) -> None:
         self.config = config
         self.inventory = inventory
         self.backend = backend
         self.environment = dict(environment or {})
+        self._pass_fds = () if boundary_lock_fd is None else (boundary_lock_fd,)
 
     async def scan(
         self,
@@ -68,8 +73,8 @@ class TitusCliScanner(CredentialScanner):
         datastore: Path,
         exclusions: ExclusionPolicy,
     ) -> ScanTarget:
-        # Return a new target: ReportBoundary keeps the stored target running
-        # until _update_target() installs this terminal result.
+        # Return a new target: Boundary keeps the stored target running
+        # until complete_target() installs this terminal result.
         try:
             source_arguments = self.backend.titus_scan_arguments(
                 self.inventory, target
@@ -114,6 +119,7 @@ class TitusCliScanner(CredentialScanner):
                 *command,
                 cwd=work_dir,
                 env=environment,
+                pass_fds=self._pass_fds,
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as error:
@@ -187,6 +193,7 @@ class TitusCliScanner(CredentialScanner):
                 "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                pass_fds=self._pass_fds,
             )
         except OSError:
             LOGGER.exception("Titus report process could not start datastore=%s", datastore)
@@ -218,3 +225,87 @@ class TitusCliScanner(CredentialScanner):
             [item for item in payload if isinstance(item, dict)],
             self.inventory,
         )
+
+
+class TitusScannerPool:
+    """Run bounded concurrent Titus invocations for one boundary."""
+
+    def __init__(
+        self,
+        config: Any,
+        inventory: ScanBoundaryInventory,
+        backend: BackendAdapter,
+        *,
+        concurrency: int,
+        boundary_lock_fd: int,
+        environment: Mapping[str, str],
+    ) -> None:
+        if concurrency < 1:
+            raise ValueError("Titus scanner concurrency must be positive")
+        self.config = config
+        self.inventory = inventory
+        self.backend = backend
+        self.concurrency = concurrency
+        self.boundary_lock_fd = boundary_lock_fd
+        self.environment = dict(environment)
+
+    def _scanner(self) -> TitusCliScanner:
+        return TitusCliScanner(
+            self.config,
+            self.inventory,
+            self.backend,
+            boundary_lock_fd=self.boundary_lock_fd,
+            environment=self.environment,
+        )
+
+    async def _scan_one(
+        self,
+        target: ScanTarget,
+        scratch_parent: Path,
+        datastore: Path,
+        exclusions: ExclusionPolicy,
+    ) -> ScanTarget:
+        scanner = self._scanner()
+        with scratch_dir(scratch_parent) as work_dir:
+            current = target
+            for attempt in range(3):
+                LOGGER.info(
+                    "scanning target=%s attempt=%d/3",
+                    target.id,
+                    attempt + 1,
+                )
+                current = await scanner.scan(
+                    current,
+                    work_dir,
+                    datastore,
+                    exclusions,
+                )
+                if current.result.status == "scanned" or attempt == 2:
+                    return current
+                current.result.status = "running"
+        raise AssertionError("Titus scan worker returned without a result")
+
+    async def scan(
+        self,
+        targets: Sequence[ScanTarget],
+        scratch_parent: Path,
+        datastore: Path,
+        exclusions: ExclusionPolicy,
+    ) -> tuple[ScanTarget, ...]:
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def run(target: ScanTarget) -> ScanTarget:
+            async with semaphore:
+                return await self._scan_one(
+                    target,
+                    scratch_parent,
+                    datastore,
+                    exclusions,
+                )
+
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(run(target)) for target in targets]
+        return tuple(task.result() for task in tasks)
+
+    async def export_report(self, datastore: Path) -> TitusReport:
+        return await self._scanner().export_report(datastore)

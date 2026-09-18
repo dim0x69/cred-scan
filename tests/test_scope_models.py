@@ -20,7 +20,7 @@ from cred_scan.backend.models import (
     target_id_for,
 )
 from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import Workspace
+from cred_scan.orch.workspace import Workspace
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 
@@ -35,9 +35,7 @@ def test_boundary_contains_logical_scopes_and_immutable_target_pins(kind):
             commit_timestamp=now,
         )
     else:
-        boundary = ArtifactoryRepository(
-            id="artifactory:primary:local", name="local"
-        )
+        boundary = ArtifactoryRepository(id="artifactory:primary:local", name="local")
         scope = (
             DockerImageScanScope(
                 image="registry/local/api",
@@ -48,23 +46,29 @@ def test_boundary_contains_logical_scopes_and_immutable_target_pins(kind):
             )
             if kind == "docker"
             else PackageScanScope(
-                name="api", uri="https://packages.example/api",
-                digest="sha256:artifact", ecosystem="npm",
+                name="api",
+                uri="https://packages.example/api",
+                digest="sha256:artifact",
+                ecosystem="npm",
             )
         )
     assert isinstance(boundary, ScanBoundary)
     assert isinstance(scope, ScanScope)
     assert not isinstance(scope, ScanBoundary)
     target = ScanTarget(
-        id=target_id_for(scope), backend_id="primary",
-        boundary=boundary, scope=scope,
+        id=target_id_for(scope),
+        backend_id="primary",
+        boundary=boundary,
+        scope=scope,
     )
     inventory = ScanBoundaryInventory(
-        generated_at=now, backend=BackendConfig(name="primary"),
-        boundary=boundary, targets=(target,),
+        generated_at=now,
+        backend=BackendConfig(name="primary"),
+        boundary=boundary,
+        targets=(target,),
     )
     payload = inventory.model_dump(mode="json")
-    assert payload["schema_version"] == 7
+    assert payload["schema_version"] == 8
     assert payload["boundary"] == boundary.model_dump(mode="json")
     assert "scope" not in payload
     stored_target = payload["targets"][0]
@@ -103,9 +107,12 @@ def test_documents_use_boundary_id_and_reject_legacy_fields_and_versions(kind):
     with pytest.raises(ValidationError):
         type(document).model_validate(old_fields)
     with pytest.raises(ValidationError):
-        type(document).model_validate({
-            **payload, "schema_version": 1 if kind == "report" else 3,
-        })
+        type(document).model_validate(
+            {
+                **payload,
+                "schema_version": 1 if kind == "report" else 3,
+            }
+        )
 
 
 def test_workspace_boundary_identifier_and_paths_are_unchanged(
@@ -118,4 +125,7 @@ def test_workspace_boundary_identifier_and_paths_are_unchanged(
     assert boundary.boundary_dir == tmp_path / quote(boundary_id, safe="")
     assert boundary.datastore == boundary.boundary_dir / "titus.ds"
     workspace.write(boundary.inventory, repository_inventory, ScanBoundaryInventory)
-    assert workspace.read(boundary.inventory, ScanBoundaryInventory) == repository_inventory
+    assert (
+        workspace.read(boundary.inventory, ScanBoundaryInventory)
+        == repository_inventory
+    )

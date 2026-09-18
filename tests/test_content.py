@@ -23,7 +23,7 @@ from cred_scan.backend.models import (
     target_id_for,
 )
 from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import Workspace
+from cred_scan.orch.workspace import Workspace
 from cred_scan.scan.credentials import deduplicate_report
 from cred_scan.scan.models import ExclusionPolicy, TitusReport
 
@@ -52,9 +52,7 @@ def backend(tmp_path: Path):
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
         "synthetic-token",
-        workspace=Workspace(
-            WorkspaceConfig(workspace_dir=tmp_path)
-        ),
+        workspace=Workspace(WorkspaceConfig(workspace_dir=tmp_path)),
     )
     yield backend
     asyncio.run(backend.aclose())
@@ -192,9 +190,7 @@ def test_metadata_provenance_resolves_as_config_blob(
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
     )
-    raw_path = (
-        "docker://registry/docker-local/team/api@sha256:manifest/config.json"
-    )
+    raw_path = "docker://registry/docker-local/team/api@sha256:manifest/config.json"
     resolved = asyncio.run(reader.resolve_location(raw_path))
     asyncio.run(reader.aclose())
     assert resolved.locator == raw_path
@@ -239,9 +235,7 @@ def test_reader_rejects_unmapped_layer_instead_of_searching_other_layers(
             return httpx.Response(200, content=newer)
         raise AssertionError(f"unexpected request: {request.url}")
 
-    workspace = Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path)
-    )
+    workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
         "synthetic-token",
@@ -302,9 +296,7 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
             return httpx.Response(200, content=layer)
         raise AssertionError(f"unexpected request: {request.url}")
 
-    workspace = Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path)
-    )
+    workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
         "synthetic-token",
@@ -365,9 +357,7 @@ def test_reader_reads_the_selected_layer(
             return httpx.Response(200, content=newer)
         raise AssertionError(f"unexpected request: {request.url}")
 
-    workspace = Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path)
-    )
+    workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     backend = docker.ArtifactoryDockerBackend(
         ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
         "synthetic-token",
@@ -382,11 +372,17 @@ def test_reader_reads_the_selected_layer(
         trust_env=False,
     )
     reader = ArtifactoryDockerReader(
-        backend, repository_inventory.boundary, repository_inventory.targets, workspace=workspace
+        backend,
+        repository_inventory.boundary,
+        repository_inventory.targets,
+        workspace=workspace,
     )
     try:
         expected = PROVENANCE.replace("sha256:layer", "sha256:newer")
-        assert asyncio.run(reader.read(_locator(expected, repository_inventory))).content == b"SECRET=newer\n"
+        assert (
+            asyncio.run(reader.read(_locator(expected, repository_inventory))).content
+            == b"SECRET=newer\n"
+        )
     finally:
         asyncio.run(reader.aclose())
         asyncio.run(backend.aclose())

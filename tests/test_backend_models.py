@@ -21,6 +21,9 @@ from cred_scan.backend.adapters import ghes as ghes_models
         "cred_scan.backend.models",
         "cred_scan.backend.proto",
         "cred_scan.orch.configuration",
+        "cred_scan.orch.execution",
+        "cred_scan.common.proto",
+        "cred_scan.common.workspace",
     ],
 )
 def test_schema_imports_are_acyclic_and_do_not_load_adapter_implementations(entry):
@@ -35,6 +38,7 @@ blocked = {
     'cred_scan.backend.adapters.artifactory.common',
     'cred_scan.backend.adapters.artifactory.docker',
     'cred_scan.orch.runtime', 'cred_scan.orch.inventory',
+    'cred_scan.orch.workspace', 'cred_scan.orch.boundary',
     'cred_scan.scan.titus', 'cred_scan.judge.dspy_adapter',
 }
 class RejectRuntime(importlib.abc.MetaPathFinder):
@@ -43,12 +47,16 @@ class RejectRuntime(importlib.abc.MetaPathFinder):
             raise AssertionError(f'schema import loaded runtime module: {fullname}')
 sys.meta_path.insert(0, RejectRuntime())
 importlib.import_module(sys.argv[1])
+if sys.argv[1] == 'cred_scan.orch.configuration':
+    assert 'cred_scan.orch.execution' not in sys.modules
 from cred_scan.backend.models import ScanBoundaryInventory, DockerImageScanScope
 from cred_scan.backend.adapters.artifactory.models import DockerImageScanScope as OwnedDockerImageScanScope
 from cred_scan.orch.models import AppConfig
 assert DockerImageScanScope is OwnedDockerImageScanScope
 ScanBoundaryInventory.model_json_schema()
 AppConfig.model_json_schema()
+from cred_scan.orch.execution import BoundaryExecution
+BoundaryExecution.model_json_schema()
 assert not blocked.intersection(sys.modules)
 """
     subprocess.run([sys.executable, "-B", "-c", code, entry], check=True, timeout=10)
@@ -59,7 +67,11 @@ def test_aggregate_exports_the_defining_models_without_copies():
         value = getattr(models, name)
         assert value is getattr(base_models, name)
         assert value.__module__ == "cred_scan.backend.base_models"
-    for name in ("ArtifactoryBackendConfig", "ArtifactoryRepository", "DockerImageScanScope"):
+    for name in (
+        "ArtifactoryBackendConfig",
+        "ArtifactoryRepository",
+        "DockerImageScanScope",
+    ):
         value = getattr(models, name)
         assert value is getattr(artifactory_models, name)
         assert value.__module__ == "cred_scan.backend.adapters.artifactory.models"
@@ -84,6 +96,6 @@ def test_inventory_roundtrip_uses_provider_models_and_retains_pinned_identity(
     assert type(scope) is artifactory_models.DockerImageScanScope
     assert isinstance(scope, base_models.ScanScope)
     assert restored.targets[0].id == models.target_id_for(scope)
-    assert payload["schema_version"] == 7
+    assert payload["schema_version"] == 8
     assert payload["boundary"]["kind"] == "artifactory"
     assert payload["targets"][0]["scope"]["kind"] == "docker"

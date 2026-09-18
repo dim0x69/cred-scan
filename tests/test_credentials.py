@@ -175,7 +175,9 @@ def test_append_adds_new_pin_and_credential_without_losing_absent_history(
     document = retained_document(repository_inventory, credential)
     old = document.credentials[credential.credential_id]
     new_occurrence = credential.occurrences[0].model_copy(
-        update={"locator": credential.occurrences[0].locator.replace("manifest", "second")}
+        update={
+            "locator": credential.occurrences[0].locator.replace("manifest", "second")
+        }
     )
     candidate = credential.model_copy(update={"occurrences": (new_occurrence,)})
     published = merge_scan(document, document_for(repository_inventory, candidate))
@@ -221,7 +223,9 @@ def test_extraction_metadata_has_no_source_fingerprint(status):
     extraction = ExtractionResult(status=status)
     payload = extraction.model_dump(mode="json")
     assert set(payload) == {"status", "output_path", "size", "sha256", "error"}
-    assert "source_fingerprint" not in ExtractionResult.model_json_schema()["properties"]
+    assert (
+        "source_fingerprint" not in ExtractionResult.model_json_schema()["properties"]
+    )
     assert ExtractionResult.model_validate(payload) == extraction
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ExtractionResult.model_validate({**payload, "source_fingerprint": "obsolete"})

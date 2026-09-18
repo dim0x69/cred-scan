@@ -18,18 +18,17 @@ from cred_scan.backend.models import (
     ScanTarget,
     target_id_for,
 )
-from cred_scan.scan.models import TitusReport
+from cred_scan.scan.models import CredentialsDocument, TitusReport
 from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import Workspace
+from cred_scan.orch.workspace import Workspace
 from cred_scan.judge.evidence import evidence_path
-from cred_scan.orch import inventory
+from cred_scan.orch import inventory, workspace as workspace_module
+from cred_scan.orch.execution import BoundaryExecution, PhaseStatus
 from cred_scan.orch.models import AppConfig
 
 
 def make_workspace(tmp_path):
-    return Workspace(
-        WorkspaceConfig(workspace_dir=tmp_path)
-    )
+    return Workspace(WorkspaceConfig(workspace_dir=tmp_path))
 
 
 def make_inventory(
@@ -95,11 +94,13 @@ def test_typed_workspace_distinguishes_missing_and_invalid_documents(tmp_path):
 
     assert workspace.read(repository.inventory, ScanBoundaryInventory) is None
     with pytest.raises(TypeError, match="expected ScanBoundaryInventory"):
-        workspace.write(repository.inventory,
+        workspace.write(
+            repository.inventory,
             TitusReport(
                 boundary_id="repository",
                 generated_at="2026-01-01T00:00:00+00:00",
-            ), ScanBoundaryInventory
+            ),
+            ScanBoundaryInventory,
         )
 
     repository.inventory.parent.mkdir(parents=True, exist_ok=True)
@@ -113,11 +114,16 @@ def test_evidence_paths_are_safe_and_repository_relative(tmp_path):
     repository = workspace.boundary("repository")
     destination = evidence_path(repository.boundary_dir, "credential/one", "app.env")
 
-    assert destination == repository.boundary_dir / "evidence" / "credential%2Fone" / "app.env"
+    assert (
+        destination
+        == repository.boundary_dir / "evidence" / "credential%2Fone" / "app.env"
+    )
     assert destination.relative_to(repository.boundary_dir).as_posix() == (
         "evidence/credential%2Fone/app.env"
     )
-    colon_destination = evidence_path(repository.boundary_dir, "credential/one", "app:prod.env")
+    colon_destination = evidence_path(
+        repository.boundary_dir, "credential/one", "app:prod.env"
+    )
     assert colon_destination.name == "app:prod.env"
 
 
@@ -128,7 +134,9 @@ def test_backend_inventory_merge_adds_new_pins_without_removing_old_targets(tmp_
     workspace.write(repository.inventory, first, ScanBoundaryInventory)
 
     later = make_inventory(digest="sha256:later")
-    merged = merge_inventory(workspace.read(repository.inventory, ScanBoundaryInventory), later)
+    merged = merge_inventory(
+        workspace.read(repository.inventory, ScanBoundaryInventory), later
+    )
     workspace.write(repository.inventory, merged, ScanBoundaryInventory)
 
     result = workspace.read(repository.inventory, ScanBoundaryInventory)
@@ -296,59 +304,63 @@ def test_inventory_target_completion_requires_running_target(repository_inventor
 
 
 def test_run_inventory_retires_error_only_empty_boundary(
-    app_config: AppConfig, repository_inventory: ScanBoundaryInventory, monkeypatch
+    app_config, repository_inventory, monkeypatch
 ):
-    workspace = Workspace(app_config.workspace)
-    stale = repository_inventory.model_copy(
+    workspace = Workspace(app_config)
+    failed = repository_inventory.model_copy(
         update={"targets": (), "errors": ("temporary failure",)}
     )
-    repository = workspace.boundary(stale.boundary.id)
-    workspace.write(repository.inventory, stale, ScanBoundaryInventory)
-
-    backend = Mock()
-    backend.name = "primary"
-    backend.aclose = AsyncMock()
-
-    async def discover():
-        return [repository_inventory.model_copy(update={"targets": ()})]
-
-    backend.inventory = discover
-    monkeypatch.setattr(inventory, "build_backend", Mock(return_value=backend))
-
-    result = asyncio.run(inventory.run_inventory(app_config, workspace))
-
-    assert result == 1
-    refreshed = workspace.read(repository.inventory, ScanBoundaryInventory)
-    assert refreshed is not None
-    assert refreshed.targets == ()
-    assert refreshed.errors == ()
-    assert refreshed.lifecycle == "active"
-    assert list(
-        workspace.boundary(refreshed.boundary.id).inventory.parent.glob(
-            "inventory.json"
-        )
+    paths = workspace.boundary(failed.boundary.id)
+    workspace.write(
+        paths.execution,
+        BoundaryExecution(boundary_id=failed.boundary.id),
+        BoundaryExecution,
     )
+    workspace.write(paths.inventory, failed, ScanBoundaryInventory)
+    backend = Mock(
+        inventory=AsyncMock(
+            return_value=[repository_inventory.model_copy(update={"targets": ()})]
+        ),
+        aclose=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        workspace_module, "ArtifactoryDockerBackend", Mock(return_value=backend)
+    )
+
+    async def refresh():
+        async with workspace.operation("inventory"):
+            return await inventory.run_inventory(app_config, workspace)
+
+    assert asyncio.run(refresh()) == 1
+    refreshed = workspace.read(paths.inventory, ScanBoundaryInventory)
+    assert refreshed.targets == () and refreshed.errors == ()
+    assert refreshed.lifecycle == "active"
+    backend.aclose.assert_awaited_once()
 
 
 def test_run_inventory_persists_adapter_returned_boundaries(
-    app_config: AppConfig, repository_inventory: ScanBoundaryInventory, monkeypatch
+    app_config, repository_inventory, monkeypatch
 ):
-    backend = Mock()
-    backend.name = "primary"
-    backend.aclose = AsyncMock()
+    backend = Mock(
+        inventory=AsyncMock(return_value=[repository_inventory]), aclose=AsyncMock()
+    )
+    monkeypatch.setattr(
+        workspace_module, "ArtifactoryDockerBackend", Mock(return_value=backend)
+    )
+    workspace = Workspace(app_config)
 
-    async def discover():
-        return [repository_inventory]
+    async def refresh():
+        async with workspace.operation("inventory"):
+            return await inventory.run_inventory(app_config, workspace)
 
-    backend.inventory = discover
-    monkeypatch.setattr(inventory, "build_backend", Mock(return_value=backend))
-    workspace = Workspace(app_config.workspace)
-
-    result = asyncio.run(inventory.run_inventory(app_config, workspace))
-
-    assert result == 1
-    assert list(workspace.workspace_dir.glob("*/inventory.json"))
-    assert list(workspace.inventory_boundaries())
+    assert asyncio.run(refresh()) == 1
+    paths = workspace.boundary(repository_inventory.boundary.id)
+    state = workspace.read(paths.execution, BoundaryExecution)
+    assert state.scan == PhaseStatus.READY
+    assert (
+        workspace.read(paths.inventory, ScanBoundaryInventory) == repository_inventory
+    )
+    backend.aclose.assert_awaited_once()
 
 
 @pytest.mark.parametrize("kind", ["docker", "git", "package"])
@@ -365,7 +377,9 @@ def test_scope_ids_are_canonical_and_version_independent(kind):
         changed = scope.model_copy(update={"commit": "second"})
     else:
         scope = PackageScanScope(
-            ecosystem="npm", name="pkg", uri="https://packages.example/pkg",
+            ecosystem="npm",
+            name="pkg",
+            uri="https://packages.example/pkg",
             digest="sha256:first",
         )
         changed = scope.model_copy(update={"digest": "sha256:new"})
@@ -407,18 +421,24 @@ def test_inventory_persistence_rejects_noncanonical_pin_without_replacing_file(
     else:
         payload["targets"][0]["scope"]["digest"] = "sha256:changed"
         changed = current.targets[0].model_copy(
-            update={"scope": current.targets[0].scope.model_copy(
-                update={"digest": "sha256:changed"}
-            )}
+            update={
+                "scope": current.targets[0].scope.model_copy(
+                    update={"digest": "sha256:changed"}
+                )
+            }
         )
     with pytest.raises(ValidationError, match="target ID must match"):
         ScanBoundaryInventory.model_validate(payload)
     with pytest.raises(ValidationError, match="target ID must match"):
-        workspace.write(path, current.model_copy(update={"targets": (changed,)}), ScanBoundaryInventory)
+        workspace.write(
+            path,
+            current.model_copy(update={"targets": (changed,)}),
+            ScanBoundaryInventory,
+        )
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize("version", [5, 6])
+@pytest.mark.parametrize("version", [5, 6, 7])
 def test_inventory_rejects_previous_identity_schema(version):
     payload = make_inventory().model_dump(mode="json")
     payload["schema_version"] = version
@@ -455,7 +475,10 @@ def test_repeated_multi_pin_discovery_is_idempotent():
     merged.targets[1].result.status = "partial"
     repeated = merge_inventory(merged, discovered)
     assert repeated.targets == merged.targets
-    assert [target.lifecycle for target in repeated.targets] == ["superseded", "current"]
+    assert [target.lifecycle for target in repeated.targets] == [
+        "superseded",
+        "current",
+    ]
     assert len({target.id for target in repeated.targets}) == 2
 
 
@@ -522,7 +545,9 @@ def test_authoritative_scope_absence_and_return_preserve_all_pins():
     absent = second.model_copy(update={"targets": ()})
     stale = merge_inventory(history, absent)
     assert all(target.scope.lifecycle == "stale" for target in stale.targets)
-    assert [target.id for target in stale.targets] == [target.id for target in history.targets]
+    assert [target.id for target in stale.targets] == [
+        target.id for target in history.targets
+    ]
     returned = merge_inventory(stale, second)
     assert returned.targets == history.targets
 
@@ -530,32 +555,52 @@ def test_authoritative_scope_absence_and_return_preserve_all_pins():
 def test_boundary_failure_and_reappearance_preserve_artifacts(
     app_config, repository_inventory, monkeypatch
 ):
-    workspace = Workspace(app_config.workspace)
-    boundary = workspace.boundary(repository_inventory.boundary.id)
-    workspace.write(boundary.inventory, repository_inventory, ScanBoundaryInventory)
-    artifacts = [boundary.report, boundary.credentials,
-                 evidence_path(boundary.boundary_dir, "synthetic", "app.env")]
-    for path in artifacts:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"historical artifact")
+    workspace = Workspace(app_config)
+    paths = workspace.boundary(repository_inventory.boundary.id)
+    workspace.write(paths.inventory, repository_inventory, ScanBoundaryInventory)
+    workspace.write(
+        paths.execution,
+        BoundaryExecution(boundary_id=repository_inventory.boundary.id),
+        BoundaryExecution,
+    )
+    workspace.write(
+        paths.report,
+        TitusReport(boundary_id=repository_inventory.boundary.id, generated_at="old"),
+        TitusReport,
+    )
+    workspace.write(
+        paths.credentials,
+        CredentialsDocument(
+            boundary_id=repository_inventory.boundary.id, report_generated_at="old"
+        ),
+        CredentialsDocument,
+    )
+    evidence = evidence_path(paths.boundary_dir, "synthetic", "app.env")
+    evidence.parent.mkdir(parents=True)
+    evidence.write_bytes(b"historical artifact")
+    artifacts = {p: p.read_bytes() for p in (paths.report, paths.credentials, evidence)}
     backend = Mock(inventory=AsyncMock(), aclose=AsyncMock())
-    monkeypatch.setattr(inventory, "build_backend", Mock(return_value=backend))
+    monkeypatch.setattr(
+        workspace_module, "ArtifactoryDockerBackend", Mock(return_value=backend)
+    )
+
+    async def refresh():
+        async with workspace.operation("inventory"):
+            await inventory.run_inventory(app_config, workspace)
+
     backend.inventory.return_value = []
-    asyncio.run(inventory.run_inventory(app_config, workspace))
-    absent = workspace.read(boundary.inventory, ScanBoundaryInventory)
-    assert absent is not None and absent.lifecycle == "stale"
-    backend.inventory.return_value = [repository_inventory.model_copy(
-        update={"targets": (), "errors": ("HTTP 503",)}
-    )]
-    asyncio.run(inventory.run_inventory(app_config, workspace))
-    failed = workspace.read(boundary.inventory, ScanBoundaryInventory)
-    assert failed is not None and failed.lifecycle == "stale"
-    assert failed.errors == ("HTTP 503",)
+    asyncio.run(refresh())
+    assert workspace.read(paths.inventory, ScanBoundaryInventory).lifecycle == "stale"
+    backend.inventory.return_value = [
+        repository_inventory.model_copy(update={"targets": (), "errors": ("HTTP 503",)})
+    ]
+    asyncio.run(refresh())
+    failed = workspace.read(paths.inventory, ScanBoundaryInventory)
+    assert failed.lifecycle == "stale" and failed.errors == ("HTTP 503",)
     backend.inventory.return_value = [repository_inventory]
-    asyncio.run(inventory.run_inventory(app_config, workspace))
-    returned = workspace.read(boundary.inventory, ScanBoundaryInventory)
-    assert returned is not None
-    assert returned.lifecycle == "active"
-    assert returned.stale_reason is None
+    asyncio.run(refresh())
+    returned = workspace.read(paths.inventory, ScanBoundaryInventory)
+    assert returned.lifecycle == "active" and returned.stale_reason is None
     assert returned.targets == repository_inventory.targets
-    assert all(path.read_bytes() == b"historical artifact" for path in artifacts)
+    assert all(p.read_bytes() == content for p, content in artifacts.items())
+    assert backend.aclose.await_count == 3

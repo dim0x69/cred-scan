@@ -12,9 +12,11 @@ import pytest
 from pydantic import ValidationError
 
 from cred_scan.backend.models import ScanBoundaryInventory
-from cred_scan.common import workspace as storage
+from cred_scan.orch import workspace as storage
 from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import Workspace, WorkspaceBusyError, scratch_dir
+from cred_scan.common.workspace import WorkspaceBusyError
+from cred_scan.common.workspace import scratch_dir
+from cred_scan.orch.workspace import Workspace
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 
@@ -204,7 +206,7 @@ def test_file_is_fsynced_before_atomic_replacement(
     monkeypatch.setattr(storage.os, "fsync", record_fsync)
     monkeypatch.setattr(Path, "replace", record_replace)
     workspace.write(path, repository_inventory, ScanBoundaryInventory)
-    assert events == ["fsync", "replace"]
+    assert events == ["fsync", "replace", "fsync"]
 
 
 def test_operation_lock_excludes_a_separate_process(tmp_path):
@@ -212,7 +214,8 @@ def test_operation_lock_excludes_a_separate_process(tmp_path):
     code = """
 import sys
 from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import Workspace, WorkspaceBusyError
+from cred_scan.common.workspace import WorkspaceBusyError
+from cred_scan.orch.workspace import Workspace
 try:
     with Workspace(WorkspaceConfig(workspace_dir=sys.argv[1])).operation_lock():
         print('acquired')
