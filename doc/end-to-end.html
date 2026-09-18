@@ -348,8 +348,14 @@ deduplicate_report(
       </article>
       <article class="panel phase-detail extract">
         <h3>Extract · pinned bytes in, evidence out</h3>
-        <pre>ContentReader.read(location: ContentLocation)
-  → ContentRead(bytes, source_path, filename)
+        <pre>ReportBoundary.extract(
+  document: CredentialsDocument
+) → int  # newly retained artifacts
+
+ContentReader.resolve_location(raw_path: str)
+  → ContentLocation
+ContentReader.read(location: ContentLocation)
+  → ContentRead(content, source_path, filename)
 
 retain_first_evidence(
   content: bytes, destination: Path
