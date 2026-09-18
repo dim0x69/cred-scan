@@ -8,7 +8,6 @@ from urllib.parse import quote, unquote
 
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
 from cred_scan.backend.proto import BackendAdapter
-from cred_scan.common.filesystem import ResourceBusyError
 from cred_scan.orch.boundary import Boundary
 from cred_scan.orch.models import AppConfig
 from cred_scan.scan.exclusions import load_exclusions
@@ -66,7 +65,7 @@ class Workspace:
             try:
                 if await boundary.refresh_inventory():
                     return 1
-            except ResourceBusyError:
+            except FileExistsError:
                 continue
         return 0
 
@@ -75,7 +74,7 @@ class Workspace:
             try:
                 if await boundary.scan():
                     return 1
-            except ResourceBusyError:
+            except FileExistsError:
                 continue
         return 0
 
@@ -85,7 +84,7 @@ class Workspace:
                 count = await boundary.judge()
                 if count:
                     return count
-            except ResourceBusyError:
+            except FileExistsError:
                 continue
         return 0
 
@@ -95,7 +94,7 @@ class Workspace:
                 count = await boundary.extract()
                 if count:
                     return count
-            except ResourceBusyError:
+            except FileExistsError:
                 continue
         return 0
 

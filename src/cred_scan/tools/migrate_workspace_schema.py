@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote
 from pydantic import BaseModel
 
 from cred_scan.backend.models import ScanBoundaryInventory
-from cred_scan.common.filesystem import ResourceBusyError, fsync_directory
+from cred_scan.common.fsync import fsync_directory
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
@@ -27,13 +27,8 @@ DocumentT = TypeVar("DocumentT", bound=BaseModel)
 def _boundary_lock(path: Path) -> Iterator[None]:
     """Own one boundary using the same sentinel convention as Boundary."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write("locked\n")
-    except FileExistsError as error:
-        raise ResourceBusyError(
-            f"boundary operation already active: {path.parent}"
-        ) from error
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write("locked\n")
 
     try:
         yield

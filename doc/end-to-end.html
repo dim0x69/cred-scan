@@ -415,7 +415,7 @@ boundary.extract()
       <h3>Ownership and dependency direction</h3>
       <pre>cli.py → orch/runtime.py → orch/workspace.py → orch/boundary.py
                                         ↓                     ↓
-                              common/filesystem.py    boundary-owned storage
+                              common/fsync.py          boundary-owned storage
 
 common: scratch/fsync helpers
 Workspace: one backend, Boundary discovery, Boundary construction, backend lifetime
@@ -740,7 +740,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
   </section>
 
   <footer>
-    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>orch/models.py</code>, <code>common/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Low-level filesystem helpers: <code>common/filesystem.py</code>.</p>
+    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>orch/models.py</code>, <code>common/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Directory durability helper: <code>common/fsync.py</code>.</p>
     <p>This HTML is the authoritative architecture, workflow, port, and model guide, intentionally self-contained and readable outside the repository. Retired Markdown documents are not maintained. Current document schemas: inventory 8 · report 2 · credentials 8.</p>
   </footer>
 </main>

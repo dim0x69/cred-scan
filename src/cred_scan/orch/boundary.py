@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, TypeVar
 from urllib.parse import unquote
 
@@ -20,12 +21,8 @@ if TYPE_CHECKING:
 from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
 from cred_scan.backend.proto import BackendAdapter, ContentReader
+from cred_scan.common.fsync import fsync_directory
 from cred_scan.common.models import BoundaryPaths
-from cred_scan.common.filesystem import (
-    ResourceBusyError,
-    fsync_directory,
-    scratch_dir as create_scratch_dir,
-)
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.judge.evidence import (
     EvidenceConflictError,
@@ -52,13 +49,8 @@ DocumentT = TypeVar("DocumentT", bound=BaseModel)
 def _boundary_lock(path: Path) -> Iterator[None]:
     """Own a boundary with an atomically created sentinel file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write("locked\n")
-    except FileExistsError as error:
-        raise ResourceBusyError(
-            f"boundary operation already active: {path.parent}"
-        ) from error
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write("locked\n")
 
     try:
         yield
@@ -138,9 +130,7 @@ class Boundary:
                 ScanBoundaryInventory,
             )
             if inventory is None:
-                raise ValueError(
-                    f"missing boundary inventory: {self.paths.inventory}"
-                )
+                raise ValueError(f"missing boundary inventory: {self.paths.inventory}")
             if inventory.boundary.id != self.boundary_id:
                 raise ValueError(
                     "boundary inventory does not match boundary path: "
@@ -161,13 +151,9 @@ class Boundary:
                 self.paths.credentials,
                 CredentialsDocument,
             )
-            if (
-                credentials is not None
-                and credentials.boundary_id != self.boundary_id
-            ):
+            if credentials is not None and credentials.boundary_id != self.boundary_id:
                 raise ValueError(
-                    "credentials belong to another boundary: "
-                    f"{self.paths.credentials}"
+                    f"credentials belong to another boundary: {self.paths.credentials}"
                 )
 
             self.inventory: ScanBoundaryInventory = inventory
@@ -195,15 +181,9 @@ class Boundary:
             self.backend,
             concurrency=workspace.config.scan_concurrency,
             environment={
-                "ARTIFACTORY_PASSWORD": (
-                    workspace.config.artifactory_api_key or ""
-                ),
-                "ARTIFACTORY_TOKEN": (
-                    workspace.config.artifactory_api_key or ""
-                ),
-                "ARTIFACTORY_API_KEY": (
-                    workspace.config.artifactory_api_key or ""
-                ),
+                "ARTIFACTORY_PASSWORD": (workspace.config.artifactory_api_key or ""),
+                "ARTIFACTORY_TOKEN": (workspace.config.artifactory_api_key or ""),
+                "ARTIFACTORY_API_KEY": (workspace.config.artifactory_api_key or ""),
             },
             scratch_dir=self.scratch_dir,
         )
@@ -236,9 +216,7 @@ class Boundary:
                 f"expected {model_type.__name__}, got {type(document).__name__}"
             )
 
-        validated = model_type.model_validate(
-            document.model_dump(mode="json")
-        )
+        validated = model_type.model_validate(document.model_dump(mode="json"))
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
@@ -263,16 +241,22 @@ class Boundary:
     @contextmanager
     def scratch_dir(self) -> Iterator[Path]:
         """Own one temporary scratch child for this boundary."""
-        with create_scratch_dir(self.paths.scratch_parent) as directory:
-            yield directory
+        parent = self.paths.scratch_parent
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with TemporaryDirectory(prefix="scratch-", dir=parent) as directory:
+                yield Path(directory)
+        finally:
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
 
     @contextmanager
     def operation(self) -> Iterator[Boundary]:
         """Own this boundary for one serialized operation."""
         if self._operation_active:
-            raise RuntimeError(
-                f"boundary operation already active: {self.boundary_id}"
-            )
+            raise RuntimeError(f"boundary operation already active: {self.boundary_id}")
 
         self._operation_active = True
         try:
@@ -284,9 +268,7 @@ class Boundary:
     def checkpoint(self) -> None:
         """Persist this boundary's current aggregate."""
         if not self._operation_active:
-            raise RuntimeError(
-                "boundary checkpoint requires the boundary operation"
-            )
+            raise RuntimeError("boundary checkpoint requires the boundary operation")
 
         self._write(
             self.paths.inventory,
@@ -305,17 +287,21 @@ class Boundary:
     def needs_scan(self) -> bool:
         if self.inventory.lifecycle == "stale":
             return False
-        return not self._has_report or not self._has_credentials or any(
-            target.lifecycle == "current"
-            and target.scope.lifecycle == "active"
-            and (
-                target.result.status in {"pending", "running"}
-                or (
-                    target.result.status in {"failed", "partial"}
-                    and target.result.retryable
+        return (
+            not self._has_report
+            or not self._has_credentials
+            or any(
+                target.lifecycle == "current"
+                and target.scope.lifecycle == "active"
+                and (
+                    target.result.status in {"pending", "running"}
+                    or (
+                        target.result.status in {"failed", "partial"}
+                        and target.result.retryable
+                    )
                 )
+                for target in self.inventory.targets
             )
-            for target in self.inventory.targets
         )
 
     def needs_judge(self) -> bool:
@@ -328,8 +314,7 @@ class Boundary:
         return any(
             credential.judgment.verdict == "VALID"
             and (
-                credential.extraction is None
-                or credential.extraction.status == "ERROR"
+                credential.extraction is None or credential.extraction.status == "ERROR"
             )
             for credential in self.credentials.credentials.values()
         )
@@ -347,9 +332,7 @@ class Boundary:
                 return True
 
             if discovered.boundary.id != self.boundary_id:
-                raise ValueError(
-                    "backend returned inventory for another boundary"
-                )
+                raise ValueError("backend returned inventory for another boundary")
 
             self.inventory = merge_inventory(self.inventory, discovered)
             self.scanners.inventory = self.inventory
@@ -430,8 +413,7 @@ class Boundary:
         active_targets = tuple(
             target
             for target in self.inventory.targets
-            if target.lifecycle == "current"
-            and target.scope.lifecycle == "active"
+            if target.lifecycle == "current" and target.scope.lifecycle == "active"
         )
         incomplete = bool(self.inventory.errors) or any(
             target.result.status != "scanned" for target in active_targets
@@ -550,8 +532,7 @@ class Boundary:
             if credential.judgment.verdict != "VALID":
                 continue
             if not (
-                credential.extraction is None
-                or credential.extraction.status == "ERROR"
+                credential.extraction is None or credential.extraction.status == "ERROR"
             ):
                 continue
 
