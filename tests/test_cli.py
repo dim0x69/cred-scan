@@ -16,7 +16,6 @@ from cred_scan.orch.models import AppConfig
         ["scan", "--help"],
         ["judge", "--help"],
         ["extract", "--help"],
-        ["run", "--help"],
     ],
 )
 def test_help_does_not_load_configuration_or_start_runtime(
@@ -55,7 +54,7 @@ def test_inventory_command_displays_returned_count(
     result = CliRunner().invoke(cli.app, ["inventory"])
 
     assert result.exit_code == 0
-    assert "wrote inventory with 2 report boundary(ies)" in result.output
+    assert "refreshed inventory for 2 boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
     runtime.inventory.assert_awaited_once()
 
@@ -89,7 +88,7 @@ def test_scan_command_displays_returned_count(
     result = CliRunner().invoke(cli.app, ["scan"])
 
     assert result.exit_code == 0
-    assert "processed 2 report boundary(ies)" in result.output
+    assert "scanned 2 boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
     runtime.scan.assert_awaited_once()
 
@@ -109,23 +108,6 @@ def test_extract_command_displays_returned_count(
     assert "extracted 4 credential(s)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
     runtime.extract.assert_awaited_once()
-
-
-def test_run_command_displays_returned_count(
-    monkeypatch, app_config: AppConfig
-) -> None:
-    loader = Mock(load=AsyncMock(return_value=app_config))
-    runtime = Mock(run=AsyncMock(return_value=2))
-    monkeypatch.setattr(cli, "YamlConfigLoader", Mock(return_value=loader))
-    runtime_constructor = Mock(return_value=runtime)
-    monkeypatch.setattr(cli, "LocalRuntime", runtime_constructor)
-
-    result = CliRunner().invoke(cli.app, ["run"])
-
-    assert result.exit_code == 0
-    assert "completed 2 report boundary(ies)" in result.output
-    runtime_constructor.assert_called_once_with(app_config)
-    runtime.run.assert_awaited_once()
 
 
 def test_task_group_error_is_reported_as_command_failure(

@@ -20,16 +20,16 @@ titus:
 exclusions:
   paths: path-exclusions.list
   credentials: cred-value-exclusions.list
-backends:
-  - name: primary
-    kind: artifactory
-    base_url: https://example/artifactory
-    platform: linux/amd64
+backend:
+  name: primary
+  kind: artifactory
+  base_url: https://example/artifactory
+  platform: linux/amd64
 """,
         encoding="utf-8",
     )
     config = asyncio.run(YamlConfigLoader().load(config_path))
-    assert config.backends[0].name == "primary"
+    assert config.backend.name == "primary"
     assert config.workspace.workspace_dir == (tmp_path / "workspace").resolve()
     assert config.exclusions.paths == (tmp_path / "path-exclusions.list").resolve()
     assert config.artifactory_api_key is None
@@ -55,10 +55,10 @@ titus:
 exclusions:
   paths: path-exclusions.list
   credentials: cred-value-exclusions.list
-backends:
-  - name: primary
-    kind: artifactory
-    base_url: https://example/artifactory
+backend:
+  name: primary
+  kind: artifactory
+  base_url: https://example/artifactory
 """,
         encoding="utf-8",
     )
@@ -92,7 +92,7 @@ def test_workspace_root_is_config_relative(
         f"workspace:\n  workspace-dir: {workspace}\n"
         "titus:\n  executable: ./titus\n"
         "exclusions:\n  paths: paths.list\n  credentials: values.list\n"
-        "backends: []\n",
+        "backend:\n  name: primary\n  base_url: https://example/artifactory\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)

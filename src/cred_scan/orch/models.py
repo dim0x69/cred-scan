@@ -37,7 +37,6 @@ class JudgeConfig(BaseModel):
 
 class AppConfig(BaseSettings):
     workspace: WorkspaceConfig
-    scan_concurrency: int = Field(gt=0, default=1)
     titus: TitusConfig
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles

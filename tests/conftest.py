@@ -70,9 +70,7 @@ def app_config(tmp_path: Path) -> AppConfig:
         exclusions=ExclusionFiles(
             paths=tmp_path / "paths.list", credentials=tmp_path / "values.list"
         ),
-        backends=(
-            ArtifactoryBackendConfig(
-                name="primary", base_url="https://example.invalid/artifactory"
-            ),
+        backend=ArtifactoryBackendConfig(
+            name="primary", base_url="https://example.invalid/artifactory"
         ),
     )

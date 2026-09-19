@@ -1,19 +1,12 @@
 import asyncio
-import os
-import signal
-import subprocess
 import sys
-import time
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.backend.proto import UnsupportedTitusTargetError
-from cred_scan.common.models import WorkspaceConfig
-from cred_scan.common.workspace import WorkspaceBusyError
-from cred_scan.orch.workspace import Workspace
 from cred_scan.orch.models import AppConfig
 from cred_scan.scan.models import ExclusionPolicy
 from cred_scan.scan.titus import TitusCliScanner, _is_permanent_titus_error
@@ -95,6 +88,7 @@ def test_cancelled_titus_call_reaps_child_before_returning(
             repository_inventory.boundary.name,
             "registry/docker-local/team/api@sha256:manifest",
         )
+        app_config.titus.internal_workers = 7
         scanner = TitusCliScanner(
             app_config.titus,
             repository_inventory,
@@ -116,6 +110,10 @@ def test_cancelled_titus_call_reaps_child_before_returning(
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert children[0].returncode is not None
+            if phase == "scan":
+                assert commands[0][commands[0].index("--workers") + 1] == str(
+                    app_config.titus.internal_workers
+                )
             flag = "--output" if phase == "scan" else "--datastore"
             assert commands[0][commands[0].index(flag) + 1] == str(
                 tmp_path / "titus.ds"
@@ -130,79 +128,112 @@ def test_cancelled_titus_call_reaps_child_before_returning(
 
 
 @pytest.mark.parametrize("phase", ["scan", "export"])
-def test_orphaned_titus_child_keeps_operation_lock_after_parent_crash(
-    tmp_path, repository_inventory, phase
+def test_repeated_cancellation_waits_for_reaping(
+    app_config, repository_inventory, tmp_path, monkeypatch, phase
 ):
-    inventory_path = tmp_path / "inventory-input.json"
-    inventory_path.write_text(repository_inventory.model_dump_json())
-    parent_code = r"""
-import asyncio
-import os
-import sys
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
-from cred_scan.backend.models import ScanBoundaryInventory
-from cred_scan.common.models import WorkspaceConfig
-from cred_scan.orch.workspace import Workspace
-from cred_scan.scan.models import ExclusionPolicy
-from cred_scan.scan.titus import TitusCliScanner
+    async def scenario():
+        entered, reaping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        process = Mock(returncode=None)
 
-root = Path(sys.argv[1])
-inventory = ScanBoundaryInventory.model_validate_json((root / 'inventory-input.json').read_text())
-child_code = "import sys,time; from pathlib import Path; p=Path(sys.argv[1]); (p/'ready').touch(); deadline=time.monotonic()+10\nwhile not (p/'release').exists() and time.monotonic()<deadline: time.sleep(.01)"
-spawn = asyncio.create_subprocess_exec
-async def synthetic_titus(*args, **kwargs):
-    # Do not let the orphan inherit the harness parent's captured stdout pipe.
-    kwargs['stdout'] = asyncio.subprocess.DEVNULL
-    child = await spawn(sys.executable, '-c', child_code, str(root), **kwargs)
-    print(child.pid, flush=True)
-    os._exit(23)  # No finally blocks or explicit flock release.
-asyncio.create_subprocess_exec = synthetic_titus
-store = Workspace(WorkspaceConfig(workspace_dir=root))
-with store.operation_lock() as descriptor:
-    scanner = TitusCliScanner(
-        SimpleNamespace(executable='unused', arguments=(), internal_workers=1),
-        inventory, Mock(titus_scan_arguments=Mock(return_value=('synthetic',))),
-        operation_lock_fd=descriptor,
-    )
-    if sys.argv[2] == 'scan':
-        asyncio.run(scanner.scan(inventory.targets[0], root/'scratch', root/'titus.ds', ExclusionPolicy(path_file=root/'paths')))
-    else:
-        asyncio.run(scanner.export_report(root/'titus.ds'))
-"""
-    parent = subprocess.run(
-        [sys.executable, "-B", "-c", parent_code, str(tmp_path), phase],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert parent.returncode == 23, parent.stderr
-    child_pid = int(parent.stdout.strip())
-    workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
-    lock_released = False
-    try:
-        deadline = time.monotonic() + 5
-        while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert (tmp_path / "ready").exists()
-        with pytest.raises(WorkspaceBusyError):
-            with workspace.operation_lock():
-                pytest.fail("orphaned Titus writer did not retain the lock")
-        (tmp_path / "release").touch()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            try:
-                with workspace.operation_lock():
-                    lock_released = True
-                    return
-            except WorkspaceBusyError:
-                time.sleep(0.01)
-        pytest.fail("child exit did not release the operation lock")
-    finally:
-        (tmp_path / "release").touch()
-        if not lock_released:
-            try:
-                os.kill(child_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        async def lines():
+            entered.set()
+            await asyncio.Event().wait()
+            yield b""
+
+        process.stderr = lines()
+        communicates = 0
+
+        async def communicate():
+            nonlocal communicates
+            communicates += 1
+            if phase == "export" and communicates == 1:
+                entered.set()
+                await asyncio.Event().wait()
+            reaping.set()
+            await release.wait()
+            process.returncode = -9
+            return b"", b""
+
+        process.communicate = AsyncMock(side_effect=communicate)
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
+        )
+        backend = Mock(titus_scan_arguments=Mock(return_value=("synthetic",)))
+        scanner = TitusCliScanner(app_config.titus, repository_inventory, backend)
+        operation = (
+            scanner.scan(
+                repository_inventory.targets[0],
+                tmp_path / "scratch",
+                tmp_path / "titus.ds",
+                ExclusionPolicy(path_file=tmp_path / "paths"),
+            )
+            if phase == "scan"
+            else scanner.export_report(tmp_path / "titus.ds")
+        )
+        task = asyncio.create_task(operation)
+        await entered.wait()
+        task.cancel()
+        await reaping.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        process.kill.assert_called_once()
+        assert process.returncode == -9
+
+    asyncio.run(asyncio.wait_for(scenario(), 3))
+
+
+@pytest.mark.parametrize("phase", ["scan", "export"])
+@pytest.mark.parametrize("launch_fails", [False, True])
+def test_cancellation_during_launch_waits_and_reaps(
+    app_config, repository_inventory, tmp_path, monkeypatch, phase, launch_fails
+):
+    async def scenario():
+        launching, release = asyncio.Event(), asyncio.Event()
+        process = Mock(returncode=None)
+        process.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def launch(*_, **kwargs):
+            launching.set()
+            await release.wait()
+            if launch_fails:
+                raise OSError("launch failed during cancellation")
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+        scanner = TitusCliScanner(
+            app_config.titus,
+            repository_inventory,
+            Mock(titus_scan_arguments=Mock(return_value=("synthetic",))),
+        )
+        operation = (
+            scanner.scan(
+                repository_inventory.targets[0],
+                tmp_path / "scratch",
+                tmp_path / "titus.ds",
+                ExclusionPolicy(path_file=tmp_path / "paths"),
+            )
+            if phase == "scan"
+            else scanner.export_report(tmp_path / "titus.ds")
+        )
+        task = asyncio.create_task(operation)
+        await launching.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        if launch_fails:
+            process.kill.assert_not_called()
+            process.communicate.assert_not_awaited()
+        else:
+            process.kill.assert_called_once()
+            process.communicate.assert_awaited_once()
+
+    asyncio.run(asyncio.wait_for(scenario(), 3))

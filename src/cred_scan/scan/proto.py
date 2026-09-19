@@ -10,7 +10,12 @@ from cred_scan.scan.models import ExclusionPolicy, TitusReport
 
 
 class CredentialScanner(Protocol):
-    """Scan targets and export one final report for a datastore boundary."""
+    """One boundary's scanner, called sequentially for targets and final export.
+
+    The boundary owns scan-target retries and scratch. Each call finishes its
+    Titus subprocess, including cancelled startup and cleanup, before returning.
+    Parallel work inside Titus is independent of this sequential interface.
+    """
 
     async def scan(
         self,

@@ -295,7 +295,7 @@
         <p class="stage-foot">For RETAINED records, check file existence only and report missing files without automatic replacement (implementation pending). For missing/error extraction, retrieve exact pinned bytes; never overwrite an existing conflicting artifact.</p>
       </li>
     </ol>
-    <div class="gate"><strong>Operator sequence:</strong> <code>inventory</code>, then <code>scan</code>, <code>judge</code>, and <code>extract</code>. The agreed workflow serializes operations within each boundary and allows different boundaries to run concurrently (implementation pending). It constructs each Boundary once; the Boundary loads its documents at construction, creates its boundary-local <code>.operation.lock</code> sentinel for an operation, checkpoints its own files, and removes the sentinel on release. Judge never extracts evidence; Extract only consumes saved VALID or UNKNOWN judgments.</div>
+    <div class="gate"><strong>Operator sequence:</strong> <code>inventory</code>, then <code>scan</code>, <code>judge</code>, and <code>extract</code>. Workspace runs the requested stage concurrently across boundaries. An async operation lock serializes stages within each Boundary; its file sentinel excludes other processes. It constructs each Boundary once; the Boundary loads its documents at construction, creates its boundary-local <code>.operation.lock</code> sentinel for an operation, checkpoints its own files, and removes the sentinel on release. Judge never extracts evidence; Extract only consumes saved VALID or UNKNOWN judgments.</div>
     <p class="port">The Boundary is the mutable aggregate. Its inventory, report, and credentials are checkpointed together; there is no scheduler checkpoint or cross-boundary handoff.</p>
     <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; the Boundary derives its own storage paths from its directory; <code>BackendAdapter</code> and <code>ContentReader</code> are service ports, not serialized models.</p>
   </section>
@@ -372,7 +372,7 @@ retain_first_evidence(
       </article>
     </div>
     <aside class="note" style="margin-top: 1.25rem">
-      <strong>Return value ≠ persisted output.</strong> Each command owns one boundary. Scan and inventory complete without a cross-boundary count; Judge returns attempted-credential count; Extract returns newly retained count. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
+      <strong>Return value ≠ persisted output.</strong> Each command runs its requested stage across persisted boundaries concurrently. Inventory returns the refreshed-boundary count; Scan returns the completed-boundary count; Judge returns the total attempted-credential count; Extract returns the total newly retained count. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
     </aside>
   </section>
 
@@ -408,9 +408,9 @@ boundary.extract()
           <li>Create the boundary-local <code>.operation.lock</code> sentinel.</li>
           <li>Run exactly one requested operation on that Boundary.</li>
           <li>Mutate the in-memory aggregate and call <code>Boundary.checkpoint()</code>.</li>
-          <li>Remove the sentinel after backend and Titus cleanup.</li>
+          <li>Remove the sentinel after the operation and its Titus cleanup; close readers and the shared backend when Workspace closes.</li>
         </ol>
-        <p><strong>Agreed design, pending implementation:</strong> different boundaries may run concurrently. Within each boundary, inventory, scan, judgment, and extraction run sequentially. Each boundary owns one scanner, one judge, and one extractor. The scanner processes scan targets sequentially with at most one Titus invocation at a time; Titus's internal parallelism remains available. See <a href="../TODO.md">TODO.md</a>. The current implementation still uses a scanner pool and one-boundary command coordination.</p>
+        <p><strong>Implemented execution model:</strong> different boundaries run concurrently. Within each boundary, inventory, scan, judgment, and extraction run sequentially. Each boundary owns one scanner, one judge, and one extractor. The scanner processes scan targets sequentially with at most one Titus invocation at a time; Titus's internal parallelism remains available. Workspace uses a task group across boundaries. Each boundary checkpoints a scan target before starting the next; there is no application-level scanner pool.</p>
       </article>
     </div>
     <div class="panel" style="margin-top: 1.25rem">
@@ -422,10 +422,11 @@ boundary.extract()
 common: scratch/fsync helpers
 Workspace: one backend, Boundary discovery, Boundary construction, backend lifetime
 Boundary: one fully loaded inventory/report/credentials aggregate, derived paths, sentinel lock, atomic I/O, checkpoint, and four operations
-Current TitusScannerPool: to be replaced with one sequential scanner per boundary
-Current LocalRuntime: one boundary command per invocation; cross-boundary concurrency pending</pre>
+TitusCliScanner: one scanner per boundary, one active invocation at a time
+EvidenceExtractor: one extractor per boundary, first-occurrence retention
+LocalRuntime: runs each command across boundaries concurrently</pre>
       <p>The design rule is to keep module responsibilities clear and avoid circular dependencies; specific import directions are implementation choices. In the current implementation, Boundary uses its owner's concrete Workspace, backend content readers receive a scratch context, and Boundary's type-only Workspace reference avoids a runtime cycle. These details describe the current structure rather than prescribing a permanent import hierarchy.</p>
-      <p>Workspace currently owns one configured backend and its lifetime. The agreed simplification gives each Boundary one scanner, one judge, and one extractor, sharing an in-memory read cache for one boundary workflow. Scan targets run sequentially within a boundary; different boundaries may run concurrently. Titus internal workers remain supported. The current scanner pool and command coordination require the changes tracked in TODO.md.</p>
+      <p>Workspace owns one configured backend and its lifetime. Each Boundary owns one TitusCliScanner, one judge, and one EvidenceExtractor. Its async operation lock queues overlapping stages; different boundaries run concurrently. Scan targets and their retries run sequentially and share the boundary datastore. Titus internal workers remain supported. Commands remain separate stages; sharing a read cache across commands is a separate task in TODO.md.</p>
     </div>
     <div class="table-scroll" style="margin-top: 1.25rem" role="region" aria-label="Execution transitions" tabindex="0">
       <table>
@@ -439,7 +440,7 @@ Current LocalRuntime: one boundary command per invocation; cross-boundary concur
           <tr><td>Judgment claim / result</td><td>JUDGE → RUNNING. Save each PENDING/ERROR credential's result. VALID or UNKNOWN can create extraction work; ERROR remains READY after the pass.</td></tr>
           <tr><td>Separate judgment and evidence</td><td><code>judge</code> saves each judgment. <code>extract</code> later consumes saved VALID or UNKNOWN judgments. There is never concurrent mutation of one boundary.</td></tr>
           <tr><td>Extraction success / ordinary error</td><td>Persist evidence before RETAINED metadata. On completion, EXTRACT becomes IDLE or READY for remaining errors. A saved VALID or UNKNOWN judgment is not repeated merely because evidence failed.</td></tr>
-          <tr><td>Cancellation / fatal failure</td><td>Under the agreed sequential scanner design, stop and await the active Titus invocation, close the boundary reader, and clear its in-memory cache. Current cancellation code still handles scanner-pool workers. Unfinished RUNNING targets are reset on the next scan. Ordinary item errors are saved and do not automatically abort.</td></tr>
+          <tr><td>Cancellation / fatal failure</td><td>Stop and reap the active Titus invocation before releasing scratch or boundary ownership, even after repeated cancellation. A task-group failure cancels and awaits other active boundaries. Close all readers before the shared backend. Completed scan targets stay checkpointed; only the interrupted target is RUNNING and unstarted targets remain pending. The next scan resets interrupted RUNNING targets. Ordinary item errors are saved and do not automatically abort.</td></tr>
           <tr><td>Stale boundary</td><td>Keep its inventory and history. Explicit scan, judge, or extract may process the selected boundary according to its persisted target and credential state; inaccessible content produces the usual failure, never a newer-source fallback.</td></tr>
           <tr><td>No remaining work</td><td>All phases IDLE, publication pending false. Normal scan does not re-export completed boundaries. Exclusion-file changes alone do not reopen them. RETAINED evidence requires only a file-existence check under the agreed design (implementation pending).</td></tr>
         </tbody>
@@ -634,7 +635,6 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
             <li><code>workspace: <span class="type">WorkspaceConfig</span></code>
               <ul><li><code>workspace_dir: Path</code> · YAML <code>workspace-dir</code><span class="hint">The resolved root for all workspace persistence.</span></li></ul>
             </li>
-            <li><code>scan_concurrency: int</code><span class="hint">Current implementation only; scheduled for removal. The agreed design runs one Titus invocation at a time per boundary and preserves Titus internal workers.</span></li>
             <li><code>titus: <span class="type">TitusConfig</span></code>
               <ul><li><code>executable: str</code> · <code>arguments: str[]</code> · <code>internal_workers: int</code></li></ul>
             </li>
@@ -699,7 +699,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
           <tr><td><code>report.json</code></td><td><a href="#model-report">TitusReport</a></td><td>Scan final export</td><td>Latest cumulative raw findings and rule metadata.</td></tr>
           <tr><td><code>credentials.json</code></td><td><a href="#model-credentials">CredentialsDocument</a></td><td>Scan → Judge → Extract</td><td>Append-only observations; per-credential judgment and extraction checkpoints.</td></tr>
           <tr><td><code>evidence/&lt;credential&gt;/&lt;filename&gt;</code></td><td>Bytes, indexed by <a href="#model-extraction">ExtractionResult</a></td><td>Extract</td><td>First-occurrence evidence for VALID or UNKNOWN credentials. Historical evidence is retained.</td></tr>
-          <tr><td><code>scratch/</code></td><td>None — temporary files</td><td>Boundary reader / Titus workers</td><td>The Boundary reader owns its context across the lifecycle; each Titus worker owns a temporary child; cleanup occurs when their owners close.</td></tr>
+          <tr><td><code>scratch/</code></td><td>None — temporary files</td><td>Boundary reader / scanner</td><td>The Boundary reader owns its context across the lifecycle; the boundary scanner owns a temporary child for its current scan target and retries; cleanup occurs when their owners close.</td></tr>
         </tbody>
       </table>
     </div>
@@ -707,9 +707,9 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
       <article class="panel">
         <h3>Scheduling and handoff</h3>
         <ul>
-          <li>Agreed design: different boundaries may run concurrently; inventory, scan, judge, and extract are sequential within each boundary.</li>
+          <li>Workspace executes the requested stage concurrently across boundaries; inventory, scan, judge, and extract operations are serialized within each boundary.</li>
           <li>Each boundary owns one scanner, one judge, and one extractor. Scan targets and Titus invocations run sequentially within that boundary; Titus itself may use internal parallelism.</li>
-          <li>Implementation pending: replace <code>TitusScannerPool</code> and remove <code>scan_concurrency</code>, preserving <code>internal_workers</code>. The current implementation details elsewhere on this page describe the existing pool until that change lands.</li>
+          <li>A single <code>TitusCliScanner</code> serves each boundary. There is no <code>scan_concurrency</code> setting; <code>internal_workers</code> controls Titus internal parallelism. Retry transient scan failures up to three attempts; permanent failures do not retry. Checkpoint each completed scan target before starting the next.</li>
           <li>Normal scan also drains previously published unfinished judgment/evidence on active boundaries without another Titus export. Completed scan work is skipped; the agreed evidence-existence check must still run when no extraction is pending (implementation pending).</li>
           <li>Stale boundaries/scopes, superseded pins, and already-scanned current targets do not start new target scans.</li>
         </ul>

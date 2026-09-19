@@ -3,7 +3,6 @@
 workspace:
   workspace-dir: ./workspace
 
-scan_concurrency: 1
 
 titus:
   executable: ./titus

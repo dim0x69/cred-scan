@@ -1,7 +1,9 @@
 # Credential scanner
 
 A design-stage credential scanner with backend-owned source locators,
-one-backend workspaces, boundary-scoped Titus datastores, judgment, and evidence retention.
+one-backend workspaces, boundary-scoped Titus datastores, judgment, and evidence retention. Commands process
+boundaries concurrently; each boundary scans its targets sequentially with one
+Titus scanner. Titus internal parallelism is configured through `internal_workers`.
 
 ## Documentation
 

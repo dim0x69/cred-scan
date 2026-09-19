@@ -1,4 +1,4 @@
-"""Thin local CLI for one-boundary workflow operations."""
+"""Thin local CLI for concurrent boundary workflow operations."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from cred_scan.orch.runtime import LocalRuntime
 LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(
-    help="Backend-agnostic credential scanner; each invocation advances one boundary.",
+    help="Backend-agnostic credential scanner; each invocation processes boundaries concurrently.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -66,7 +66,7 @@ def inventory(
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Refresh the next persisted boundary inventory."""
+    """Refresh persisted boundary inventories concurrently."""
     _run(
         "inventory",
         config,
@@ -81,7 +81,7 @@ def scan(
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Scan the next boundary with pending targets."""
+    """Scan boundaries concurrently, with sequential scan targets per boundary."""
     _run(
         "scan",
         config,
@@ -96,7 +96,7 @@ def judge(
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Judge credentials in the next boundary with pending judgments."""
+    """Judge pending credentials across boundaries concurrently."""
     _run(
         "judge",
         config,
@@ -111,7 +111,7 @@ def extract(
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Extract evidence in the next boundary with eligible credentials."""
+    """Extract eligible evidence across boundaries concurrently."""
     _run(
         "extract",
         config,

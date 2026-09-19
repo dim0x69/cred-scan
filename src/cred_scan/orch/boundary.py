@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,15 +20,14 @@ if TYPE_CHECKING:
     from cred_scan.orch.workspace import Workspace
 
 from cred_scan.backend.inventory import merge_inventory
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.common.fsync import fsync_directory
 from cred_scan.common.models import BoundaryPaths
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.judge.evidence import (
     EvidenceConflictError,
-    evidence_path,
-    retain_first_evidence,
+    EvidenceExtractor,
 )
 from cred_scan.judge.proto import FatalJudgeError
 from cred_scan.orch.credentials import merge_scan
@@ -39,10 +39,14 @@ from cred_scan.scan.models import (
     JudgmentResult,
     TitusReport,
 )
-from cred_scan.scan.titus import TitusScannerPool
+from cred_scan.scan.titus import TitusCliScanner
 
 LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
+
+
+class BoundaryBusyError(FileExistsError):
+    """Another operation owns this boundary's persisted sentinel."""
 
 
 class Boundary:
@@ -56,8 +60,7 @@ class Boundary:
             boundary_dir=path,
         )
 
-        # Construction reads one consistent boundary snapshot. The lock is a
-        # simple sentinel because Workspace is the sole process owner.
+        # Construction reads one consistent boundary snapshot.
         with self._lock():
             inventory = self._read(
                 self.paths.inventory,
@@ -114,29 +117,33 @@ class Boundary:
             self.scratch_dir,
         )
         self.judge_service = DspyFindingJudge(workspace.config)
-        self.scanners = TitusScannerPool(
+        self.scanner = TitusCliScanner(
             workspace.config.titus,
             self.inventory,
             self.backend,
-            concurrency=workspace.config.scan_concurrency,
             environment={
                 "ARTIFACTORY_PASSWORD": (workspace.config.artifactory_api_key or ""),
                 "ARTIFACTORY_TOKEN": (workspace.config.artifactory_api_key or ""),
                 "ARTIFACTORY_API_KEY": (workspace.config.artifactory_api_key or ""),
             },
-            scratch_dir=self.scratch_dir,
         )
         self._operation_active = False
+        self._operation_lock = asyncio.Lock()
+        self.extractor = EvidenceExtractor(self.paths.boundary_dir)
 
     @contextmanager
     def _lock(self) -> Iterator[None]:
         """Own this boundary with an atomically created sentinel file."""
         path = self.paths.operation_lock
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write("locked\n")
+        try:
+            stream = path.open("x", encoding="utf-8")
+        except FileExistsError as error:
+            raise BoundaryBusyError(f"boundary busy: {self.boundary_id}") from error
 
         try:
+            with stream:
+                stream.write("locked\n")
             yield
         finally:
             path.unlink(missing_ok=True)
@@ -208,18 +215,16 @@ class Boundary:
             except OSError:
                 pass
 
-    @contextmanager
-    def operation(self) -> Iterator[Boundary]:
-        """Own this boundary for one serialized operation."""
-        if self._operation_active:
-            raise RuntimeError(f"boundary operation already active: {self.boundary_id}")
-
-        self._operation_active = True
-        try:
+    @asynccontextmanager
+    async def operation(self) -> AsyncIterator[Boundary]:
+        """Serialize this boundary's stages without blocking other boundaries."""
+        async with self._operation_lock:
             with self._lock():
-                yield self
-        finally:
-            self._operation_active = False
+                self._operation_active = True
+                try:
+                    yield self
+                finally:
+                    self._operation_active = False
 
     def checkpoint(self) -> None:
         """Persist this boundary's current aggregate."""
@@ -276,7 +281,7 @@ class Boundary:
         )
 
     async def refresh_inventory(self) -> bool:
-        with self.operation():
+        async with self.operation():
             try:
                 discovered = await self.backend.inventory(self.boundary_id)
             except KeyError:
@@ -297,12 +302,12 @@ class Boundary:
                 self.inventory.targets,
                 self.scratch_dir,
             )
-            self.scanners.inventory = self.inventory
+            self.scanner.inventory = self.inventory
             self.checkpoint()
             return True
 
     async def scan(self) -> bool:
-        with self.operation():
+        async with self.operation():
             if not self.needs_scan():
                 return False
             await self._scan()
@@ -312,7 +317,7 @@ class Boundary:
         if self.inventory.lifecycle == "stale":
             raise ValueError("cannot scan a stale boundary")
 
-        self.scanners.inventory = self.inventory
+        self.scanner.inventory = self.inventory
         interrupted = [
             target
             for target in self.inventory.targets
@@ -336,40 +341,28 @@ class Boundary:
                 )
             )
         )
+        LOGGER.info("scanning boundary=%s targets=%d", self.boundary_id, len(eligible))
         for target in eligible:
             target.result.status = "running"
             target.result.errors = ()
             target.result.return_code = None
             target.result.started_at = datetime.now(UTC)
             target.result.finished_at = None
-        if eligible:
             self.checkpoint()
-
-        LOGGER.info(
-            "scanning boundary=%s targets=%d concurrency=%d",
-            self.boundary_id,
-            len(eligible),
-            self.scanners.concurrency,
-        )
-        results = await self.scanners.scan(
-            tuple(target.model_copy(deep=True) for target in eligible),
-            self.paths.datastore,
-            self.policy,
-        )
-        for target in results:
-            self.inventory.complete_target(target)
+            result = await self._scan_target(target.model_copy(deep=True))
+            self.inventory.complete_target(result)
             self.checkpoint()
             LOGGER.info(
                 "scanned target=%s status=%s retryable=%s",
-                target.id,
-                target.result.status,
-                target.result.retryable,
+                result.id,
+                result.result.status,
+                result.result.retryable,
             )
-            if target.result.errors:
+            if result.result.errors:
                 LOGGER.error(
                     "scan target=%s errors=%s",
-                    target.id,
-                    "; ".join(target.result.errors),
+                    result.id,
+                    "; ".join(result.result.errors),
                 )
 
         active_targets = tuple(
@@ -399,7 +392,7 @@ class Boundary:
             self._has_credentials = True
             self.checkpoint()
         else:
-            report = await self.scanners.export_report(self.paths.datastore)
+            report = await self.scanner.export_report(self.paths.datastore)
             self.report = report.model_copy(
                 update={
                     "incomplete": report.incomplete or incomplete,
@@ -427,8 +420,25 @@ class Boundary:
             self.credentials.incomplete,
         )
 
+    async def _scan_target(self, target: ScanTarget) -> ScanTarget:
+        """Own one target's scratch and all attempts on the same scanner."""
+        with self.scratch_dir() as work_dir:
+            for attempt in range(3):
+                LOGGER.info("scanning target=%s attempt=%d/3", target.id, attempt + 1)
+                target = await self.scanner.scan(
+                    target, work_dir, self.paths.datastore, self.policy
+                )
+                if (
+                    target.result.status == "scanned"
+                    or not target.result.retryable
+                    or attempt == 2
+                ):
+                    return target
+                target.result.status = "running"
+        raise AssertionError("scan attempts finished without a result")
+
     async def judge(self) -> int:
-        with self.operation():
+        async with self.operation():
             if not self.needs_judge():
                 return 0
             return await self._judge()
@@ -463,7 +473,7 @@ class Boundary:
         return judged
 
     async def extract(self) -> int:
-        with self.operation():
+        async with self.operation():
             if not self.needs_extract():
                 return 0
             return await self._extract()
@@ -479,27 +489,7 @@ class Boundary:
                 continue
 
             try:
-                location = await self.reader.resolve_location(
-                    credential.occurrences[0].locator
-                )
-                content = await self.reader.read(location)
-                destination = evidence_path(
-                    self.paths.boundary_dir,
-                    credential.credential_id,
-                    content.filename,
-                )
-                _, size, sha256 = await retain_first_evidence(
-                    content.content,
-                    destination,
-                )
-                extraction = ExtractionResult(
-                    status="RETAINED",
-                    output_path=destination.relative_to(
-                        self.paths.boundary_dir
-                    ).as_posix(),
-                    size=size,
-                    sha256=sha256,
-                )
+                extraction = await self.extractor.extract(credential, self.reader)
                 retained += 1
             except EvidenceConflictError:
                 raise

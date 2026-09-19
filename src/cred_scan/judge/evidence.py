@@ -11,7 +11,8 @@ from urllib.parse import quote
 import aiofiles
 
 from cred_scan.common.fsync import fsync_directory
-from cred_scan.scan.models import ExtractionResult
+from cred_scan.backend.proto import ContentReader
+from cred_scan.scan.models import Credential, ExtractionResult
 
 
 class EvidenceConflictError(RuntimeError):
@@ -68,8 +69,33 @@ async def retain_first_evidence(
             os.link(temporary, destination)
         except FileExistsError:
             if destination.is_symlink() or destination.read_bytes() != content:
-                raise EvidenceConflictError(f"existing evidence differs: {destination}") from None
+                raise EvidenceConflictError(
+                    f"existing evidence differs: {destination}"
+                ) from None
         fsync_directory(destination.parent)
     finally:
         temporary.unlink(missing_ok=True)
     return destination, len(content), hashlib.sha256(content).hexdigest()
+
+
+class EvidenceExtractor:
+    """Retain first-occurrence evidence for one boundary."""
+
+    def __init__(self, boundary_dir: Path) -> None:
+        self.boundary_dir = boundary_dir
+
+    async def extract(
+        self, credential: Credential, reader: ContentReader
+    ) -> ExtractionResult:
+        location = await reader.resolve_location(credential.occurrences[0].locator)
+        content = await reader.read(location)
+        destination = evidence_path(
+            self.boundary_dir, credential.credential_id, content.filename
+        )
+        _, size, sha256 = await retain_first_evidence(content.content, destination)
+        return ExtractionResult(
+            status="RETAINED",
+            output_path=destination.relative_to(self.boundary_dir).as_posix(),
+            size=size,
+            sha256=sha256,
+        )
