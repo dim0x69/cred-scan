@@ -10,4 +10,3 @@
 11. Preserve the previous inventory on failed or partial discovery, recording the error without replacing scan targets. Cover this behavior when implementing latest-only inventory, including discovery that returns some results alongside errors.
 12. make extract a separate module, move models and functions there.
 14. Make the resolved application configuration globally available. Load exclusions, secrets, judge configuration, and Titus configuration at the point where they are needed instead of passing them through `Workspace` or into judge and Titus services; use this to declutter `Workspace` and remove `Boundary`’s need to access the workspace for configuration.
-15. Simplify the `ContentReader` contract: it should read a requested path and must not receive a `ScanBoundaryRef`. Remove boundary validation from `ArtifactoryDockerReader`; path resolution and reading do not require boundary context.

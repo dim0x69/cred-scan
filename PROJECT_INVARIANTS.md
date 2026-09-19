@@ -4,7 +4,7 @@ User-confirmed design rules. Implementation gaps are tracked in [TODO.md](TODO.m
 
 - A boundary is the unit of processing and persistence: it owns inventory, scanning, judgments, evidence, and their stored results. Reporting uses the same grouping. A scope identifies the logical source; a scan target identifies an immutable source version.
 - Inventory keeps only the latest selected scan targets. Historical credentials and occurrences remain independent of inventory history. Failed or partial discovery preserves the previous inventory and records the error; replace inventory only after successful discovery.
-- Each credential occurrence path identifies the exact immutable source version and file, allowing historical reads without historical inventory.
+- Each credential occurrence path identifies the exact immutable source version and file, allowing historical reads without historical inventory. Content readers resolve and read requested paths using their configured backend, without receiving or validating a boundary reference.
 - Each boundary keeps one cumulative Titus datastore across scan runs, retaining past scan data as new scan targets are added. Inventory replacement does not reset it.
 - Each boundary owns one scanner, one judge, and one extractor. Inventory, scan, judgment, and extraction share one boundary operation lock and run sequentially within that boundary; different boundaries may run concurrently.
 - Each boundary scans its scan targets sequentially, with at most one Titus invocation at a time. Titus's internal parallelism remains available; there is no application-level scanner pool within a boundary.

@@ -11,9 +11,7 @@ import pytest
 
 from cred_scan.backend.adapters.artifactory.docker import (
     ArtifactoryDockerReader,
-    LayerEvidenceError,
 )
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
 
 
 PROVENANCE = (
@@ -30,10 +28,7 @@ def scratch() -> Iterator[Path]:
 
 def make_reader() -> ArtifactoryDockerReader:
     backend = Mock()
-    boundary = ArtifactoryRepository(
-        id="artifactory:primary:docker-local", name="docker-local"
-    )
-    return ArtifactoryDockerReader(backend, boundary, scratch_dir=scratch)
+    return ArtifactoryDockerReader(backend, scratch_dir=scratch)
 
 
 def test_reader_resolves_and_reads_old_occurrence_without_targets() -> None:
@@ -51,10 +46,20 @@ def test_reader_resolves_and_reads_old_occurrence_without_targets() -> None:
     asyncio.run(reader.aclose())
 
 
-def test_reader_rejects_an_occurrence_from_another_boundary() -> None:
+@pytest.mark.parametrize("resolved", [False, True])
+def test_reader_reads_paths_from_multiple_repositories(resolved: bool) -> None:
     reader = make_reader()
-    foreign = PROVENANCE.replace("docker-local", "other-repository")
+    reader._find_file = AsyncMock(side_effect=[b"first", b"second"])
 
-    with pytest.raises(LayerEvidenceError, match="repository boundary"):
-        asyncio.run(reader.resolve_location(foreign))
-    asyncio.run(reader.aclose())
+    async def read_repositories() -> None:
+        try:
+            for repository, expected in [("docker-local", b"first"), ("other-repository", b"second")]:
+                path = PROVENANCE.replace("docker-local", repository)
+                location = await reader.resolve_location(path) if resolved else path
+                content = await reader.read(location)
+                assert content.content == expected
+                assert reader._find_file.call_args.args[0].repository == repository
+        finally:
+            await reader.aclose()
+
+    asyncio.run(read_repositories())

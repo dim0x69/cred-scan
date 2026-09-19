@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from cred_scan.backend.models import (
         ContentLocation,
         ContentRead,
-        ScanBoundaryRef,
         ScanBoundaryInventory,
         ScanTarget,
     )
@@ -43,7 +42,6 @@ class BackendAdapter(ABC):
     @abstractmethod
     def content_reader(
         self,
-        boundary: ScanBoundaryRef,
         scratch_dir: ScratchDirectory,
     ) -> ContentReader:
         """Create a reader that interprets immutable occurrence paths directly."""
@@ -54,7 +52,7 @@ class BackendAdapter(ABC):
 
 
 class ContentReader(Protocol):
-    """Resolve and read backend paths for one scan boundary.
+    """Resolve and read requested backend paths without boundary context.
 
     Implementations cache resolved locations and retrieved reads for the
     reader lifetime. Calls propagate cancellation after settling

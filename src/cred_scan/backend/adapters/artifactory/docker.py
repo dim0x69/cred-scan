@@ -31,7 +31,6 @@ if TYPE_CHECKING:
         ContentLocation,
         ContentRead,
         ScanBoundaryInventory,
-        ScanBoundaryRef,
         ScanTarget,
     )
 from cred_scan.backend.proto import (
@@ -194,12 +193,10 @@ class ArtifactoryDockerReader(ContentReader):
     def __init__(
         self,
         backend: ArtifactoryDockerBackend,
-        boundary: ScanBoundaryRef,
         *,
         scratch_dir: ScratchDirectory,
     ) -> None:
         self.backend = backend
-        self.boundary = boundary
         self._closed = False
         self._locations: dict[str, ContentLocation] = {}
         self._reads: dict[tuple[str, str, str], ContentRead] = {}
@@ -293,12 +290,6 @@ class ArtifactoryDockerReader(ContentReader):
             f"requested Docker layer was not found: {provenance.layer}"
         )
 
-    def _validate_boundary(self, provenance: DockerProvenance) -> None:
-        if provenance.repository != self.boundary.name:
-            raise LayerEvidenceError(
-                "Titus provenance does not belong to this repository boundary"
-            )
-
     def _temporary_path(self) -> Path:
         with NamedTemporaryFile(
             dir=self._scratch_dir, prefix="blob-", suffix=".tar", delete=False
@@ -387,7 +378,6 @@ class ArtifactoryDockerReader(ContentReader):
         except LayerEvidenceError:
             LOGGER.exception("invalid Docker provenance raw_path=%s", raw_path)
             raise
-        self._validate_boundary(provenance)
         source_path = provenance.path
         location = ContentLocation(
             locator=key,
@@ -413,7 +403,6 @@ class ArtifactoryDockerReader(ContentReader):
             return cached
 
         provenance = parse_provenance(location.locator)
-        self._validate_boundary(provenance)
         if location.source_path != provenance.path:
             raise LayerEvidenceError(
                 "content location source path does not match locator"
@@ -549,12 +538,10 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
 
     def content_reader(
         self,
-        boundary: ScanBoundaryRef,
         scratch_dir: ScratchDirectory,
     ) -> ArtifactoryDockerReader:
         return ArtifactoryDockerReader(
             self,
-            boundary,
             scratch_dir=scratch_dir,
         )
 

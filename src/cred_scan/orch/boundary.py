@@ -107,7 +107,6 @@ class Boundary:
         self.backend = backend
         self.policy: ExclusionPolicy = load_exclusions(config.exclusions)
         self.reader: ContentReader = self.backend.content_reader(
-            self.inventory.boundary,
             self.scratch_dir,
         )
         self.judge_service = DspyFindingJudge()
@@ -283,7 +282,6 @@ class Boundary:
             await self.reader.aclose()
             self.inventory = merge_inventory(self.inventory, discovered)
             self.reader = self.backend.content_reader(
-                self.inventory.boundary,
                 self.scratch_dir,
             )
             self.scanner.inventory = self.inventory
