@@ -11,20 +11,19 @@ from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBacke
 from cred_scan.backend.proto import BackendAdapter
 from cred_scan.orch.boundary import Boundary, BoundaryBusyError
 from cred_scan.orch.models import AppConfig
-from cred_scan.scan.exclusions import load_exclusions
+from cred_scan.orch.global_config import set_config
 
 
 class Workspace:
     """Own workspace services and one stable set of loaded boundaries."""
 
     def __init__(self, config: AppConfig) -> None:
-        self.config = config
+        set_config(config)
         self._workspace_dir = config.workspace.workspace_dir
         self.backend: BackendAdapter = ArtifactoryDockerBackend(
             config.backend,
             config.artifactory_api_key or "",
         )
-        self.policy = load_exclusions(config.exclusions)
         self._boundaries: tuple[Boundary, ...] | None = None
         self._closed = False
 
@@ -48,7 +47,7 @@ class Workspace:
                 key=lambda item: unquote(item.parent.name),
             ):
                 try:
-                    boundaries.append(Boundary(self, inventory_path.parent))
+                    boundaries.append(Boundary(self.backend, inventory_path.parent))
                 except BoundaryBusyError:
                     continue
             self._boundaries = tuple(boundaries)
@@ -60,7 +59,7 @@ class Workspace:
             if boundary.boundary_id == boundary_id:
                 return boundary
         return Boundary(
-            self,
+            self.backend,
             self._workspace_dir / quote(boundary_id, safe=""),
         )
 

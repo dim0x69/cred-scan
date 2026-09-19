@@ -9,7 +9,7 @@ import os
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
 from cred_scan.backend.proto import (
@@ -19,6 +19,7 @@ from cred_scan.backend.proto import (
 from cred_scan.scan.credentials import report_from_export
 from cred_scan.scan.models import ExclusionPolicy, TitusReport
 from cred_scan.scan.proto import CredentialScanner
+from cred_scan.orch.global_config import get_config
 
 
 LOGGER = logging.getLogger(__name__)
@@ -90,15 +91,18 @@ async def _spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
 class TitusCliScanner(CredentialScanner):
     def __init__(
         self,
-        config: Any,
         inventory: ScanBoundaryInventory,
         backend: BackendAdapter,
-        environment: Mapping[str, str] | None = None,
     ) -> None:
-        self.config = config
+        self.config = get_config().titus
         self.inventory = inventory
         self.backend = backend
-        self.environment = dict(environment or {})
+        api_key = get_config().artifactory_api_key or ""
+        self.environment = {
+            "ARTIFACTORY_PASSWORD": api_key,
+            "ARTIFACTORY_TOKEN": api_key,
+            "ARTIFACTORY_API_KEY": api_key,
+        }
 
     async def scan(
         self,

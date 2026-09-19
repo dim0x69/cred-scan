@@ -11,13 +11,12 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, TypeVar
+from typing import TypeVar
 from urllib.parse import unquote
 
 from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    from cred_scan.orch.workspace import Workspace
+from cred_scan.orch.global_config import get_config
 
 from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
@@ -40,6 +39,7 @@ from cred_scan.scan.models import (
     TitusReport,
 )
 from cred_scan.scan.titus import TitusCliScanner
+from cred_scan.scan.exclusions import load_exclusions
 
 LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
@@ -52,8 +52,7 @@ class BoundaryBusyError(FileExistsError):
 class Boundary:
     """Fully loaded mutable aggregate for one persisted report boundary."""
 
-    def __init__(self, workspace: Workspace, path: Path) -> None:
-        self.workspace = workspace
+    def __init__(self, backend: BackendAdapter, path: Path) -> None:
         self.boundary_id = unquote(path.name)
         self.paths = BoundaryPaths(
             boundary_id=self.boundary_id,
@@ -73,7 +72,7 @@ class Boundary:
                     "boundary inventory does not match boundary path: "
                     f"{self.paths.inventory}"
                 )
-            if inventory.backend.name != workspace.backend.name:
+            if inventory.backend.name != backend.name:
                 raise ValueError(
                     "boundary inventory belongs to another configured backend"
                 )
@@ -109,23 +108,15 @@ class Boundary:
             self._has_report = report is not None
             self._has_credentials = credentials is not None
 
-        self.backend: BackendAdapter = workspace.backend
-        self.policy: ExclusionPolicy = workspace.policy
+        config = get_config()
+        self.backend = backend
+        self.policy: ExclusionPolicy = load_exclusions(config.exclusions)
         self.reader: ContentReader = self.backend.content_reader(
             self.inventory.boundary,
             self.scratch_dir,
         )
-        self.judge_service = DspyFindingJudge(workspace.config)
-        self.scanner = TitusCliScanner(
-            workspace.config.titus,
-            self.inventory,
-            self.backend,
-            environment={
-                "ARTIFACTORY_PASSWORD": (workspace.config.artifactory_api_key or ""),
-                "ARTIFACTORY_TOKEN": (workspace.config.artifactory_api_key or ""),
-                "ARTIFACTORY_API_KEY": (workspace.config.artifactory_api_key or ""),
-            },
-        )
+        self.judge_service = DspyFindingJudge()
+        self.scanner = TitusCliScanner(self.inventory, self.backend)
         self._operation_active = False
         self._operation_lock = asyncio.Lock()
         self.extractor = EvidenceExtractor(self.paths.boundary_dir)

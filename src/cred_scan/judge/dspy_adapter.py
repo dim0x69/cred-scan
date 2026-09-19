@@ -14,6 +14,7 @@ from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.models import Credential, JudgmentResult
 
 from cred_scan.judge.proto import FatalJudgeError, FindingJudge
+from cred_scan.orch.global_config import get_config
 
 
 LOGGER = logging.getLogger(__name__)
@@ -107,23 +108,23 @@ def _is_fatal_judge_error(error: BaseException) -> bool:
 
 
 class DspyFindingJudge(FindingJudge):
-    def __init__(self, config: Any) -> None:
-        self.config = config
-        self.model = config.judge.model
+    def __init__(self) -> None:
+        self.model = get_config().judge.model
         self._rate_limit_until = 0.0
 
     def _configuration(self) -> tuple[str, str, str | None]:
-        if self.config.judge.provider.lower() != "azure":
+        config = get_config()
+        if config.judge.provider.lower() != "azure":
             raise FatalJudgeError(
-                f"unsupported judge provider: {self.config.judge.provider}"
+                f"unsupported judge provider: {config.judge.provider}"
             )
-        api_key = self.config.azure_openai_api_key or ""
+        api_key = config.azure_openai_api_key or ""
         if not api_key.strip():
             raise FatalJudgeError("set AZURE_OPENAI_API_KEY")
-        base_url = self.config.judge.base_url
+        base_url = config.judge.base_url
         if not base_url:
             raise FatalJudgeError("set judge.base-url in config.yml")
-        return api_key, base_url, self.config.judge.api_version
+        return api_key, base_url, config.judge.api_version
 
     async def judge(
         self, credential: Credential, content: ContentReader
@@ -189,11 +190,11 @@ class DspyFindingJudge(FindingJudge):
             provider = "openai" if "/openai/v1" in base_url.rstrip("/") else "azure"
             lm = dspy.LM(f"{provider}/{deployment}", **kwargs)
             with dspy.context(lm=lm, disable_history=True):
-                if self.config.judge.layer_tools.enabled:
+                if get_config().judge.layer_tools.enabled:
                     program = dspy.ReAct(
                         Signature,
                         tools=[read],
-                        max_iters=self.config.judge.max_iterations,
+                        max_iters=get_config().judge.max_iterations,
                     )
                 else:
                     program = dspy.Predict(Signature)

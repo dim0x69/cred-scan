@@ -38,6 +38,7 @@ class ArtifactoryBackend(BackendAdapter):
             trust_env=True,
         )
 
+    # H Unneeded indirection, Set and access .name directly
     @property
     def name(self) -> str:
         return self._name
