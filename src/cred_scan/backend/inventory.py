@@ -15,18 +15,8 @@ def merge_inventory(
             raise ValueError("inventory belongs to another boundary")
 
     existing_targets = current.targets if current is not None else ()
-    errors = tuple(dict.fromkeys(discovered.errors))
-    if errors:
-        # Partial discovery cannot establish the selected version or absence.
-        # Do not promote new pins or reactivate stale state on this path.
-        return discovered.model_copy(
-            update={
-                "targets": existing_targets,
-                "lifecycle": current.lifecycle if current is not None else "active",
-                "stale_reason": current.stale_reason if current is not None else None,
-                "errors": errors,
-            }
-        )
+    if discovered.errors:
+        raise ValueError("incomplete inventory discovery: " + "; ".join(discovered.errors))
 
     known = {target.id: target for target in existing_targets}
     selected = {target.scope.id: target.id for target in discovered.targets}

@@ -660,37 +660,29 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                     package_type,
                 )
                 continue
-            try:
-                images = sorted(await self.list_images(name))
-                if not images:
-                    LOGGER.info("skipping empty Artifactory repository %s", name)
-                    return ScanBoundaryInventory(
-                        generated_at=generated_at,
+            images = sorted(await self.list_images(name))
+            if not images:
+                LOGGER.info("skipping empty Artifactory repository %s", name)
+                return ScanBoundaryInventory(
+                    generated_at=generated_at,
+                    boundary=repository,
+                )
+            targets: list[ScanTarget] = []
+            for image_name in images:
+                scope = await self._select_latest(name, image_name, self.platform)
+                if scope is None:
+                    continue
+                targets.append(
+                    ScanTarget(
+                        id=target_id_for(scope),
+                        backend_id=self.name,
                         boundary=repository,
+                        scope=scope,
                     )
-                targets: list[ScanTarget] = []
-                for image_name in images:
-                    scope = await self._select_latest(name, image_name, self.platform)
-                    if scope is None:
-                        continue
-                    targets.append(
-                        ScanTarget(
-                            id=target_id_for(scope),
-                            backend_id=self.name,
-                            boundary=repository,
-                            scope=scope,
-                        )
-                    )
-                return ScanBoundaryInventory(
-                    generated_at=generated_at,
-                    boundary=repository,
-                    targets=tuple(targets),
                 )
-            except Exception as error:
-                message = str(error)
-                return ScanBoundaryInventory(
-                    generated_at=generated_at,
-                    boundary=repository,
-                    errors=(message,),
-                )
+            return ScanBoundaryInventory(
+                generated_at=generated_at,
+                boundary=repository,
+                targets=tuple(targets),
+            )
         raise KeyError(f"boundary not found: {boundary_id}")

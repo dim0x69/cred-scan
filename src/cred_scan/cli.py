@@ -56,7 +56,7 @@ def _run(
     try:
         asyncio.run(execute())
     except Exception:
-        LOGGER.error("command failed command=%s config=%s", command, config)
+        LOGGER.exception("command failed command=%s config=%s", command, config)
         raise typer.Exit(1)
 
 

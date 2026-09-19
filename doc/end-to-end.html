@@ -315,8 +315,9 @@
           <li>Select the newest manifest/platform by timestamp in the backend and create fully pinned <code>ScanTarget</code> values.</li>
           <li>Merge by canonical target ID; save one <code>ScanBoundaryInventory</code> per boundary.</li>
         </ol>
-        <p><strong>Agreed design, pending implementation:</strong> inventory keeps only the latest selected scan targets. An unchanged scan target reuses its result; a newly selected scan target starts pending. Historical credentials, occurrence paths, judgments, and evidence survive inventory replacement. The boundary keeps one cumulative Titus datastore across scan runs; inventory replacement does not reset past scan data. Failed or partial discovery preserves the previous inventory and records the error; inventory is replaced only after successful discovery. Occurrence reads are independent of inventory: the ContentReader interprets each immutable path directly.</p>
-        <p class="port">Owner: <code>backend/</code> discovery and merge rules, coordinated by <code>orch/inventory.py</code>. Empty repositories without errors do not create report boundaries.</p>
+        <p><strong>Agreed design, pending implementation:</strong> inventory keeps only the latest selected scan targets. An unchanged scan target reuses its result; a newly selected scan target starts pending. Historical credentials, occurrence paths, judgments, and evidence survive inventory replacement. The boundary keeps one cumulative Titus datastore across scan runs; inventory replacement does not reset past scan data. Occurrence reads are independent of inventory: the ContentReader interprets each immutable path directly.</p>
+        <p><strong>Implemented:</strong> discovery must complete before updating inventory. Exceptions propagate to the user and leave the previous inventory unchanged, including its timestamp, scan targets, results, and lifecycle. Discovery errors and partial inventory are not stored. A missing boundary also raises; it does not rewrite the old inventory.</p>
+        <p class="port">Owner: <code>backend/</code> discovery and merge rules, coordinated by <code>orch/boundary.py</code>. Empty repositories without errors do not create report boundaries.</p>
       </article>
       <article class="panel phase-detail scan">
         <h3>Scan · target in, target result out</h3>

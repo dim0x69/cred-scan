@@ -260,21 +260,14 @@ class Boundary:
 
     async def refresh_inventory(self) -> bool:
         async with self.operation():
-            try:
-                discovered = await self.backend.inventory(self.boundary_id)
-            except KeyError:
-                self.inventory.lifecycle = "stale"
-                self.inventory.stale_reason = (
-                    "boundary absent from authoritative inventory"
-                )
-                self.checkpoint()
-                return True
+            discovered = await self.backend.inventory(self.boundary_id)
 
             if discovered.boundary.id != self.boundary_id:
                 raise ValueError("backend returned inventory for another boundary")
 
+            merged = merge_inventory(self.inventory, discovered)
             await self.reader.aclose()
-            self.inventory = merge_inventory(self.inventory, discovered)
+            self.inventory = merged
             self.reader = self.backend.content_reader(
                 self.scratch_dir,
             )
