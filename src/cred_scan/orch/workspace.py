@@ -1,4 +1,4 @@
-"""Workspace-level configuration, boundary discovery, and backend lifetime."""
+"""Workspace boundary discovery and backend lifetime."""
 
 from __future__ import annotations
 
@@ -13,22 +13,22 @@ from cred_scan.backend.proto import BackendAdapter
 from cred_scan.orch.boundary import Boundary, BoundaryBusyError
 from pydantic import TypeAdapter
 
-from cred_scan.orch.models import AppConfig, BackendName
-from cred_scan.orch.global_config import set_config
+from cred_scan.orch.models import BackendName
+from cred_scan.orch.global_config import get_config
 
 
 class Workspace:
     """Own workspace services and one stable set of loaded boundaries."""
 
-    def __init__(self, config: AppConfig) -> None:
-        set_config(config)
-        self._workspace_dir = config.workspace.workspace_dir
-        self.backend = self._load_backend(config)
+    def __init__(self) -> None:
+        self._workspace_dir = get_config().workspace.workspace_dir
+        self.backend = self._load_backend()
         self._boundaries: tuple[Boundary, ...] | None = None
         self._closed = False
 
-    def _load_backend(self, config: AppConfig) -> BackendAdapter:
+    def _load_backend(self) -> BackendAdapter:
         """Load the adapter selected by the workspace's persisted name."""
+        config = get_config()
         self._workspace_dir.mkdir(parents=True, exist_ok=True)
         marker = self._workspace_dir / "backend.json"
         backend_name = TypeAdapter(BackendName).validate_python(
@@ -52,7 +52,6 @@ class Workspace:
                 name=backend_name,
                 base_url=str(backend_config["base_url"]),
                 platform=str(backend_config.get("platform", "linux/amd64")),
-                token=config.artifactory_api_key or "",
             )
         raise ValueError(f"unsupported workspace backend: {backend_name}")
 

@@ -14,6 +14,7 @@ from pathspec import PathSpec
 
 from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.backend.proto import ContentReader
+from cred_scan.orch.global_config import get_exclusions
 from cred_scan.scan.exclusions import match_credential_exclusion
 from cred_scan.scan.models import Credential, CredentialsDocument, ExclusionPolicy, TitusReport
 
@@ -128,12 +129,12 @@ def report_from_export(
 async def deduplicate_report(
     report: TitusReport,
     inventory: ScanBoundaryInventory,
-    policy: ExclusionPolicy,
     resolver: ContentReader,
 ) -> CredentialsDocument:
     """Resolve all raw locations before producing persisted credentials."""
     if report.boundary_id != inventory.boundary.id:
         raise ValueError(f"report boundary is not in inventory: {report.boundary_id}")
+    policy = get_exclusions()
     spec = _path_spec(policy)
     conversion_errors: list[str] = []
     grouped: dict[str, dict[str, Any]] = {}

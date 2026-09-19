@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from cred_scan.backend.models import ScanTarget
-from cred_scan.scan.models import ExclusionPolicy, TitusReport
+from cred_scan.scan.models import TitusReport
 
 
 class CredentialScanner(Protocol):
@@ -22,7 +22,6 @@ class CredentialScanner(Protocol):
         target: ScanTarget,
         work_dir: Path,
         datastore: Path,
-        exclusions: ExclusionPolicy,
     ) -> ScanTarget:
         """Finish or stop the target's subprocess before returning or raising."""
         ...

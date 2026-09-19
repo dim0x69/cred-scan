@@ -24,6 +24,7 @@ from pydantic import computed_field
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
 from cred_scan.backend.base_models import ScanScope, _pin_hash
+from cred_scan.orch.global_config import get_config
 
 if TYPE_CHECKING:
     from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
@@ -437,9 +438,8 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         name: str,
         base_url: str,
         platform: str,
-        token: str,
     ) -> None:
-        super().__init__(name, base_url, token)
+        super().__init__(name, base_url, get_config().artifactory_api_key or "")
         # Platform selection is a Docker concern, not common Artifactory setup.
         self.platform = platform
 

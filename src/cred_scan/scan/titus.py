@@ -17,9 +17,9 @@ from cred_scan.backend.proto import (
     UnsupportedTitusTargetError,
 )
 from cred_scan.scan.credentials import report_from_export
-from cred_scan.scan.models import ExclusionPolicy, TitusReport
+from cred_scan.scan.models import TitusReport
 from cred_scan.scan.proto import CredentialScanner
-from cred_scan.orch.global_config import get_config
+from cred_scan.orch.global_config import get_config, get_exclusions
 
 
 LOGGER = logging.getLogger(__name__)
@@ -109,7 +109,6 @@ class TitusCliScanner(CredentialScanner):
         target: ScanTarget,
         work_dir: Path,
         datastore: Path,
-        exclusions: ExclusionPolicy,
     ) -> ScanTarget:
         # Return a new target: Boundary keeps the stored target running
         # until complete_target() installs this terminal result.
@@ -142,7 +141,7 @@ class TitusCliScanner(CredentialScanner):
             str(datastore),
             "--incremental",
             "--ignore",
-            str(exclusions.path_file),
+            str(get_exclusions().path_file),
             "--workers",
             str(self.config.internal_workers),
             *self.config.arguments,

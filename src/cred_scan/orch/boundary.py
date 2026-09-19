@@ -16,8 +16,6 @@ from urllib.parse import unquote
 
 from pydantic import BaseModel
 
-from cred_scan.orch.global_config import get_config
-
 from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
@@ -33,13 +31,11 @@ from cred_scan.orch.credentials import merge_scan
 from cred_scan.scan.credentials import deduplicate_report
 from cred_scan.scan.models import (
     CredentialsDocument,
-    ExclusionPolicy,
     ExtractionResult,
     JudgmentResult,
     TitusReport,
 )
 from cred_scan.scan.titus import TitusCliScanner
-from cred_scan.scan.exclusions import load_exclusions
 
 LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
@@ -103,9 +99,7 @@ class Boundary:
             self._has_report = report is not None
             self._has_credentials = credentials is not None
 
-        config = get_config()
         self.backend = backend
-        self.policy: ExclusionPolicy = load_exclusions(config.exclusions)
         self.reader: ContentReader = self.backend.content_reader(
             self.scratch_dir,
         )
@@ -387,7 +381,6 @@ class Boundary:
             candidates = await deduplicate_report(
                 self.report,
                 self.inventory,
-                self.policy,
                 self.reader,
             )
 
@@ -408,7 +401,7 @@ class Boundary:
             for attempt in range(3):
                 LOGGER.info("scanning target=%s attempt=%d/3", target.id, attempt + 1)
                 target = await self.scanner.scan(
-                    target, work_dir, self.paths.datastore, self.policy
+                    target, work_dir, self.paths.datastore
                 )
                 if (
                     target.result.status == "scanned"
