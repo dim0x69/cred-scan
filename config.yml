@@ -6,7 +6,13 @@ workspace:
 
 titus:
   executable: ./titus
-  arguments: []
+  arguments:
+    - --extract
+    - all
+    - --extract-max-size
+    - 100MB
+    - --max-file-size
+    - "524288"
   internal_workers: 1
 
 judge:
