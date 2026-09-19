@@ -102,8 +102,10 @@ implementations, or create circular feature dependencies.
 Updating `doc/` is part of every design change, not a separate follow-up task.
 Before finishing a change, update the affected documents in the same task:
 
-- doc/end-to-end.html
+- `PROJECT_INVARIANTS.md`: short precise list of the core invariants; update it whenever an invariant or ownership rule changes.
 - `doc/end-to-end.html`: authoritative visual workflow, worked example, and model map.
+
+Keep `PROJECT_INVARIANTS.md`, this file, and `doc/end-to-end.html` synchronized for every design change, just as the end-to-end guide is kept synchronized with the code.
 
 When moving/renaming interfaces, update documentation links and static example
 imports. When a contract changes, update both its port description and the
