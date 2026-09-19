@@ -12,8 +12,7 @@ from cred_scan.backend.models import (
     ScanTarget,
     target_id_for,
 )
-from cred_scan.common.models import WorkspaceConfig
-from cred_scan.orch.models import AppConfig, TitusConfig
+from cred_scan.orch.models import AppConfig, TitusConfig, WorkspaceConfig
 from cred_scan.scan.models import Credential, CredentialOccurrence, ExclusionFiles
 
 

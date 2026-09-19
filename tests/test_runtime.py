@@ -8,7 +8,7 @@ import pytest
 from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
 from cred_scan.orch.execution import BoundaryExecution, Phase
 from cred_scan.backend.proto import BackendAdapter, ContentReader
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.orch.workspace import Workspace
 from cred_scan.judge.proto import FatalJudgeError, FindingJudge
 from cred_scan.orch import boundary as boundary_module

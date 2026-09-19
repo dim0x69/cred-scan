@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.orch.configuration import YamlConfigLoader
 
 

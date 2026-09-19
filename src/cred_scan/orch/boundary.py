@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
-from cred_scan.common.fsync import fsync_directory
-from cred_scan.common.models import BoundaryPaths
+from cred_scan.orch.fsync import fsync_directory
+from cred_scan.orch.models import BoundaryPaths
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.judge.evidence import (
     EvidenceConflictError,

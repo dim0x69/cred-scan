@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote
 from pydantic import BaseModel
 
 from cred_scan.backend.models import ScanBoundaryInventory
-from cred_scan.common.fsync import fsync_directory
+from cred_scan.orch.fsync import fsync_directory
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 DocumentT = TypeVar("DocumentT", bound=BaseModel)

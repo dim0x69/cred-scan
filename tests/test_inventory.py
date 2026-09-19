@@ -19,7 +19,7 @@ from cred_scan.backend.models import (
     target_id_for,
 )
 from cred_scan.scan.models import CredentialsDocument, TitusReport
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.orch.workspace import Workspace
 from cred_scan.judge.evidence import evidence_path
 from cred_scan.orch import inventory, workspace as workspace_module

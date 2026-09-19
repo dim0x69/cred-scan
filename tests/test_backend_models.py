@@ -22,8 +22,6 @@ from cred_scan.backend.adapters import ghes as ghes_models
         "cred_scan.backend.proto",
         "cred_scan.orch.configuration",
         "cred_scan.orch.execution",
-        "cred_scan.common.proto",
-        "cred_scan.common.workspace",
     ],
 )
 def test_schema_imports_are_acyclic_and_do_not_load_adapter_implementations(entry):

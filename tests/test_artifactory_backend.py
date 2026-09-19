@@ -13,7 +13,7 @@ from cred_scan.backend.adapters.artifactory.common import (
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryBackendConfig
 from cred_scan.backend.proto import BackendAdapter
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.orch.workspace import Workspace
 
 

@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import aiofiles
 
-from cred_scan.common.fsync import fsync_directory
+from cred_scan.orch.fsync import fsync_directory
 from cred_scan.backend.proto import ContentReader
 from cred_scan.scan.models import Credential, ExtractionResult
 

@@ -1,4 +1,4 @@
-"""Filesystem metadata durability helper."""
+"""Filesystem metadata durability helper for orchestration persistence."""
 
 from __future__ import annotations
 

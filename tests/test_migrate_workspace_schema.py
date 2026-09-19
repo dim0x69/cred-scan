@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from cred_scan.backend.models import ScanBoundaryInventory
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.common.workspace import WorkspaceBusyError
 from cred_scan.orch.workspace import Workspace
 from cred_scan.orch.execution import BoundaryExecution, Phase, PhaseStatus

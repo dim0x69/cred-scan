@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.orch import workspace as storage
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.common.workspace import WorkspaceBusyError
 from cred_scan.common.workspace import scratch_dir
 from cred_scan.orch.workspace import Workspace
@@ -213,7 +213,7 @@ def test_operation_lock_excludes_a_separate_process(tmp_path):
     workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     code = """
 import sys
-from cred_scan.common.models import WorkspaceConfig
+from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.common.workspace import WorkspaceBusyError
 from cred_scan.orch.workspace import Workspace
 try:
