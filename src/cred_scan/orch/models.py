@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryBackendConfig
+from cred_scan.backend.artifactory.docker import ArtifactoryDockerConfig
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
@@ -82,7 +82,7 @@ class AppConfig(BaseSettings):
     titus: TitusConfig
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles
-    backend: ArtifactoryBackendConfig
+    backend: ArtifactoryDockerConfig
     artifactory_api_key: str | None = Field(
         default=None,
         validation_alias="ARTIFACTORY_API_KEY",

@@ -24,6 +24,6 @@ exclusions:
 
 backend:
   name: artifactory-primary
-  kind: artifactory
+  kind: artifactory_docker
   base_url: https://rb-artifactory.bosch.com/artifactory
   platform: linux/amd64

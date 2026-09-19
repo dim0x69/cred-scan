@@ -9,12 +9,10 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from cred_scan.backend.adapters.artifactory.models import (
-    ArtifactoryBackendConfig as ArtifactoryBackendConfig,
-)
-from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository as ArtifactoryRepository,
 )
-from cred_scan.backend.adapters.artifactory.models import (
+from cred_scan.backend.artifactory.docker import (
+    ArtifactoryDockerConfig as ArtifactoryDockerConfig,
     DockerImageScanScope as DockerImageScanScope,
 )
 from cred_scan.backend.adapters.artifactory.package import (
@@ -33,6 +31,8 @@ from cred_scan.backend.base_models import (
 from cred_scan.backend.base_models import (
     ScanScope as ScanScope,
 )
+# Transitional import name for callers migrating to ArtifactoryDockerConfig.
+ArtifactoryBackendConfig = ArtifactoryDockerConfig
 ScanBoundaryRef = ArtifactoryRepository | GitOrganization
 
 

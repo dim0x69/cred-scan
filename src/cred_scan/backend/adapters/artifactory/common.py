@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryBackendConfig
 from cred_scan.backend.proto import BackendAdapter
 
 
@@ -19,11 +18,12 @@ class ArtifactoryBackend(BackendAdapter):
 
     def __init__(
         self,
-        config: ArtifactoryBackendConfig,
+        name: str,
+        base_url: str,
         token: str,
     ) -> None:
-        self.config = config
-        normalized = config.base_url.rstrip("/")
+        self._name = name
+        normalized = base_url.rstrip("/")
         self.base_url = (
             normalized
             if normalized.endswith("/artifactory")
@@ -40,7 +40,7 @@ class ArtifactoryBackend(BackendAdapter):
 
     @property
     def name(self) -> str:
-        return self.config.name
+        return self._name
 
     async def aclose(self) -> None:
         await self.session.aclose()

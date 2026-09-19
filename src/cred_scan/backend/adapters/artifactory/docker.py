@@ -22,11 +22,8 @@ from pydantic import BaseModel
 import httpx
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
-from cred_scan.backend.adapters.artifactory.models import (
-    ArtifactoryBackendConfig,
-    ArtifactoryRepository,
-    DockerImageScanScope,
-)
+from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
+from cred_scan.backend.artifactory.docker import ArtifactoryDockerConfig, DockerImageScanScope
 from cred_scan.backend.models import (
     BackendConfig,
     ContentLocation,
@@ -421,10 +418,10 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
 
     def __init__(
         self,
-        config: ArtifactoryBackendConfig,
+        config: ArtifactoryDockerConfig,
         token: str,
     ) -> None:
-        super().__init__(config, token)
+        super().__init__(config.name, config.base_url, token)
         # Platform selection is a Docker concern, not common Artifactory setup.
         self.platform = config.platform
 
