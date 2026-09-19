@@ -113,7 +113,6 @@ class Boundary:
         self.policy: ExclusionPolicy = workspace.policy
         self.reader: ContentReader = self.backend.content_reader(
             self.inventory.boundary,
-            self.inventory.targets,
             self.scratch_dir,
         )
         self.judge_service = DspyFindingJudge(workspace.config)
@@ -299,7 +298,6 @@ class Boundary:
             self.inventory = merge_inventory(self.inventory, discovered)
             self.reader = self.backend.content_reader(
                 self.inventory.boundary,
-                self.inventory.targets,
                 self.scratch_dir,
             )
             self.scanner.inventory = self.inventory

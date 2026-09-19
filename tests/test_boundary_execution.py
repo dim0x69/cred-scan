@@ -26,7 +26,6 @@ def make_workspace(tmp_path, app_config, repository_inventory, monkeypatch):
         value = Mock(aclose=AsyncMock())
         value.resolve_location = AsyncMock(
             side_effect=lambda path: ContentLocation(
-                target_id=repository_inventory.targets[0].id,
                 locator=path,
                 source_path="app.env",
                 filename="app.env",

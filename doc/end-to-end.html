@@ -163,7 +163,7 @@
 </header>
 <main class="wrap">
   <aside class="note status" aria-label="Scope of this document">
-    <strong>Contract map, not a live execution trace.</strong> This page combines the agreed design with current model and implementation reference details. <a href="../PROJECT_INVARIANTS.md">Project invariants</a> records the user-confirmed rules; <a href="../TODO.md">TODO.md</a> tracks implementation gaps. Current schemas and signatures below do not imply the agreed changes are implemented. Artifactory local Docker is the current adapter; Git/package shapes are future-adapter contracts. The adjusted Titus build’s all-occurrence retention and cumulative export guarantees still require live integration verification. No external assets, scripts, fonts, or network access are needed to view this page.
+    <strong>Contract map, not a live execution trace.</strong> This page combines the agreed design with current model and implementation reference details. <a href="../PROJECT_INVARIANTS.md">Project invariants</a> records the user-confirmed rules; <a href="../TODO.md">TODO.md</a> tracks implementation gaps. Artifactory local Docker is the current adapter; Git/package shapes are future-adapter contracts. The adjusted Titus build’s all-occurrence retention and cumulative export guarantees still require live integration verification. No external assets, scripts, fonts, or network access are needed to view this page.
   </aside>
 
   <section id="terms" aria-labelledby="terms-title">
@@ -193,7 +193,7 @@
       </article>
       <article class="panel">
         <h3>Locator</h3>
-        <p>An opaque, complete backend path for one source occurrence. It is persisted inside a credential occurrence and interpreted only by the boundary-selected backend. Under the agreed design, it identifies the exact immutable source version and file, so historical reads require no historical inventory. Inventory-independent resolution is pending implementation in <a href="../TODO.md">TODO.md</a>.</p>
+        <p>An opaque, complete backend path for one source occurrence. It is persisted inside a credential occurrence and interpreted by the ContentReader and its associated backend. It identifies the exact immutable source version and file, so historical reads require no historical inventory.</p>
       </article>
       <article class="panel">
         <h3>Credential and occurrence</h3>
@@ -315,7 +315,7 @@
           <li>Select the newest manifest/platform by timestamp in the backend and create fully pinned <code>ScanTarget</code> values.</li>
           <li>Merge by canonical target ID; save one <code>ScanBoundaryInventory</code> per boundary.</li>
         </ol>
-        <p><strong>Agreed design, pending implementation:</strong> inventory keeps only the latest selected scan targets. An unchanged scan target reuses its result; a newly selected scan target starts pending. Historical credentials, occurrence paths, judgments, and evidence survive inventory replacement. The boundary keeps one cumulative Titus datastore across scan runs; inventory replacement does not reset past scan data. Failed or partial discovery preserves the previous inventory and records the error; inventory is replaced only after successful discovery. Current merging still retains superseded scan targets; replacing that behavior depends on making occurrence reads independent of inventory.</p>
+        <p><strong>Agreed design, pending implementation:</strong> inventory keeps only the latest selected scan targets. An unchanged scan target reuses its result; a newly selected scan target starts pending. Historical credentials, occurrence paths, judgments, and evidence survive inventory replacement. The boundary keeps one cumulative Titus datastore across scan runs; inventory replacement does not reset past scan data. Failed or partial discovery preserves the previous inventory and records the error; inventory is replaced only after successful discovery. Occurrence reads are independent of inventory: the ContentReader interprets each immutable path directly.</p>
         <p class="port">Owner: <code>backend/</code> discovery and merge rules, coordinated by <code>orch/inventory.py</code>. Empty repositories without errors do not create report boundaries.</p>
       </article>
       <article class="panel phase-detail scan">
@@ -344,7 +344,7 @@ deduplicate_report(
 ) → JudgmentResult
 
 <em>mutate credential.judgment and persist the current document</em></pre>
-        <p>Orchestration validates the document boundary. The judge can read persisted occurrence locators through session-local IDs; the boundary-selected backend interprets them and returns exact bytes plus source metadata. The agreed instruction is to prefer the first occurrence's file, while allowing additional occurrence reads. Retrieved files are cached for reuse. Adding this preference and ensuring cache reuse across sequential judgment and extraction are tracked in <a href="../TODO.md">TODO.md</a>.</p>
+        <p>Orchestration validates the document boundary. Credentials persist occurrence paths only. The ContentReader, together with its configured backend and boundary, interprets each immutable path and returns exact bytes plus source metadata; it does not need historical inventory targets. The agreed instruction is to prefer the first occurrence's file, while allowing additional occurrence reads. Retrieved files are cached for reuse. Additional cache work is tracked in <a href="../TODO.md">TODO.md</a>.</p>
         <p><code>JudgmentResult.verdict</code> is <code>PENDING | VALID | INVALID | UNKNOWN | ERROR</code>. The result also carries <code>reasoning</code>. A verdict is not user acceptance or mitigation.</p>
         <p><code>Boundary.judge()</code> returns the <strong>number of attempted judgments</strong>. It only updates saved judgment results. Evidence extraction is a separate <code>Boundary.extract()</code> operation.</p>
         <p class="port">Owner: <code>judge/</code> assesses; <code>orch/</code> saves each judgment to the latest credential checkpoint.</p>
@@ -622,7 +622,7 @@ Document join:       TitusReport.boundary_id ───────────�
                      CredentialsDocument.boundary_id ───┴→ inventory.boundary.id
 Content read:        CredentialOccurrence.locator ───────→ boundary-selected backend
 Evidence join:       Credential.extraction.output_path ─→ retained file under boundary/</pre>
-      <p><strong>Boundary:</strong> report/notification grouping, e.g. repository <code>docker-local</code>. <strong>Scope:</strong> logical source, e.g. image <code>payments/api</code>. <strong>Target:</strong> exact selected manifest pin. Superseded targets remain in inventory so historical backend locators remain available to the reader.</p>
+      <p><strong>Boundary:</strong> report/notification grouping, e.g. repository <code>docker-local</code>. <strong>Scope:</strong> logical source, e.g. image <code>payments/api</code>. <strong>Target:</strong> exact selected manifest pin. A credential occurrence path contains the immutable source reference and file; the ContentReader can retrieve it after the target leaves inventory.</p>
     </div>
 
     <h3 style="margin-top: 2rem">Supporting models · configuration and storage context</h3>

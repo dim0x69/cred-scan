@@ -36,10 +36,9 @@ class BackendAdapter(Protocol):
     def content_reader(
         self,
         boundary: ScanBoundaryRef,
-        targets: tuple[ScanTarget, ...],
         scratch_dir: ScratchDirectory,
     ) -> ContentReader:
-        """Create a reader bound to a boundary and pinned targets."""
+        """Create a reader that interprets immutable occurrence paths directly."""
         ...
 
     async def inventory(self, boundary_id: str) -> ScanBoundaryInventory: ...

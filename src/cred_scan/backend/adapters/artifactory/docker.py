@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 import aiofiles
@@ -122,7 +122,7 @@ def parse_provenance(value: str) -> DockerProvenance:
     raw_path = value.strip()
     metadata = _METADATA_PROVENANCE_RE.fullmatch(raw_path)
     if metadata is not None:
-        path = metadata["path"]
+        path = cast(Literal["manifest.json", "config.json"], metadata["path"])
         return DockerMetadataProvenance(
             kind="docker-manifest" if path == "manifest.json" else "docker-config",
             raw_path=raw_path,
@@ -175,16 +175,14 @@ class ArtifactoryDockerReader(ContentReader):
         self,
         backend: ArtifactoryDockerBackend,
         boundary: ScanBoundaryRef,
-        targets: tuple[ScanTarget, ...],
         *,
         scratch_dir: ScratchDirectory,
     ) -> None:
         self.backend = backend
         self.boundary = boundary
-        self.targets = targets
         self._closed = False
         self._locations: dict[str, ContentLocation] = {}
-        self._reads: dict[tuple[str, str, str, str], ContentRead] = {}
+        self._reads: dict[tuple[str, str, str], ContentRead] = {}
         self._scratch_context = scratch_dir()
         self._scratch_dir = Path(self._scratch_context.__enter__())
 
@@ -275,22 +273,11 @@ class ArtifactoryDockerReader(ContentReader):
             f"requested Docker layer was not found: {provenance.layer}"
         )
 
-    def _target_for_provenance(
-        self, provenance: DockerProvenance
-    ) -> ScanTarget:
-        image = f"{provenance.registry}/{provenance.repository}/{provenance.image}"
-        matches = [
-            target
-            for target in self.targets
-            if isinstance(target.scope, DockerImageScanScope)
-            and target.scope.image == image
-            and target.scope.digest == provenance.manifest
-        ]
-        if len(matches) != 1:
+    def _validate_boundary(self, provenance: DockerProvenance) -> None:
+        if provenance.repository != self.boundary.name:
             raise LayerEvidenceError(
-                "Titus provenance does not identify exactly one pinned target"
+                "Titus provenance does not belong to this repository boundary"
             )
-        return matches[0]
 
     def _temporary_path(self) -> Path:
         with NamedTemporaryFile(
@@ -378,10 +365,9 @@ class ArtifactoryDockerReader(ContentReader):
         except LayerEvidenceError:
             LOGGER.exception("invalid Docker provenance raw_path=%s", raw_path)
             raise
-        target = self._target_for_provenance(provenance)
+        self._validate_boundary(provenance)
         source_path = provenance.path
         location = ContentLocation(
-            target_id=target.id,
             locator=key,
             source_path=source_path,
             filename=PurePosixPath(source_path).name,
@@ -394,7 +380,6 @@ class ArtifactoryDockerReader(ContentReader):
             location = await self.resolve_location(location)
 
         key = (
-            location.target_id,
             location.locator,
             location.source_path,
             location.filename,
@@ -404,11 +389,7 @@ class ArtifactoryDockerReader(ContentReader):
             return cached
 
         provenance = parse_provenance(location.locator)
-        target = self._target_for_provenance(provenance)
-        if target.id != location.target_id:
-            raise LayerEvidenceError(
-                "content location target does not match its locator"
-            )
+        self._validate_boundary(provenance)
         if location.source_path != provenance.path:
             raise LayerEvidenceError(
                 "content location source path does not match locator"
@@ -543,13 +524,11 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
     def content_reader(
         self,
         boundary: ScanBoundaryRef,
-        targets: tuple[ScanTarget, ...],
         scratch_dir: ScratchDirectory,
     ) -> ArtifactoryDockerReader:
         return ArtifactoryDockerReader(
             self,
             boundary,
-            targets,
             scratch_dir=scratch_dir,
         )
 
