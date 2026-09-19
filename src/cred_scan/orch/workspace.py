@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -10,7 +11,9 @@ from urllib.parse import quote, unquote
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
 from cred_scan.backend.proto import BackendAdapter
 from cred_scan.orch.boundary import Boundary, BoundaryBusyError
-from cred_scan.orch.models import AppConfig
+from pydantic import TypeAdapter
+
+from cred_scan.orch.models import AppConfig, BackendName
 from cred_scan.orch.global_config import set_config
 
 
@@ -20,12 +23,38 @@ class Workspace:
     def __init__(self, config: AppConfig) -> None:
         set_config(config)
         self._workspace_dir = config.workspace.workspace_dir
-        self.backend: BackendAdapter = ArtifactoryDockerBackend(
-            config.backend,
-            config.artifactory_api_key or "",
-        )
+        self.backend = self._load_backend(config)
         self._boundaries: tuple[Boundary, ...] | None = None
         self._closed = False
+
+    def _load_backend(self, config: AppConfig) -> BackendAdapter:
+        """Load the adapter selected by the workspace's persisted name."""
+        self._workspace_dir.mkdir(parents=True, exist_ok=True)
+        marker = self._workspace_dir / "backend.json"
+        backend_name = TypeAdapter(BackendName).validate_python(
+            json.loads(marker.read_text()).get("name")
+            if marker.exists()
+            else config.backends[0].get("name")
+        )
+        backend_config = next(
+            (item for item in config.backends if item.get("name") == backend_name),
+            None,
+        )
+        if backend_config is None:
+            raise ValueError(
+                "workspace backend is not configured: "
+                f"{backend_name}"
+            )
+        if backend_name == "artifactory_docker":
+            if backend_config is None:
+                raise AssertionError("backend configuration disappeared")
+            return ArtifactoryDockerBackend(
+                name=backend_name,
+                base_url=str(backend_config["base_url"]),
+                platform=str(backend_config.get("platform", "linux/amd64")),
+                token=config.artifactory_api_key or "",
+            )
+        raise ValueError(f"unsupported workspace backend: {backend_name}")
 
     async def __aenter__(self) -> "Workspace":
         return self
@@ -80,7 +109,11 @@ class Workspace:
         return sum(task.result() for task in tasks)
 
     async def inventory(self) -> int:
-        return await self._run_boundaries(Boundary.refresh_inventory)
+        result = await self._run_boundaries(Boundary.refresh_inventory)
+        marker = self._workspace_dir / "backend.json"
+        if not marker.exists() and any(self._workspace_dir.glob("*/inventory.json")):
+            marker.write_text(json.dumps({"name": self.backend.name}, indent=2) + "\n")
+        return result
 
     async def scan(self) -> int:
         return await self._run_boundaries(Boundary.scan)

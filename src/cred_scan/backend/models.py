@@ -8,31 +8,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from cred_scan.backend.adapters.artifactory.models import (
-    ArtifactoryRepository as ArtifactoryRepository,
-)
-from cred_scan.backend.adapters.artifactory.docker import (
-    ArtifactoryDockerConfig as ArtifactoryDockerConfig,
-    DockerImageScanScope as DockerImageScanScope,
-)
-from cred_scan.backend.adapters.artifactory.package import (
-    PackageScanScope as PackageScanScope,
-)
-from cred_scan.backend.adapters.ghes import (
-    GitOrganization as GitOrganization,
-    GitRepositoryScanScope as GitRepositoryScanScope,
-)
-from cred_scan.backend.base_models import (
-    BackendConfig as BackendConfig,
-)
-from cred_scan.backend.base_models import (
-    ScanBoundary as ScanBoundary,
-)
-from cred_scan.backend.base_models import (
-    ScanScope as ScanScope,
-)
-# Transitional import name for callers migrating to ArtifactoryDockerConfig.
-ArtifactoryBackendConfig = ArtifactoryDockerConfig
+from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
+from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
+from cred_scan.backend.adapters.artifactory.package import PackageScanScope
+from cred_scan.backend.adapters.ghes import GitOrganization, GitRepositoryScanScope
+
+from cred_scan.backend.base_models import ScanBoundary
+from cred_scan.backend.base_models import ScanScope
+
 ScanBoundaryRef = ArtifactoryRepository | GitOrganization
 
 
@@ -94,7 +77,6 @@ class ScanBoundaryInventory(BaseModel):
 
     schema_version: Literal[8] = 8
     generated_at: datetime
-    backend: BackendConfig
     boundary: ScanBoundaryRef
     lifecycle: Literal["active", "stale"] = "active"
     stale_reason: str | None = None
@@ -104,7 +86,7 @@ class ScanBoundaryInventory(BaseModel):
     @model_validator(mode="after")
     def validate_target_ownership(self) -> "ScanBoundaryInventory":
         if any(
-            target.backend_id != self.backend.name or target.boundary != self.boundary
+            target.boundary != self.boundary
             for target in self.targets
         ):
             raise ValueError(

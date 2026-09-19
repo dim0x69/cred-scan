@@ -72,11 +72,6 @@ class Boundary:
                     "boundary inventory does not match boundary path: "
                     f"{self.paths.inventory}"
                 )
-            if inventory.backend.name != backend.name:
-                raise ValueError(
-                    "boundary inventory belongs to another configured backend"
-                )
-
             report = self._read(self.paths.report, TitusReport)
             if report is not None and report.boundary_id != self.boundary_id:
                 raise ValueError(

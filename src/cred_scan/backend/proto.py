@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -24,16 +25,22 @@ class UnsupportedTitusTargetError(RuntimeError):
     """The backend cannot construct a Titus invocation for a target."""
 
 
-class BackendAdapter(Protocol):
+class BackendAdapter(ABC):
+    """Runtime backend contract and shared identity surface."""
+
     @property
+    @abstractmethod
     def name(self) -> str: ...
 
+    @abstractmethod
     async def aclose(self) -> None: ...
 
+    @abstractmethod
     def titus_scan_arguments(
         self, inventory: ScanBoundaryInventory, target: ScanTarget
     ) -> tuple[str, ...]: ...
 
+    @abstractmethod
     def content_reader(
         self,
         boundary: ScanBoundaryRef,
@@ -42,6 +49,7 @@ class BackendAdapter(Protocol):
         """Create a reader that interprets immutable occurrence paths directly."""
         ...
 
+    @abstractmethod
     async def inventory(self, boundary_id: str) -> ScanBoundaryInventory: ...
 
 

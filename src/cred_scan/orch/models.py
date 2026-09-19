@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Literal
 
-from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerConfig
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
@@ -13,6 +13,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 from cred_scan.scan.models import ExclusionFiles
+
+BackendName = Literal["artifactory_docker"]
 
 
 class WorkspaceConfig(BaseModel):
@@ -82,7 +84,7 @@ class AppConfig(BaseSettings):
     titus: TitusConfig
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles
-    backend: ArtifactoryDockerConfig
+    backends: tuple[dict[str, Any], ...] = Field(min_length=1)
     artifactory_api_key: str | None = Field(
         default=None,
         validation_alias="ARTIFACTORY_API_KEY",

@@ -495,9 +495,7 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
           <ul class="tree">
             <li><code>schema_version: 8</code></li>
             <li><code>generated_at: datetime</code></li>
-            <li><code>backend: <span class="type">BackendConfig</span></code>
-              <ul><li><code>name: str</code><span class="hint">Persisted backend identity; endpoint configuration is in AppConfig.</span></li></ul>
-            </li>
+            <li><code>backend.json</code><span class="hint">The workspace-level adapter discriminator contains only the backend name; inventories are grouped by the selected runtime adapter.</span></li>
             <li id="model-boundary"><code>boundary: <span class="type">ScanBoundaryRef</span></code>
               <ul>
                 <li><code class="type">ArtifactoryRepository | GitOrganization</code><span class="hint">Union of report-boundary types. Both inherit ScanBoundary.</span></li>
@@ -649,8 +647,8 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
             <li><code>exclusions: <span class="type">ExclusionFiles</span></code>
               <ul><li><code>paths: Path</code> · path-pattern file</li><li><code>credentials: Path</code> · credential-value-pattern file</li></ul>
             </li>
-            <li><code>backend: <span class="type">ArtifactoryDockerConfig</span></code>
-              <ul><li><code>name: str</code> · inherited BackendConfig identity</li><li><code>kind: "artifactory_docker"</code></li><li><code>base_url: str</code> · <code>platform: str</code></li></ul>
+            <li><code>backends: <span class="type">Backend adapter entries[]</span></code>
+              <ul><li><code>name: "artifactory_docker"</code> · adapter identity and Pydantic discriminator</li><li><code>base_url: str</code> · <code>platform: str</code></li></ul>
             </li>
             <li><code>artifactory_api_key: str?</code> · <code>azure_openai_api_key: str?</code><span class="hint">Secret inputs, not pipeline observations.</span></li>
           </ul>

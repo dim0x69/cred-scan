@@ -23,7 +23,7 @@ import httpx
 from pydantic import computed_field
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
-from cred_scan.backend.base_models import BackendConfig, ScanScope, _pin_hash
+from cred_scan.backend.base_models import ScanScope, _pin_hash
 
 if TYPE_CHECKING:
     from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
@@ -48,14 +48,6 @@ MANIFEST_ACCEPT = ", ".join(
         "application/vnd.docker.distribution.manifest.v2+json",
     )
 )
-
-
-class ArtifactoryDockerConfig(BackendConfig):
-    """Configuration for the Artifactory Docker backend adapter."""
-
-    kind: Literal["artifactory_docker"] = "artifactory_docker"
-    base_url: str
-    platform: str = "linux/amd64"
 
 
 class DockerImageScanScope(ScanScope):
@@ -453,12 +445,14 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
 
     def __init__(
         self,
-        config: ArtifactoryDockerConfig,
+        name: str,
+        base_url: str,
+        platform: str,
         token: str,
     ) -> None:
-        super().__init__(config.name, config.base_url, token)
+        super().__init__(name, base_url, token)
         # Platform selection is a Docker concern, not common Artifactory setup.
-        self.platform = config.platform
+        self.platform = platform
 
     async def _manifest_bytes(
         self, repository: str, image: str, reference: str
@@ -650,7 +644,6 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
 
     async def inventory(self, boundary_id: str) -> ScanBoundaryInventory:
         from cred_scan.backend.models import (  # noqa: PLC0415
-            BackendConfig,
             ScanBoundaryInventory,
             ScanTarget,
             target_id_for,
@@ -686,7 +679,6 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                     LOGGER.info("skipping empty Artifactory repository %s", name)
                     return ScanBoundaryInventory(
                         generated_at=generated_at,
-                        backend=BackendConfig(name=self.name),
                         boundary=repository,
                     )
                 targets: list[ScanTarget] = []
@@ -704,7 +696,6 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                     )
                 return ScanBoundaryInventory(
                     generated_at=generated_at,
-                    backend=BackendConfig(name=self.name),
                     boundary=repository,
                     targets=tuple(targets),
                 )
@@ -712,7 +703,6 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                 message = str(error)
                 return ScanBoundaryInventory(
                     generated_at=generated_at,
-                    backend=BackendConfig(name=self.name),
                     boundary=repository,
                     errors=(message,),
                 )

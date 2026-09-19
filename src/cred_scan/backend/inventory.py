@@ -11,8 +11,6 @@ def merge_inventory(
 ) -> ScanBoundaryInventory:
     """Append immutable pins; only authoritative discovery changes lifecycle."""
     if current is not None:
-        if current.backend != discovered.backend:
-            raise ValueError("inventory belongs to another backend")
         if current.boundary != discovered.boundary:
             raise ValueError("inventory belongs to another boundary")
 

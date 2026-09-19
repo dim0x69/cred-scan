@@ -8,12 +8,6 @@ from typing import Literal
 from pydantic import BaseModel
 
 
-class BackendConfig(BaseModel):
-    """Serializable backend identity used by persisted report inventories."""
-
-    name: str
-
-
 class ScanBoundary(BaseModel):
     """Provider-qualified report boundary owning inventory and scan artifacts."""
 
