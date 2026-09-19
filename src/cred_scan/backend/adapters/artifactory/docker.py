@@ -14,25 +14,26 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote
 
 import aiofiles
 from pydantic import BaseModel
 import httpx
+from pydantic import computed_field
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
-from cred_scan.backend.artifactory.docker import ArtifactoryDockerConfig, DockerImageScanScope
-from cred_scan.backend.models import (
-    BackendConfig,
-    ContentLocation,
-    ContentRead,
-    ScanBoundaryRef,
-    ScanBoundaryInventory,
-    ScanTarget,
-    target_id_for,
-)
+from cred_scan.backend.base_models import BackendConfig, ScanScope, _pin_hash
+
+if TYPE_CHECKING:
+    from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
+    from cred_scan.backend.models import (
+        ContentLocation,
+        ContentRead,
+        ScanBoundaryInventory,
+        ScanBoundaryRef,
+        ScanTarget,
+    )
 from cred_scan.backend.proto import (
     ContentReader,
     ScratchDirectory,
@@ -47,6 +48,36 @@ MANIFEST_ACCEPT = ", ".join(
         "application/vnd.docker.distribution.manifest.v2+json",
     )
 )
+
+
+class ArtifactoryDockerConfig(BackendConfig):
+    """Configuration for the Artifactory Docker backend adapter."""
+
+    kind: Literal["artifactory_docker"] = "artifactory_docker"
+    base_url: str
+    platform: str = "linux/amd64"
+
+
+class DockerImageScanScope(ScanScope):
+    """A Docker scan scope selected by the Artifactory Docker backend."""
+
+    kind: Literal["docker"] = "docker"
+    image: str
+    digest: str
+    platform: str
+    root_digest: str
+    tags: tuple[str, ...] = ()
+    manifest_timestamp: datetime
+
+    @computed_field
+    @property
+    def id(self) -> str:
+        return self.image
+
+    @computed_field
+    @property
+    def pin_id(self) -> str:
+        return _pin_hash((self.digest,))
 
 _LAYER_PROVENANCE_RE = re.compile(
     r"^docker://(?P<registry>[^/]+)/(?P<repository>[^/]+)/(?P<image>.+)"
@@ -352,6 +383,8 @@ class ArtifactoryDockerReader(ContentReader):
         return content
 
     async def resolve_location(self, raw_path: str) -> ContentLocation:
+        from cred_scan.backend.models import ContentLocation  # noqa: PLC0415
+
         key = raw_path.strip()
         cached = self._locations.get(key)
         if cached is not None:
@@ -373,6 +406,8 @@ class ArtifactoryDockerReader(ContentReader):
         return location
 
     async def read(self, location: ContentLocation | str) -> ContentRead:
+        from cred_scan.backend.models import ContentRead  # noqa: PLC0415
+
         if isinstance(location, str):
             location = await self.resolve_location(location)
 
@@ -530,6 +565,8 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         )
 
     def _repository(self, name: str) -> ArtifactoryRepository:
+        from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository  # noqa: PLC0415
+
         repository = ArtifactoryRepository(
             id=f"artifactory:{self.name}:{name}", name=name
         )
@@ -612,6 +649,13 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         )
 
     async def inventory(self, boundary_id: str) -> ScanBoundaryInventory:
+        from cred_scan.backend.models import (  # noqa: PLC0415
+            BackendConfig,
+            ScanBoundaryInventory,
+            ScanTarget,
+            target_id_for,
+        )
+
         generated_at = datetime.now(UTC)
         repositories = await self.repositories()
         for metadata in repositories:

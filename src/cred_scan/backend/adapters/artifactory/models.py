@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from cred_scan.backend.base_models import ScanBoundary
-from cred_scan.backend.artifactory.docker import (
+from cred_scan.backend.adapters.artifactory.docker import (
     ArtifactoryDockerConfig as ArtifactoryBackendConfig,  # noqa: F401
     DockerImageScanScope as DockerImageScanScope,
 )

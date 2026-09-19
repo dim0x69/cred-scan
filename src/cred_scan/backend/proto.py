@@ -5,15 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from cred_scan.backend.models import (
-    ContentLocation,
-    ContentRead,
-    ScanBoundaryRef,
-    ScanBoundaryInventory,
-    ScanTarget,
-)
+if TYPE_CHECKING:
+    from cred_scan.backend.models import (
+        ContentLocation,
+        ContentRead,
+        ScanBoundaryRef,
+        ScanBoundaryInventory,
+        ScanTarget,
+    )
 
 
 ScratchDirectory = Callable[[], AbstractContextManager[Path]]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cred_scan.backend.artifactory.docker import ArtifactoryDockerConfig
+from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerConfig
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,

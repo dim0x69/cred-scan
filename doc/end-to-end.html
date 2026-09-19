@@ -491,7 +491,7 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
       <details class="model" id="model-inventory" open>
         <summary><code>ScanBoundaryInventory</code> <span class="chip">inventory.json · v8</span></summary>
         <div class="model-body">
-          <p class="owner">Owner: aggregate unions in <code>backend/models.py</code>; shared identity bases in <code>backend/base_models.py</code>; Docker configuration and scopes in <code>backend/artifactory/docker.py</code>; Artifactory boundary shapes in <code>backend/adapters/artifactory/models.py</code>; package shapes in <code>backend/adapters/artifactory/package.py</code>; Git shapes in <code>backend/adapters/ghes.py</code>.</p>
+          <p class="owner">Owner: aggregate unions in <code>backend/models.py</code>; shared identity bases in <code>backend/base_models.py</code>; Docker configuration and scopes in <code>backend/adapters/artifactory/docker.py</code>; Artifactory boundary shapes in <code>backend/adapters/artifactory/models.py</code>; package shapes in <code>backend/adapters/artifactory/package.py</code>; Git shapes in <code>backend/adapters/ghes.py</code>.</p>
           <ul class="tree">
             <li><code>schema_version: 8</code></li>
             <li><code>generated_at: datetime</code></li>
@@ -518,7 +518,7 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
                     <li><code>id</code> + <code>pin_id</code><span class="hint">Computed logical identity + immutable version identity.</span></li>
                     <li>
                       <details open>
-                        <summary><code class="type">backend.artifactory.docker.DockerImageScanScope</code></summary>
+                        <summary><code class="type">backend.adapters.artifactory.docker.DockerImageScanScope</code></summary>
                         <p class="field-group"><code>kind: "docker"</code><br><code>image: str</code><br><code>digest: str</code> — selected child manifest<br><code>platform: str</code><br><code>root_digest: str</code> — parent/root metadata<br><code>tags: str[]</code><br><code>manifest_timestamp: datetime</code></p>
                         <p><code>id = image</code>; <code>pin_id</code> hashes the child <code>digest</code> alone. Parent index, tags, and platform labels do not create a different pin for the same child manifest.</p>
                       </details>
@@ -744,7 +744,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
   </section>
 
   <footer>
-    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/artifactory/docker.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, and <code>orch/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Directory durability helper: <code>orch/fsync.py</code>.</p>
+    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/docker.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, and <code>orch/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Directory durability helper: <code>orch/fsync.py</code>.</p>
     <p>This HTML is the authoritative architecture, workflow, port, and model guide, intentionally self-contained and readable outside the repository. Retired Markdown documents are not maintained. Current document schemas: inventory 8 · report 2 · credentials 8.</p>
   </footer>
 </main>

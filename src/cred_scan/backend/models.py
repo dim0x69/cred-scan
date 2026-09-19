@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository as ArtifactoryRepository,
 )
-from cred_scan.backend.artifactory.docker import (
+from cred_scan.backend.adapters.artifactory.docker import (
     ArtifactoryDockerConfig as ArtifactoryDockerConfig,
     DockerImageScanScope as DockerImageScanScope,
 )
