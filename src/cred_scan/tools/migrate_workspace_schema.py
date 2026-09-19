@@ -1,8 +1,7 @@
-"""Offline inventory 7 -> 8 upgrade.
+"""Offline inventory 8 -> 9 migration to latest-only scan targets.
 
-The tool only validates and upgrades inventory documents. Runtime commands use
-inventory, report, and credential checkpoints directly; no execution checkpoint
-or scheduler state is required.
+Credentials, reports, cumulative Titus datastores, and evidence are untouched.
+Original inventories are backed up under .inventory-v8-backup before replacement.
 """
 
 import argparse
@@ -138,17 +137,30 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
         )
 
     store = _WorkspaceStorage(workspace_dir)
-    pending: list[tuple[Path, ScanBoundaryInventory]] = []
+    pending: list[tuple[Path, bytes, ScanBoundaryInventory]] = []
 
     for boundary_path in store.boundaries:
         inventory_path = boundary_path / "inventory.json"
         with store.lock(boundary_path):
-            original = _payload(inventory_path, {7, 8})
-            inventory = _validate(
-                inventory_path,
-                ScanBoundaryInventory,
-                {**original, "schema_version": 8},
-            )
+            original_bytes = inventory_path.read_bytes()
+            original = _payload(inventory_path, {8, 9})
+            payload = original
+            if original["schema_version"] == 8:
+                targets = []
+                for target in original["targets"]:
+                    if target.get("lifecycle", "current") != "current":
+                        continue
+                    if target["scope"].get("lifecycle", "active") != "active":
+                        continue
+                    target = dict(target)
+                    target.pop("lifecycle", None)
+                    scope = dict(target["scope"])
+                    scope.pop("lifecycle", None)
+                    scope.pop("pin_id", None)
+                    target["scope"] = scope
+                    targets.append(target)
+                payload = {**original, "schema_version": 9, "targets": targets}
+            inventory = _validate(inventory_path, ScanBoundaryInventory, payload)
             if boundary_path.name != quote(inventory.boundary.id, safe=""):
                 raise ValueError(
                     f"{inventory_path}: boundary directory does not match inventory"
@@ -159,12 +171,21 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
                 8,
                 CredentialsDocument,
             )
-            if original["schema_version"] == 7:
-                pending.append((boundary_path, inventory))
+            if original["schema_version"] == 8:
+                pending.append((boundary_path, original_bytes, inventory))
 
     if apply:
-        for boundary_path, inventory in pending:
+        for boundary_path, original_bytes, inventory in pending:
             with store.lock(boundary_path):
+                if (boundary_path / "inventory.json").read_bytes() != original_bytes:
+                    raise ValueError(f"inventory changed during migration: {boundary_path}")
+                backup = workspace_dir / ".inventory-v8-backup" / boundary_path.name / "inventory.json"
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                with backup.open("xb") as stream:
+                    stream.write(original_bytes)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                fsync_directory(backup.parent)
                 store.write(
                     boundary_path / "inventory.json",
                     inventory,

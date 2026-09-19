@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import computed_field
 
-from cred_scan.backend.base_models import ScanBoundary, ScanScope, _pin_hash
+from cred_scan.backend.base_models import ScanBoundary, ScanScope, _version_hash
 
 
 class GitOrganization(ScanBoundary):
@@ -17,7 +17,7 @@ class GitOrganization(ScanBoundary):
 
 
 class GitRepositoryScanScope(ScanScope):
-    """A Git repository scan scope pinned to a commit."""
+    """A Git repository scan scope at an immutable commit."""
 
     kind: Literal["git"] = "git"
     remote: str
@@ -32,5 +32,5 @@ class GitRepositoryScanScope(ScanScope):
 
     @computed_field
     @property
-    def pin_id(self) -> str:
-        return _pin_hash((self.commit, self.branch))
+    def version_id(self) -> str:
+        return _version_hash((self.commit, self.branch))

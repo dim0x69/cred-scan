@@ -13,7 +13,6 @@ from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
 from cred_scan.backend.adapters.artifactory.package import PackageScanScope
 from cred_scan.backend.adapters.ghes import GitOrganization, GitRepositoryScanScope
 
-from cred_scan.backend.base_models import ScanBoundary
 from cred_scan.backend.base_models import ScanScope
 
 ScanBoundaryRef = ArtifactoryRepository | GitOrganization
@@ -23,8 +22,8 @@ ScanScopeRef = DockerImageScanScope | PackageScanScope | GitRepositoryScanScope
 
 
 def target_id_for(scope: ScanScope) -> str:
-    """Return the stable ID for one immutable scan-scope pin."""
-    return f"{scope.id}@{scope.pin_id}"
+    """Return the stable ID for one immutable scan target."""
+    return f"{scope.id}@{scope.version_id}"
 
 
 class ContentLocation(BaseModel):
@@ -56,26 +55,25 @@ class ScanTargetResult(BaseModel):
 
 
 class ScanTarget(BaseModel):
-    """One immutable scan-scope pin owned by one boundary and worker."""
+    """One immutable scan target owned by one boundary and worker."""
 
     id: str
     backend_id: str
     boundary: ScanBoundaryRef
     scope: ScanScopeRef
-    lifecycle: Literal["current", "superseded"] = "current"
     result: ScanTargetResult = Field(default_factory=ScanTargetResult)
 
     @model_validator(mode="after")
-    def validate_pin_id(self) -> "ScanTarget":
+    def validate_version_id(self) -> "ScanTarget":
         if self.id != target_id_for(self.scope):
-            raise ValueError("target ID must match its immutable source pin")
+            raise ValueError("target ID must match its immutable source version")
         return self
 
 
 class ScanBoundaryInventory(BaseModel):
-    """One complete boundary inventory with retained scan-scope pins."""
+    """The latest selected scan targets and their results for one boundary."""
 
-    schema_version: Literal[8] = 8
+    schema_version: Literal[9] = 9
     generated_at: datetime
     boundary: ScanBoundaryRef
     lifecycle: Literal["active", "stale"] = "active"
@@ -95,6 +93,9 @@ class ScanBoundaryInventory(BaseModel):
         target_ids = [target.id for target in self.targets]
         if len(target_ids) != len(set(target_ids)):
             raise ValueError("inventory target IDs must be unique")
+        scope_ids = [(target.scope.kind, target.scope.id) for target in self.targets]
+        if len(scope_ids) != len(set(scope_ids)):
+            raise ValueError("inventory must select only one scan target per scope")
         return self
 
     def replace_target(self, replacement: ScanTarget) -> "ScanBoundaryInventory":
@@ -106,7 +107,7 @@ class ScanBoundaryInventory(BaseModel):
         if existing.model_dump(exclude={"result"}) != replacement.model_dump(
             exclude={"result"}
         ):
-            raise ValueError("target updates must preserve pinned source identity")
+            raise ValueError("target updates must preserve immutable source identity")
         self.targets = tuple(
             replacement if target.id == replacement.id else target
             for target in self.targets

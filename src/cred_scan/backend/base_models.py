@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Literal
 
 from pydantic import BaseModel
 
@@ -16,19 +15,17 @@ class ScanBoundary(BaseModel):
 
 
 class ScanScope(BaseModel):
-    """A logical scan scope snapshot with computed identity and lifecycle."""
-
-    lifecycle: Literal["active", "stale"] = "active"
+    """A logical scan scope snapshot with computed identity."""
 
     @property
     def id(self) -> str:
         raise NotImplementedError
 
     @property
-    def pin_id(self) -> str:
+    def version_id(self) -> str:
         raise NotImplementedError
 
 
-def _pin_hash(parts: tuple[str, ...]) -> str:
+def _version_hash(parts: tuple[str, ...]) -> str:
     payload = "\x00".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:24]

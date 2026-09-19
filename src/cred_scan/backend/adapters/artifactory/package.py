@@ -6,11 +6,11 @@ from typing import Literal
 
 from pydantic import computed_field
 
-from cred_scan.backend.base_models import ScanScope, _pin_hash
+from cred_scan.backend.base_models import ScanScope, _version_hash
 
 
 class PackageScanScope(ScanScope):
-    """A package scan scope pinned to an immutable artifact."""
+    """A package scan scope at an immutable artifact."""
 
     kind: Literal["package"] = "package"
     name: str
@@ -25,5 +25,5 @@ class PackageScanScope(ScanScope):
 
     @computed_field
     @property
-    def pin_id(self) -> str:
-        return _pin_hash((self.uri, self.digest))
+    def version_id(self) -> str:
+        return _version_hash((self.uri, self.digest))

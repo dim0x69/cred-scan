@@ -225,15 +225,13 @@ class Boundary:
             )
 
     def needs_scan(self) -> bool:
-        if self.inventory.lifecycle == "stale":
+        if self.inventory.lifecycle == "stale" or not self.inventory.targets:
             return False
         return (
             not self._has_report
             or not self._has_credentials
             or any(
-                target.lifecycle == "current"
-                and target.scope.lifecycle == "active"
-                and (
+                (
                     target.result.status in {"pending", "running"}
                     or (
                         target.result.status in {"failed", "partial"}
@@ -302,9 +300,7 @@ class Boundary:
         eligible = tuple(
             target
             for target in self.inventory.targets
-            if target.lifecycle == "current"
-            and target.scope.lifecycle == "active"
-            and (
+            if (
                 target.result.status in {"pending", "running"}
                 or (
                     target.result.status in {"failed", "partial"}
@@ -336,52 +332,29 @@ class Boundary:
                     "; ".join(result.result.errors),
                 )
 
-        active_targets = tuple(
-            target
-            for target in self.inventory.targets
-            if target.lifecycle == "current" and target.scope.lifecycle == "active"
-        )
         incomplete = bool(self.inventory.errors) or any(
-            target.result.status != "scanned" for target in active_targets
+            target.result.status != "scanned" for target in self.inventory.targets
         )
 
-        if not self.inventory.targets:
-            generated_at = datetime.now(UTC).isoformat()
-            self.report = TitusReport(
-                boundary_id=self.boundary_id,
-                generated_at=generated_at,
-                incomplete=True,
-                errors=self.inventory.errors,
-            )
-            self.credentials = CredentialsDocument(
-                boundary_id=self.boundary_id,
-                report_generated_at=generated_at,
-                incomplete=True,
-                errors=self.inventory.errors,
-            )
-            self._has_report = True
-            self._has_credentials = True
-            self.checkpoint()
-        else:
-            report = await self.scanner.export_report(self.paths.datastore)
-            self.report = report.model_copy(
-                update={
-                    "incomplete": report.incomplete or incomplete,
-                    "errors": tuple(report.errors) + self.inventory.errors,
-                }
-            )
-            self._has_report = True
-            self.checkpoint()
+        report = await self.scanner.export_report(self.paths.datastore)
+        self.report = report.model_copy(
+            update={
+                "incomplete": report.incomplete or incomplete,
+                "errors": tuple(report.errors) + self.inventory.errors,
+            }
+        )
+        self._has_report = True
+        self.checkpoint()
 
-            candidates = await deduplicate_report(
-                self.report,
-                self.inventory,
-                self.reader,
-            )
+        candidates = await deduplicate_report(
+            self.report,
+            self.inventory,
+            self.reader,
+        )
 
-            self.credentials = merge_scan(self.credentials, candidates)
-            self._has_credentials = True
-            self.checkpoint()
+        self.credentials = merge_scan(self.credentials, candidates)
+        self._has_credentials = True
+        self.checkpoint()
 
         LOGGER.info(
             "scan complete boundary=%s candidates=%d incomplete=%s",

@@ -127,3 +127,56 @@ def test_cancelled_discovery_does_not_checkpoint_failure(loaded_boundary):
         asyncio.run(boundary.refresh_inventory())
     assert boundary.paths.inventory.read_bytes() == before
     assert not boundary.paths.operation_lock.exists()
+
+
+def test_merge_replaces_previous_version(previous):
+    fresh = discovery(previous).model_copy(update={"errors": ()})
+    merged = merge_inventory(previous, fresh)
+    assert len(merged.targets) == 1
+    assert merged.targets[0].id == fresh.targets[0].id
+    assert merged.targets[0].result.status == "pending"
+    assert previous.targets[0].result.status == "scanned"
+
+
+def test_merge_reuses_results_but_refreshes_metadata(previous):
+    fresh = previous.model_copy(deep=True)
+    fresh.targets[0].scope.tags = ("new-tag",)
+    merged = merge_inventory(previous, fresh)
+    assert merged.targets[0].result == previous.targets[0].result
+    assert merged.targets[0].result is not previous.targets[0].result
+    assert merged.targets[0].scope.tags == ("new-tag",)
+
+
+def test_inventory_rejects_two_versions_of_same_scope(previous):
+    newer = discovery(previous).targets[0]
+    with pytest.raises(ValueError, match="one scan target per scope"):
+        ScanBoundaryInventory(
+            generated_at=previous.generated_at, boundary=previous.boundary,
+            targets=(*previous.targets, newer),
+        )
+
+
+def test_empty_discovery_keeps_historical_documents(loaded_boundary):
+    from cred_scan.scan.models import Credential, CredentialOccurrence  # noqa: PLC0415
+
+    boundary = loaded_boundary
+    historical = Credential(
+        credential_id="historical", occurrences=(CredentialOccurrence(locator="old-source"),),
+    )
+    boundary.credentials.credentials[historical.credential_id] = historical
+    boundary._has_credentials = True
+    boundary._has_report = True
+    boundary.report.findings = ({"ID": "historical-finding"},)
+    boundary.paths.datastore.write_bytes(b"cumulative scan data")
+    boundary.backend.inventory.return_value = boundary.inventory.model_copy(update={"targets": ()})
+
+    async def refresh_and_scan():
+        assert await boundary.refresh_inventory()
+        assert boundary.inventory.targets == ()
+        assert not boundary.needs_scan()
+        assert not await boundary.scan()
+        assert boundary.credentials.credentials["historical"] == historical
+        assert boundary.report.findings == ({"ID": "historical-finding"},)
+        assert boundary.paths.datastore.read_bytes() == b"cumulative scan data"
+
+    asyncio.run(refresh_and_scan())

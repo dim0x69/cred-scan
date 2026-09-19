@@ -23,7 +23,7 @@ import httpx
 from pydantic import computed_field
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
-from cred_scan.backend.base_models import ScanScope, _pin_hash
+from cred_scan.backend.base_models import ScanScope, _version_hash
 from cred_scan.orch.global_config import get_config
 
 if TYPE_CHECKING:
@@ -68,8 +68,8 @@ class DockerImageScanScope(ScanScope):
 
     @computed_field
     @property
-    def pin_id(self) -> str:
-        return _pin_hash((self.digest,))
+    def version_id(self) -> str:
+        return _version_hash((self.digest,))
 
 _LAYER_PROVENANCE_RE = re.compile(
     r"^docker://(?P<registry>[^/]+)/(?P<repository>[^/]+)/(?P<image>.+)"
@@ -412,7 +412,7 @@ class ArtifactoryDockerReader(ContentReader):
 
 
 class ArtifactoryDockerBackend(ArtifactoryBackend):
-    """Discover and read pinned Docker sources through Artifactory."""
+    """Discover and read immutable Docker sources through Artifactory."""
 
     def __init__(
         self,
