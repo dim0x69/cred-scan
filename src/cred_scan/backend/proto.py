@@ -54,8 +54,8 @@ class BackendAdapter(ABC):
 class ContentReader(Protocol):
     """Resolve and read requested backend paths without boundary context.
 
-    Implementations cache resolved locations and retrieved reads for the
-    reader lifetime. Calls propagate cancellation after settling
+    Implementations do not cache resolved locations or retrieved content.
+    Calls propagate cancellation after settling
     non-cancellable workers that still use scratch. The owner then closes the
     reader; adapters must not
     leave detached workers accessing files that aclose removes.

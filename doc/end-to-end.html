@@ -345,7 +345,7 @@ deduplicate_report(
 ) → JudgmentResult
 
 <em>mutate credential.judgment and persist the current document</em></pre>
-        <p>Orchestration validates the document boundary. Credentials persist occurrence paths only. The ContentReader, together with its configured backend, interprets each immutable path and returns exact bytes plus source metadata; it receives no boundary reference and does not validate repository membership or need historical inventory targets. The boundary owns the reader’s lifecycle and persisted results. The agreed instruction is to prefer the first occurrence's file, while allowing additional occurrence reads. Retrieved files are cached for reuse. Additional cache work is tracked in <a href="../TODO.md">TODO.md</a>.</p>
+        <p>Orchestration validates the document boundary. Credentials persist occurrence paths only. The ContentReader, together with its configured backend, interprets each immutable path and returns exact bytes plus source metadata; it receives no boundary reference and does not validate repository membership or need historical inventory targets. The boundary owns the reader’s lifecycle and persisted results. The agreed instruction is to prefer the first occurrence's file, while allowing additional occurrence reads. The reader does not cache resolved locations or retrieved files; each read retrieves source bytes independently.</p>
         <p><code>JudgmentResult.verdict</code> is <code>PENDING | VALID | INVALID | UNKNOWN | ERROR</code>. The result also carries <code>reasoning</code>. A verdict is not user acceptance or mitigation.</p>
         <p><code>Boundary.judge()</code> returns the <strong>number of attempted judgments</strong>. It only updates saved judgment results. Evidence extraction is a separate <code>Boundary.extract()</code> operation.</p>
         <p class="port">Owner: <code>judge/</code> assesses; <code>orch/</code> saves each judgment to the latest credential checkpoint.</p>
@@ -360,14 +360,14 @@ ContentReader.resolve_location(raw_path: str)
 ContentReader.read(location: ContentLocation | str)
   → ContentRead(content, source_path, filename)
 
-<em>reader caches resolved locations and retrieved reads in memory for one boundary workflow</em>
+<em>reader resolves locations and retrieves bytes on each call without caching</em>
 
 retain_first_evidence(
   content: bytes, destination: Path
 ) → tuple[Path, int, str]  # path, size, SHA-256
 
 <em>mutate credential.extraction and persist the current document</em></pre>
-        <p>For a VALID or UNKNOWN credential, orchestration selects only <code>occurrences[0].locator</code>. It reuses bytes already read during judgment or retrieves the exact backend locator. Additional occurrence files read and cached by the judge do not become retained evidence. Python writes and hashes the first occurrence's file, then checkpoints <code>ExtractionResult</code>.</p>
+        <p>For a VALID or UNKNOWN credential, orchestration selects only <code>occurrences[0].locator</code>. Extraction reads the exact backend locator independently of judgment. Additional occurrence files read by the judge do not become retained evidence. Python writes and hashes the first occurrence's file, then checkpoints <code>ExtractionResult</code>.</p>
         <p><code>Boundary.extract()</code> returns the <strong>number of newly retained artifacts</strong>. Under the agreed design, RETAINED credentials receive only a file-existence check on later runs. Missing files are reported without automatic replacement; contents, size, and hash are not verified. This check is pending implementation; current code skips RETAINED records entirely. Retrieval/write errors can save extraction <code>ERROR</code> while keeping the saved VALID or UNKNOWN judgment.</p>
         <p class="port">Owner: <code>extract/evidence.py</code> owns destinations/integrity; <code>orch/</code> owns eligibility, session lifetime, and persistence. The dedicated <code>extract/</code> module owns the extractor, evidence functions, and <code>ExtractionResult</code> in <code>extract/models.py</code>.</p>
       </article>
@@ -427,7 +427,7 @@ TitusCliScanner: one scanner per boundary, one active invocation at a time
 EvidenceExtractor: one extractor per boundary, first-occurrence retention
 LocalRuntime: runs each command across boundaries concurrently</pre>
       <p>The design rule is to keep module responsibilities clear and avoid circular dependencies; specific import directions are implementation choices. In the current implementation, Boundary uses its owner's concrete Workspace, backend content readers receive a scratch context, and Boundary's type-only Workspace reference avoids a runtime cycle. These details describe the current structure rather than prescribing a permanent import hierarchy.</p>
-      <p>Workspace owns one configured backend and its lifetime. Each Boundary owns one TitusCliScanner, one judge, and one EvidenceExtractor. Its async operation lock queues overlapping stages; different boundaries run concurrently. Scan targets and their retries run sequentially and share the boundary datastore. Titus internal workers remain supported. Commands remain separate stages; sharing a read cache across commands is a separate task in TODO.md.</p>
+      <p>Workspace owns one configured backend and its lifetime. Each Boundary owns one TitusCliScanner, one judge, and one EvidenceExtractor. Its async operation lock queues overlapping stages; different boundaries run concurrently. Scan targets and their retries run sequentially and share the boundary datastore. Titus internal workers remain supported. Scan, judge, and extract commands run in separate Python processes, without a source-content cache.</p>
     </div>
     <div class="table-scroll" style="margin-top: 1.25rem" role="region" aria-label="Execution transitions" tabindex="0">
       <table>
@@ -717,7 +717,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <h3>Retention and failure rules</h3>
         <ul>
           <li>Append publication preserves old credentials, locator occurrences, judgments, and evidence metadata—even if a later report omits them.</li>
-          <li>Agreed design: one Boundary content reader spans scan, judgment, and extraction within one boundary workflow. Retrieved-file caches live only in memory and are cleared when that workflow finishes, including failure or cancellation. No retrieved-file cache persists to disk or across workflows or runs; retained evidence is separate. Whole-image, repository, archive, and general blob caches are forbidden. Lifecycle alignment is tracked in <a href="../TODO.md">TODO.md</a>.</li>
+          <li>Scan, judge, and extract run in separate Python processes. Readers do not cache resolved locations or retrieved content. Temporary downloads are removed after use; retained evidence is persisted independently. Whole-image, repository, archive, and general blob caches are forbidden.</li>
           <li>Agreed design: check only that each RETAINED file exists on later runs. Report missing files without automatic replacement. Do not verify contents, size, or hash. This check is pending implementation in TODO.md; current code skips RETAINED records.</li>
           <li>A saved VALID or UNKNOWN judgment survives a later extraction error, so extraction can retry without another LLM judgment.</li>
         </ul>
@@ -735,8 +735,8 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains a finding at <code>app.env</code>. Conversion retains its complete backend locator as a credential occurrence.</li>
         <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> containing the complete backend locator. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
         <li><strong>Judge.</strong> The judge receives C1 and a pinned content reader. Assume it returns <code>JudgmentResult(verdict="VALID", reasoning=…)</code>. Orchestration saves this result to the latest <code>credentials.json</code>.</li>
-        <li><strong>Extract.</strong> Reuse <code>app.env</code> bytes if the Boundary reader already read them; otherwise read through that same reader. Retain the file under C1’s evidence directory and save <code>ExtractionResult(status="RETAINED", output_path=…, size=…, sha256=…)</code>. The Boundary closes the reader at lifecycle end.</li>
-        <li><strong>Mixed obligations and recovery.</strong> Suppose another historical credential is ERROR and a third is VALID with extraction ERROR when M2 is discovered. The boundary can have SCAN, JUDGE, and EXTRACT all READY. The agreed boundary workflow finishes M2's publication first, then runs judgment and extraction sequentially with the shared in-memory cache. A crash with all targets scanned but publication still pending resumes export rather than rescanning completed scan targets.</li>
+        <li><strong>Extract.</strong> Read <code>app.env</code> through the extraction command’s reader. Retain the file under C1’s evidence directory and save <code>ExtractionResult(status="RETAINED", output_path=…, size=…, sha256=…)</code>. The Boundary closes the reader at lifecycle end.</li>
+        <li><strong>Mixed obligations and recovery.</strong> Suppose another historical credential is ERROR and a third is VALID with extraction ERROR when M2 is discovered. The boundary can have SCAN, JUDGE, and EXTRACT all READY. The agreed boundary workflow finishes M2's publication first, then judgment and extraction run as separate commands with independent reads. A crash with all targets scanned but publication still pending resumes export rather than rescanning completed scan targets.</li>
         <li><strong>Next inventory, next scan.</strong> Under the agreed latest-only inventory design, a scan target for child manifest M2 replaces M1 in inventory. The cumulative Titus datastore and historical credentials remain. Self-contained occurrence paths allow the backend to read M1 without its old inventory entry. If C1 appears at another locator in M2, append its occurrence without changing the first evidence location. Keep RETAINED metadata and check only that its file exists; report absence without automatic replacement (implementation pending). A new missing/error extraction still uses the immutable first occurrence.</li>
       </ol>
     </div>

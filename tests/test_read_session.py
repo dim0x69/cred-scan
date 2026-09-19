@@ -1,93 +1,71 @@
+"""Content reads retrieve bytes independently, without a read-session cache."""
+
 import asyncio
-from unittest.mock import create_autospec
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cred_scan.backend.models import ContentLocation, ContentRead
-from cred_scan.backend.proto import ContentReader
-from cred_scan.orch.boundary import ReadSession
+from cred_scan.backend.adapters.artifactory.docker import (
+    ArtifactoryDockerReader,
+    LayerEvidenceError,
+)
 
 
-def _location(locator: str) -> ContentLocation:
-    return ContentLocation(
-        target_id="target",
-        locator=locator,
-        source_path="etc/app.env",
-        filename="app.env",
-    )
+LOCATOR = "docker://registry/repo/image@sha256:manifest/sha256:layer:etc/app.env"
 
 
-@pytest.mark.parametrize("content", [b"", b"text", b"\xff\x00binary"])
-def test_read_session_reuses_exact_locators_and_clears_on_close(credential, content):
-    reader = create_autospec(ContentReader, instance=True)
-    reader.resolve_location.side_effect = lambda locator: _location(locator)
-    reader.read.return_value = ContentRead(
-        content=content, source_path="etc/app.env", filename="app.env"
-    )
-    session = ReadSession(reader)
-    locator = credential.occurrences[0].locator
+@pytest.fixture
+def reader(tmp_path):
+    @contextmanager
+    def scratch():
+        yield tmp_path
+
+    return ArtifactoryDockerReader(Mock(), scratch_dir=scratch)
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_repeated_reads_fetch_content_each_time(reader, resolved):
+    reader._find_file = AsyncMock(side_effect=[b"first read", b"second read"])
 
     async def exercise():
-        assert (await session.read(locator)).content == content
-        assert (await session.read(locator)).content == content
-        reader.read.assert_awaited_once_with(_location(locator))
-        await session.aclose()
-        await session.aclose()
-        assert not session._cache
-        reader.aclose.assert_awaited_once()
-        with pytest.raises(RuntimeError, match="closed"):
-            await session.read(locator)
+        try:
+            location = await reader.resolve_location(LOCATOR) if resolved else LOCATOR
+            assert (await reader.read(location)).content == b"first read"
+            assert (await reader.read(location)).content == b"second read"
+            assert reader._find_file.await_count == 2
+        finally:
+            await reader.aclose()
 
     asyncio.run(exercise())
 
 
-def test_cache_does_not_bypass_validation_of_changed_locator(credential):
-    reader = create_autospec(ContentReader, instance=True)
-    reader.resolve_location.side_effect = lambda locator: _location(locator)
-
-    async def read(requested):
-        if requested.locator != credential.occurrences[0].locator:
-            raise ValueError("locator does not match source")
-        return ContentRead(
-            content=b"content", source_path="etc/app.env", filename="app.env"
-        )
-
-    reader.read.side_effect = read
-    session = ReadSession(reader)
-    locator = credential.occurrences[0].locator
-
+def test_resolving_again_does_not_reuse_mutated_location(reader):
     async def exercise():
         try:
-            assert (await session.read(locator)).content == b"content"
-            with pytest.raises(ValueError, match="does not match"):
-                await session.read("different")
-            assert reader.read.await_count == 2
-            assert (await session.read(locator)).content == b"content"
-            assert reader.read.await_count == 2
+            first = await reader.resolve_location(LOCATOR)
+            first.source_path = "changed"
+            second = await reader.resolve_location(LOCATOR)
+            assert second.source_path == "etc/app.env"
+            assert second is not first
         finally:
-            await session.aclose()
+            await reader.aclose()
 
     asyncio.run(exercise())
 
 
-def test_read_session_does_not_cache_failures(credential):
-    reader = create_autospec(ContentReader, instance=True)
-    locator = credential.occurrences[0].locator
-    reader.resolve_location.side_effect = lambda value: _location(value)
-    reader.read.side_effect = [
-        OSError("temporary failure"),
-        ContentRead(content=b"retried", source_path="etc/app.env", filename="app.env"),
-    ]
-    session = ReadSession(reader)
+def test_read_still_validates_location(reader):
+    reader._find_file = AsyncMock(return_value=b"content")
 
     async def exercise():
         try:
-            with pytest.raises(OSError, match="temporary failure"):
-                await session.read(locator)
-            assert (await session.read(locator)).content == b"retried"
-            assert (await session.read(locator)).content == b"retried"
-            assert reader.read.await_count == 2
+            location = await reader.resolve_location(LOCATOR)
+            await reader.read(location)
+            location.source_path = "different"
+            with pytest.raises(LayerEvidenceError, match="source path does not match"):
+                await reader.read(location)
+            reader._find_file.assert_awaited_once()
         finally:
-            await session.aclose()
+            await reader.aclose()
 
     asyncio.run(exercise())

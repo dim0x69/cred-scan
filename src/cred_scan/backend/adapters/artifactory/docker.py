@@ -199,8 +199,6 @@ class ArtifactoryDockerReader(ContentReader):
     ) -> None:
         self.backend = backend
         self._closed = False
-        self._locations: dict[str, ContentLocation] = {}
-        self._reads: dict[tuple[str, str, str], ContentRead] = {}
         self._scratch_context = scratch_dir()
         self._scratch_dir = Path(self._scratch_context.__enter__())
 
@@ -370,10 +368,6 @@ class ArtifactoryDockerReader(ContentReader):
         from cred_scan.backend.models import ContentLocation  # noqa: PLC0415
 
         key = raw_path.strip()
-        cached = self._locations.get(key)
-        if cached is not None:
-            return cached
-
         try:
             provenance = parse_provenance(key)
         except LayerEvidenceError:
@@ -385,7 +379,6 @@ class ArtifactoryDockerReader(ContentReader):
             source_path=source_path,
             filename=PurePosixPath(source_path).name,
         )
-        self._locations[key] = location
         return location
 
     async def read(self, location: ContentLocation | str) -> ContentRead:
@@ -393,15 +386,6 @@ class ArtifactoryDockerReader(ContentReader):
 
         if isinstance(location, str):
             location = await self.resolve_location(location)
-
-        key = (
-            location.locator,
-            location.source_path,
-            location.filename,
-        )
-        cached = self._reads.get(key)
-        if cached is not None:
-            return cached
 
         provenance = parse_provenance(location.locator)
         if location.source_path != provenance.path:
@@ -418,15 +402,12 @@ class ArtifactoryDockerReader(ContentReader):
             source_path=provenance.path,
             filename=PurePosixPath(provenance.path).name,
         )
-        self._reads[key] = result
         return result
 
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._locations.clear()
-        self._reads.clear()
         self._scratch_context.__exit__(None, None, None)
 
 
