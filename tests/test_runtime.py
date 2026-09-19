@@ -5,6 +5,8 @@ from unittest.mock import Mock, create_autospec
 
 import pytest
 
+from cred_scan.extract import evidence as evidence_module
+
 from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
 from cred_scan.orch.execution import BoundaryExecution, Phase
 from cred_scan.backend.proto import BackendAdapter, ContentReader
@@ -265,7 +267,7 @@ def test_retained_is_trusted_without_audit_download_or_overwrite(
     reader = backend.content_reader.return_value
     reader.read.reset_mock()
     retention = Mock(side_effect=AssertionError("RETAINED must be skipped"))
-    monkeypatch.setattr(boundary_module, "retain_first_evidence", retention)
+    monkeypatch.setattr(evidence_module, "retain_first_evidence", retention)
     if rejudge:
         boundary.phase = Phase.JUDGE
         assert asyncio.run(boundary.run()) == 1

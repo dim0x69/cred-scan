@@ -10,9 +10,9 @@ from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.common.workspace import WorkspaceBusyError
 from cred_scan.orch.workspace import Workspace
 from cred_scan.orch.execution import BoundaryExecution, Phase, PhaseStatus
+from cred_scan.extract.models import ExtractionResult
 from cred_scan.scan.models import (
     CredentialsDocument,
-    ExtractionResult,
     JudgmentResult,
     TitusReport,
 )

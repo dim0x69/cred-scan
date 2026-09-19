@@ -12,7 +12,8 @@ import aiofiles
 
 from cred_scan.orch.fsync import fsync_directory
 from cred_scan.backend.proto import ContentReader
-from cred_scan.scan.models import Credential, ExtractionResult
+from cred_scan.scan.models import Credential
+from cred_scan.extract.models import ExtractionResult
 
 
 class EvidenceConflictError(RuntimeError):

@@ -21,7 +21,7 @@ from cred_scan.backend.models import (
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.orch.workspace import Workspace
-from cred_scan.judge.evidence import evidence_path
+from cred_scan.extract.evidence import evidence_path
 from cred_scan.orch import inventory, workspace as workspace_module
 from cred_scan.orch.execution import BoundaryExecution, PhaseStatus
 from cred_scan.orch.models import AppConfig

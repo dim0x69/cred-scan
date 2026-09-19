@@ -22,16 +22,16 @@ from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.orch.fsync import fsync_directory
 from cred_scan.orch.models import BoundaryPaths
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
-from cred_scan.judge.evidence import (
+from cred_scan.extract.evidence import (
     EvidenceConflictError,
     EvidenceExtractor,
 )
 from cred_scan.judge.proto import FatalJudgeError
 from cred_scan.orch.credentials import merge_scan
 from cred_scan.scan.credentials import deduplicate_report
+from cred_scan.extract.models import ExtractionResult
 from cred_scan.scan.models import (
     CredentialsDocument,
-    ExtractionResult,
     JudgmentResult,
     TitusReport,
 )

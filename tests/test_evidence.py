@@ -2,13 +2,13 @@ import asyncio
 import hashlib
 import pytest
 
-from cred_scan.judge.evidence import (
+from cred_scan.extract.evidence import (
     EvidenceConflictError,
     evidence_matches,
     evidence_path,
     retain_first_evidence,
 )
-from cred_scan.scan.models import ExtractionResult, JudgmentResult
+from cred_scan.extract.models import ExtractionResult
 
 
 @pytest.mark.parametrize(
@@ -61,14 +61,12 @@ def test_evidence_integrity_checks_do_not_modify_artifacts_or_metadata(
     assert destination.is_symlink() == (damage == "symlink")
 
 
-def test_new_filename_does_not_delete_old_evidence(tmp_path, credential):
-    credential = credential.model_copy(
-        update={"judgment": JudgmentResult(verdict="VALID")}
-    )
-    old = evidence_path(tmp_path, credential.credential_id, "app.env")
+def test_new_filename_does_not_delete_old_evidence(tmp_path):
+    credential_id = "synthetic-credential"
+    old = evidence_path(tmp_path, credential_id, "app.env")
     old.parent.mkdir(parents=True)
     old.write_bytes(b"historical artifact")
-    destination = evidence_path(tmp_path, credential.credential_id, "renamed.env")
+    destination = evidence_path(tmp_path, credential_id, "renamed.env")
     result, size, sha256 = asyncio.run(
         retain_first_evidence(b"new evidence", destination)
     )

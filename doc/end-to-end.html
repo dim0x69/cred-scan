@@ -368,7 +368,7 @@ retain_first_evidence(
 <em>mutate credential.extraction and persist the current document</em></pre>
         <p>For a VALID or UNKNOWN credential, orchestration selects only <code>occurrences[0].locator</code>. It reuses bytes already read during judgment or retrieves the exact backend locator. Additional occurrence files read and cached by the judge do not become retained evidence. Python writes and hashes the first occurrence's file, then checkpoints <code>ExtractionResult</code>.</p>
         <p><code>Boundary.extract()</code> returns the <strong>number of newly retained artifacts</strong>. Under the agreed design, RETAINED credentials receive only a file-existence check on later runs. Missing files are reported without automatic replacement; contents, size, and hash are not verified. This check is pending implementation; current code skips RETAINED records entirely. Retrieval/write errors can save extraction <code>ERROR</code> while keeping the saved VALID or UNKNOWN judgment.</p>
-        <p class="port">Owner: <code>judge/evidence.py</code> owns destinations/integrity; <code>orch/</code> owns eligibility, session lifetime, and persistence. Extract is a workflow stage, not a separate <code>extract/</code> module.</p>
+        <p class="port">Owner: <code>extract/evidence.py</code> owns destinations/integrity; <code>orch/</code> owns eligibility, session lifetime, and persistence. The dedicated <code>extract/</code> module owns the extractor, evidence functions, and <code>ExtractionResult</code> in <code>extract/models.py</code>.</p>
       </article>
     </div>
     <aside class="note" style="margin-top: 1.25rem">
@@ -593,7 +593,7 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
                       <li><code>reasoning: str</code></li>
                     </ul>
                   </li>
-                  <li id="model-extraction"><code>extraction: <span class="type">ExtractionResult?</span></code>
+                  <li id="model-extraction"><code>extraction: <span class="type">ExtractionResult?</span></code> (defined in <code>extract/models.py</code>)
                     <ul>
                       <li><code>status: RETAINED | ERROR</code></li>
                       <li><code>output_path: str?</code><span class="hint">Relative to the boundary directory.</span></li>
@@ -677,7 +677,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
               <li>Derived properties: <code>inventory</code>, <code>operation_lock</code>, <code>report</code>, <code>credentials</code>, <code>datastore</code></li>
               <li><code>Boundary.scratch_dir()</code> owns one temporary scratch child</li>
             </ul>
-            <p>Boundary owns its derived path value, typed document I/O, the boundary-local operation sentinel, checkpoints, and evidence-adjacent persistence. Common owns only small scratch/fsync helpers. Workspace owns directory discovery, one backend lifetime, and Boundary construction. Evidence destinations belong to <code>judge/evidence.py</code>, not to a nested evidence workspace model.</p>
+            <p>Boundary owns its derived path value, typed document I/O, the boundary-local operation sentinel, checkpoints, and evidence-adjacent persistence. Common owns only small scratch/fsync helpers. Workspace owns directory discovery, one backend lifetime, and Boundary construction. Evidence destinations belong to <code>extract/evidence.py</code>, not to a nested evidence workspace model.</p>
           </div>
         </details>
       </div>
@@ -742,7 +742,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
   </section>
 
   <footer>
-    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/docker.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, and <code>orch/models.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Directory durability helper: <code>orch/fsync.py</code>.</p>
+    <p><strong>Source map.</strong> Model definitions: <code>backend/base_models.py</code>, <code>backend/models.py</code>, <code>backend/adapters/artifactory/docker.py</code>, <code>backend/adapters/artifactory/models.py</code>, <code>backend/adapters/artifactory/package.py</code>, <code>backend/adapters/ghes.py</code>, <code>scan/models.py</code>, <code>extract/models.py</code>, and <code>orch/models.py</code>. Evidence extraction: <code>extract/evidence.py</code>. Operation contracts: <code>backend/proto.py</code>, <code>scan/proto.py</code>, <code>judge/proto.py</code>. Coordination: <code>orch/runtime.py</code>, <code>orch/workspace.py</code>, <code>orch/boundary.py</code>, and <code>orch/credentials.py</code>. Directory durability helper: <code>orch/fsync.py</code>.</p>
     <p>This HTML is the authoritative architecture, workflow, port, and model guide, intentionally self-contained and readable outside the repository. Retired Markdown documents are not maintained. Current document schemas: inventory 8 · report 2 · credentials 8.</p>
   </footer>
 </main>

@@ -5,10 +5,10 @@ from pydantic import ValidationError
 
 from cred_scan.orch.credentials import merge_scan
 from cred_scan.scan.exclusions import match_credential_exclusion
+from cred_scan.extract.models import ExtractionResult
 from cred_scan.scan.models import (
     CredentialsDocument,
     ExclusionPolicy,
-    ExtractionResult,
     JudgmentResult,
 )
 

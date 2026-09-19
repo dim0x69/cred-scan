@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
+from cred_scan.extract import evidence as evidence_module
+
 from cred_scan.backend.models import (
     ContentLocation,
     ContentRead,
@@ -288,7 +290,7 @@ def test_credential_checkpoint_failure_is_recoverable_without_losing_other_recor
     initial.credentials[other.credential_id] = other
     h.workspace.write(h.paths.credentials, initial, CredentialsDocument)
     write = Workspace.write
-    original = boundary_module.retain_first_evidence
+    original = evidence_module.retain_first_evidence
     failed = False
 
     def failing_write(self, path, document, model_type):
@@ -311,7 +313,7 @@ def test_credential_checkpoint_failure_is_recoverable_without_losing_other_recor
     with monkeypatch.context() as patch:
         patch.setattr(Workspace, "write", failing_write)
         if failure == "extraction":
-            patch.setattr(boundary_module, "retain_first_evidence", failing_extraction)
+            patch.setattr(evidence_module, "retain_first_evidence", failing_extraction)
             assert asyncio.run(LocalRuntime(h.config).scan()) == 1
         else:
             with pytest.raises(ExceptionGroup):
@@ -426,7 +428,7 @@ def test_top_level_operations_hold_the_same_lock_for_the_complete_operation(
                 ].judgment = JudgmentResult(verdict="VALID")
                 h.workspace.write(h.paths.credentials, document, CredentialsDocument)
                 monkeypatch.setattr(
-                    boundary_module, "retain_first_evidence", wait_forever
+                    evidence_module, "retain_first_evidence", wait_forever
                 )
             else:
                 h.judge.judge.side_effect = wait_forever

@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
+
+from cred_scan.extract.models import ExtractionResult
 
 
 class ExclusionFiles(BaseModel):
@@ -30,18 +32,6 @@ class CredentialOccurrence(BaseModel):
 class JudgmentResult(BaseModel):
     verdict: Literal["PENDING", "VALID", "INVALID", "UNKNOWN", "ERROR"] = "PENDING"
     reasoning: str = ""
-
-
-class ExtractionResult(BaseModel):
-    """Evidence metadata; evidence bytes live outside credentials.json."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["RETAINED", "ERROR"]
-    output_path: str | None = None
-    size: int | None = Field(default=None, ge=0)
-    sha256: str | None = None
-    error: str | None = None
 
 
 class Credential(BaseModel):
