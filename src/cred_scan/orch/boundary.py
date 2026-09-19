@@ -25,6 +25,7 @@ from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.extract.evidence import (
     EvidenceConflictError,
     EvidenceExtractor,
+    evidence_exists,
 )
 from cred_scan.judge.proto import FatalJudgeError
 from cred_scan.orch.credentials import merge_scan
@@ -251,9 +252,10 @@ class Boundary:
 
     def needs_extract(self) -> bool:
         return any(
-            credential.judgment.verdict == "VALID"
-            and (
-                credential.extraction is None or credential.extraction.status == "ERROR"
+            (credential.extraction is not None and credential.extraction.status == "RETAINED")
+            or (
+                credential.judgment.verdict == "VALID"
+                and (credential.extraction is None or credential.extraction.status == "ERROR")
             )
             for credential in self.credentials.credentials.values()
         )
@@ -449,6 +451,18 @@ class Boundary:
     async def _extract(self) -> int:
         retained = 0
         for credential in tuple(self.credentials.credentials.values()):
+            if credential.extraction is not None and credential.extraction.status == "RETAINED":
+                if not evidence_exists(
+                    self.paths.boundary_dir, credential.credential_id, credential.extraction
+                ):
+                    LOGGER.error(
+                        "retained evidence missing boundary=%s credential=%s path=%s; "
+                        "automatic replacement disabled",
+                        self.boundary_id,
+                        credential.credential_id,
+                        credential.extraction.output_path,
+                    )
+                continue
             if credential.judgment.verdict != "VALID":
                 continue
             if not (

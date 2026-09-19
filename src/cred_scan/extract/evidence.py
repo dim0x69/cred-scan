@@ -1,4 +1,4 @@
-"""Safe destinations and integrity checks for first-occurrence evidence."""
+"""Safe destinations, existence checks, and first-occurrence retention."""
 
 from __future__ import annotations
 
@@ -32,21 +32,17 @@ def evidence_path(boundary_dir: Path, credential_id: str, filename: str) -> Path
     return boundary_dir / "evidence" / quote(credential_id, safe="._-") / filename
 
 
-def evidence_matches(
+def evidence_exists(
     boundary_dir: Path, credential_id: str, extraction: ExtractionResult
 ) -> bool:
-    """Verify retained path, size and hash without changing any bytes or metadata."""
+    """Check that the retained path identifies an existing evidence file."""
     if extraction.output_path is None:
         return False
     credential_dir = boundary_dir / "evidence" / quote(credential_id, safe="._-")
     candidate = (boundary_dir / extraction.output_path).resolve()
     if candidate.parent != credential_dir.resolve() or not candidate.is_file():
         return False
-    content = candidate.read_bytes()
-    return (
-        len(content) == extraction.size
-        and hashlib.sha256(content).hexdigest() == extraction.sha256
-    )
+    return True
 
 
 async def retain_first_evidence(

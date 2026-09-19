@@ -4,7 +4,7 @@ import pytest
 
 from cred_scan.extract.evidence import (
     EvidenceConflictError,
-    evidence_matches,
+    evidence_exists,
     evidence_path,
     retain_first_evidence,
 )
@@ -23,8 +23,8 @@ def test_evidence_rejects_non_plain_filename(tmp_path, filename):
 @pytest.mark.parametrize(
     "damage", ["none", "missing", "size", "hash", "path", "symlink"]
 )
-def test_evidence_integrity_checks_do_not_modify_artifacts_or_metadata(
-    tmp_path, damage
+def test_evidence_existence_checks_do_not_read_or_modify_artifacts(
+    tmp_path, damage, monkeypatch
 ):
     boundary = tmp_path / "boundary"
     destination = evidence_path(boundary, "credential/id", "app:prod.env")
@@ -51,7 +51,13 @@ def test_evidence_integrity_checks_do_not_modify_artifacts_or_metadata(
         destination.unlink()
         destination.symlink_to(outside)
     before = metadata.model_dump(mode="json")
-    assert evidence_matches(boundary, "credential/id", metadata) == (damage == "none")
+    with monkeypatch.context() as patch:
+        def forbid_read(*args, **kwargs):
+            raise AssertionError("existence check must not read evidence bytes")
+        patch.setattr(type(destination), "read_bytes", forbid_read)
+        assert evidence_exists(boundary, "credential/id", metadata) == (
+            damage in {"none", "size", "hash"}
+        )
     assert metadata.model_dump(mode="json") == before
     assert outside.read_bytes() == content
     if damage == "missing":
