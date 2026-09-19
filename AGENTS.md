@@ -13,7 +13,7 @@
 
 ## Maintaining invariants
 
-Read [PROJECT_INVARIANTS.md](PROJECT_INVARIANTS.md) before changing project behavior or design. Keep it concise and up to date with user-confirmed rules.
+ALWAYS read [PROJECT_INVARIANTS.md](PROJECT_INVARIANTS.md) before changing project behavior or design. Keep it concise and up to date with user-confirmed rules.
 
 Confirm proposed additions or changes to invariants with the user before recording them as agreed rules. An explicit decision already given by the user is confirmation; do not ask again. Do not infer intended invariants solely from existing code or stale documentation.
 
