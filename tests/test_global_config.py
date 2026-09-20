@@ -30,7 +30,7 @@ def resolved_config(tmp_path, monkeypatch):
         titus=TitusConfig(executable="synthetic-titus"),
         exclusions=ExclusionFiles(paths=paths, credentials=credentials),
         backends=({"name": "artifactory_docker", "base_url": "https://example.invalid"},),
-        artifactory_api_key="synthetic-token",
+        artifactory_access_token="synthetic-token",
         azure_openai_api_key="synthetic-judge-token",
         judge={"base_url": "https://example.invalid/azure"},
     )
@@ -61,7 +61,9 @@ def test_services_read_global_settings_and_secrets(resolved_config):
     workspace = Workspace()
     try:
         assert workspace.workspace_dir == resolved_config.workspace.workspace_dir
-        assert workspace.backend.session.headers["X-JFrog-Art-Api"] == "synthetic-token"
+        assert workspace.backend.session.headers["Authorization"] == (
+            "Bearer synthetic-token"
+        )
         judge = DspyFindingJudge()
         assert judge.model == resolved_config.judge.model
         assert judge._configuration()[0] == "synthetic-judge-token"

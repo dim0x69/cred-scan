@@ -297,7 +297,7 @@
     </ol>
     <div class="gate"><strong>Operator sequence:</strong> invoke <code>inventory</code>, <code>scan</code>, <code>judge</code>, or <code>extract</code>. Workspace applies that command across persisted boundaries concurrently. For each boundary, the operation acquires the boundary-local OS lock before loading documents and holds it through cleanup. A competing command cannot work on the same boundary. Judge never extracts evidence; Extract only consumes saved VALID or UNKNOWN judgments.</div>
     <p class="port">The Boundary is the mutable aggregate. Its inventory, report, and credentials are checkpointed together; there is no scheduler checkpoint or cross-boundary handoff.</p>
-    <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; the Boundary derives its own storage paths from its directory; <code>BackendAdapter</code> and <code>ContentReader</code> are service ports, not serialized models.</p>
+    <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; the Boundary derives its own storage paths from its directory; <code>BackendAdapter</code> and <code>ContentReader</code> are service ports, not serialized models. Artifactory requires HTTPS and uses Bearer authorization; same-origin redirects retain it while cross-origin downloads proceed without credentials.</p>
   </section>
 
   <section id="contracts" aria-labelledby="contracts-title">
@@ -650,7 +650,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
             <li><code>backends: <span class="type">Backend adapter entries[]</span></code>
               <ul><li><code>name: "artifactory_docker"</code> · adapter identity and Pydantic discriminator</li><li><code>base_url: str</code> · <code>platform: str</code></li></ul>
             </li>
-            <li><code>artifactory_api_key: str?</code> · <code>azure_openai_api_key: str?</code><span class="hint">Secret inputs, not pipeline observations.</span></li>
+            <li><code>artifactory_access_token: str?</code> · <code>azure_openai_api_key: str?</code><span class="hint">Secret inputs, not pipeline observations.</span></li>
           </ul>
         </div>
       </details>

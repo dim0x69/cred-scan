@@ -248,7 +248,7 @@ def test_reader_rejects_unmapped_layer_instead_of_searching_other_layers(
             transport=httpx.MockTransport(handler),
             headers={
                 "User-Agent": "cred-scan/0.1",
-                "X-JFrog-Art-Api": "synthetic-token",
+                "Authorization": "Bearer synthetic-token",
             },
             follow_redirects=True,
             timeout=120,
@@ -309,7 +309,7 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
             transport=httpx.MockTransport(handler),
             headers={
                 "User-Agent": "cred-scan/0.1",
-                "X-JFrog-Art-Api": "synthetic-token",
+                "Authorization": "Bearer synthetic-token",
             },
             follow_redirects=True,
             timeout=120,
@@ -366,7 +366,10 @@ def test_reader_reads_the_selected_layer(
     asyncio.run(backend.session.aclose())
     backend.session = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        headers={"User-Agent": "cred-scan/0.1", "X-JFrog-Art-Api": "synthetic-token"},
+        headers={
+            "User-Agent": "cred-scan/0.1",
+            "Authorization": "Bearer synthetic-token",
+        },
         follow_redirects=True,
         timeout=120,
         trust_env=False,

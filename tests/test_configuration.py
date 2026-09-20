@@ -13,7 +13,7 @@ from cred_scan.orch.configuration import YamlConfigLoader
 
 @pytest.fixture(autouse=True)
 def isolate_secrets(monkeypatch):
-    monkeypatch.delenv("ARTIFACTORY_API_KEY", raising=False)
+    monkeypatch.delenv("ARTIFACTORY_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
 
 
@@ -39,7 +39,7 @@ backends:
     assert config.backends[0]["name"] == "artifactory_docker"
     assert config.workspace.workspace_dir == (tmp_path / "workspace").resolve()
     assert config.exclusions.paths == (tmp_path / "path-exclusions.list").resolve()
-    assert config.artifactory_api_key is None
+    assert config.artifactory_access_token is None
 
 
 def test_workspace_config_rejects_removed_results_override(tmp_path: Path) -> None:
@@ -69,18 +69,18 @@ backends:
         encoding="utf-8",
     )
     (tmp_path / ".env").write_text(
-        "ARTIFACTORY_API_KEY=from-dotenv\nAZURE_OPENAI_API_KEY=judge-dotenv\n",
+        "ARTIFACTORY_ACCESS_TOKEN=from-dotenv\nAZURE_OPENAI_API_KEY=judge-dotenv\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("ARTIFACTORY_API_KEY", "from-process")
+    monkeypatch.setenv("ARTIFACTORY_ACCESS_TOKEN", "from-process")
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     before = dict(os.environ)
 
     config = asyncio.run(YamlConfigLoader().load(config_path))
 
-    assert config.artifactory_api_key is not None
+    assert config.artifactory_access_token is not None
     assert config.azure_openai_api_key is not None
-    assert config.artifactory_api_key.get_secret_value() == "from-process"
+    assert config.artifactory_access_token.get_secret_value() == "from-process"
     assert config.azure_openai_api_key.get_secret_value() == "judge-dotenv"
     assert config.titus.executable == str((tmp_path / "titus").resolve())
     assert dict(os.environ) == before
@@ -125,7 +125,7 @@ def runtime_settings():
 def test_secret_fields_are_masked_from_each_source(
     tmp_path, monkeypatch, runtime_settings, source
 ):
-    names = ("ARTIFACTORY_API_KEY", "AZURE_OPENAI_API_KEY")
+    names = ("ARTIFACTORY_ACCESS_TOKEN", "AZURE_OPENAI_API_KEY")
     if source == "yaml":
         runtime_settings.update({name: "synthetic-secret" for name in names})
     elif source == "environment":
@@ -138,7 +138,7 @@ def test_secret_fields_are_masked_from_each_source(
     path = tmp_path / "config.yml"
     path.write_text(yaml.safe_dump(runtime_settings))
     config = asyncio.run(YamlConfigLoader().load(path))
-    for secret in (config.artifactory_api_key, config.azure_openai_api_key):
+    for secret in (config.artifactory_access_token, config.azure_openai_api_key):
         assert isinstance(secret, SecretStr)
         assert secret.get_secret_value() == "synthetic-secret"
         assert "synthetic-secret" not in str(secret)

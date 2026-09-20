@@ -20,7 +20,7 @@ class ArtifactoryBackend(BackendAdapter):
         self,
         name: str,
         base_url: str,
-        token: str,
+        access_token: str,
     ) -> None:
         self._name = name
         normalized = base_url.rstrip("/")
@@ -29,10 +29,13 @@ class ArtifactoryBackend(BackendAdapter):
             if normalized.endswith("/artifactory")
             else f"{normalized}/artifactory"
         )
-        if not token.strip():
-            raise ArtifactoryError("set ARTIFACTORY_API_KEY")
+        if not access_token.strip():
+            raise ArtifactoryError("set ARTIFACTORY_ACCESS_TOKEN")
         self.session = httpx.AsyncClient(
-            headers={"User-Agent": "cred-scan/0.1", "X-JFrog-Art-Api": token},
+            headers={
+                "User-Agent": "cred-scan/0.1",
+                "Authorization": f"Bearer {access_token}",
+            },
             follow_redirects=True,
             timeout=120,
             trust_env=True,

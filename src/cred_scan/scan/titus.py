@@ -98,12 +98,12 @@ class TitusCliScanner(CredentialScanner):
         self.config = get_config().titus
         self.inventory = inventory
         self.backend = backend
-        secret = get_config().artifactory_api_key
-        api_key = secret.get_secret_value() if secret is not None else ""
+        secret = get_config().artifactory_access_token
+        access_token = secret.get_secret_value() if secret is not None else ""
         self.environment = {
-            "ARTIFACTORY_PASSWORD": api_key,
-            "ARTIFACTORY_TOKEN": api_key,
-            "ARTIFACTORY_API_KEY": api_key,
+            "ARTIFACTORY_PASSWORD": access_token,
+            "ARTIFACTORY_TOKEN": access_token,
+            "ARTIFACTORY_API_KEY": access_token,
         }
 
     async def scan(

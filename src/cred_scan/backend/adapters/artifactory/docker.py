@@ -420,7 +420,7 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         base_url: str,
         platform: str,
     ) -> None:
-        secret = get_config().artifactory_api_key
+        secret = get_config().artifactory_access_token
         super().__init__(
             name, base_url, secret.get_secret_value() if secret is not None else ""
         )

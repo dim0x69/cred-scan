@@ -18,7 +18,7 @@ from cred_scan.scan.models import Credential, CredentialOccurrence, ExclusionFil
 
 @pytest.fixture(autouse=True)
 def isolate_credentials(monkeypatch) -> None:
-    monkeypatch.delenv("ARTIFACTORY_API_KEY", raising=False)
+    monkeypatch.delenv("ARTIFACTORY_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
 
 

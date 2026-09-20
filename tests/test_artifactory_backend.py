@@ -36,7 +36,7 @@ def make_backend(handler):
             transport=httpx.MockTransport(handler),
             headers={
                 "User-Agent": "cred-scan/0.1",
-                "X-JFrog-Art-Api": "synthetic-token",
+                "Authorization": "Bearer synthetic-token",
             },
             follow_redirects=True,
             timeout=120,
@@ -81,7 +81,8 @@ def test_async_backend_preserves_authentication_and_paginates_catalog():
     assert images == {"team/api", "team/web"}
     assert seen
     assert all(
-        request.headers["X-JFrog-Art-Api"] == "synthetic-token" for request in seen
+        request.headers["Authorization"] == "Bearer synthetic-token"
+        for request in seen
     )
     assert all(request.headers["User-Agent"] == "cred-scan/0.1" for request in seen)
 
@@ -160,7 +161,9 @@ def test_artifactory_owns_config_and_name_without_a_backend_superclass(
     config.name = "renamed"
     assert backend.name == "renamed"  # Preserve the original live config/name behavior.
     assert backend.platform == "linux/amd64"
-    assert client.call_args.kwargs["headers"]["X-JFrog-Art-Api"] == "synthetic-token"
+    assert client.call_args.kwargs["headers"]["Authorization"] == (
+        "Bearer synthetic-token"
+    )
     assert not list(tmp_path.iterdir())
 
 
@@ -169,7 +172,7 @@ def test_missing_token_still_raises_artifactory_error_before_client_creation(
 ):
     client = Mock()
     monkeypatch.setattr(httpx, "AsyncClient", client)
-    with pytest.raises(ArtifactoryError, match="set ARTIFACTORY_API_KEY"):
+    with pytest.raises(ArtifactoryError, match="set ARTIFACTORY_ACCESS_TOKEN"):
         ArtifactoryDockerBackend(
             ArtifactoryBackendConfig(
                 name="primary", base_url="https://example.invalid"

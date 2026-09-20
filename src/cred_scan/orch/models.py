@@ -85,9 +85,9 @@ class AppConfig(BaseSettings):
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles
     backends: tuple[dict[str, Any], ...] = Field(min_length=1)
-    artifactory_api_key: SecretStr | None = Field(
+    artifactory_access_token: SecretStr | None = Field(
         default=None,
-        validation_alias="ARTIFACTORY_API_KEY",
+        validation_alias="ARTIFACTORY_ACCESS_TOKEN",
         repr=False,
     )
     azure_openai_api_key: SecretStr | None = Field(
