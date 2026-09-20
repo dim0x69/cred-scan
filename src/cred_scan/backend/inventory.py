@@ -16,13 +16,9 @@ def merge_inventory(
         raise ValueError("incomplete inventory discovery: " + "; ".join(discovered.errors))
 
     known = {target.id: target for target in current.targets} if current else {}
-    targets = tuple(
-        target.model_copy(update={
-            "result": known[target.id].result.model_copy(deep=True)
-            if target.id in known else ScanTargetResult(),
-        })
-        for target in discovered.targets
-    )
-    return discovered.model_copy(update={
-        "targets": targets, "lifecycle": "active", "stale_reason": None, "errors": (),
-    })
+    for target in discovered.targets:
+        target.result = known[target.id].result if target.id in known else ScanTargetResult()
+    discovered.lifecycle = "active"
+    discovered.stale_reason = None
+    discovered.errors = ()
+    return discovered

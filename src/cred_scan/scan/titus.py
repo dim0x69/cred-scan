@@ -110,8 +110,7 @@ class TitusCliScanner(CredentialScanner):
         work_dir: Path,
         datastore: Path,
     ) -> ScanTarget:
-        # Return a new target: Boundary keeps the stored target running
-        # until complete_target() installs this terminal result.
+        # Update the boundary-owned target; Boundary checkpoints after retries.
         try:
             source_arguments = self.backend.titus_scan_arguments(self.inventory, target)
         except UnsupportedTitusTargetError as error:
@@ -120,17 +119,10 @@ class TitusCliScanner(CredentialScanner):
                 target.id,
                 error,
             )
-            return target.model_copy(
-                update={
-                    "result": target.result.model_copy(
-                        update={
-                            "status": "failed",
-                            "errors": (str(error),),
-                            "retryable": False,
-                        }
-                    )
-                }
-            )
+            target.result.status = "failed"
+            target.result.errors = (str(error),)
+            target.result.retryable = False
+            return target
         work_dir.mkdir(parents=True, exist_ok=True)
         command = [
             self.config.executable,
@@ -158,18 +150,11 @@ class TitusCliScanner(CredentialScanner):
             )
         except OSError as error:
             LOGGER.exception("Titus process could not start target=%s", target.id)
-            return target.model_copy(
-                update={
-                    "result": target.result.model_copy(
-                        update={
-                            "status": "failed",
-                            "errors": (str(error),),
-                            "started_at": started,
-                            "finished_at": datetime.now(UTC),
-                        }
-                    )
-                }
-            )
+            target.result.status = "failed"
+            target.result.errors = (str(error),)
+            target.result.started_at = started
+            target.result.finished_at = datetime.now(UTC)
+            return target
         warnings = 0
         permanent_failure = False
         try:
@@ -201,17 +186,13 @@ class TitusCliScanner(CredentialScanner):
                 return_code,
                 "; ".join(errors),
             )
-        result = target.result.model_copy(
-            update={
-                "status": "scanned" if not errors else "failed",
-                "return_code": return_code,
-                "errors": errors,
-                "retryable": not permanent_failure,
-                "started_at": started,
-                "finished_at": datetime.now(UTC),
-            }
-        )
-        return target.model_copy(update={"result": result})
+        target.result.status = "scanned" if not errors else "failed"
+        target.result.return_code = return_code
+        target.result.errors = errors
+        target.result.retryable = not permanent_failure
+        target.result.started_at = started
+        target.result.finished_at = datetime.now(UTC)
+        return target
 
     async def export_report(self, datastore: Path) -> TitusReport:
         try:

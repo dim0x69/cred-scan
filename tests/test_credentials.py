@@ -1,4 +1,4 @@
-"""Credential publication merge is pure; lifecycle persistence is tested separately."""
+"""Credential publication mutates owned state; lifecycle persistence is tested separately."""
 
 import pytest
 from pydantic import ValidationError
@@ -23,6 +23,7 @@ def document_for(inventory, credential, **metadata):
 
 
 def retained_document(inventory, credential):
+    credential = credential.model_copy(deep=True)
     document = merge_scan(None, document_for(inventory, credential))
     saved = document.credentials[credential.credential_id]
     saved.judgment = JudgmentResult(verdict="VALID")
@@ -122,7 +123,6 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
     if stored_split:
         # Current schema permits split entries; every one must be folded.
         original.credentials[credential.credential_id].occurrences = (first, second)
-    before = original.model_dump(mode="json")
     candidate = history.model_copy(
         update={
             "occurrences": (second,),
@@ -140,7 +140,7 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
     assert saved.judgment.verdict == "VALID"
     assert saved.extraction == retained
     assert published.incomplete and published.errors == ("partial",)
-    assert original.model_dump(mode="json") == before
+    assert published is original
     assert merge_scan(published, partial) == published
     reversed_report = partial.model_copy(
         update={
@@ -160,13 +160,12 @@ def test_append_normalizes_duplicate_occurrences_on_first_write(
     occurrence = credential.occurrences[0]
     candidate = credential.model_copy(update={"occurrences": (occurrence, occurrence)})
     document = document_for(repository_inventory, candidate)
-    before = document.model_dump(mode="json")
     published = merge_scan(None, document)
     saved = published.credentials[credential.credential_id]
     assert len(saved.occurrences) == 1
     assert saved.occurrences == (occurrence,)
     assert merge_scan(published, document) == published
-    assert document.model_dump(mode="json") == before
+    assert published is document
 
 
 def test_append_adds_new_pin_and_credential_without_losing_absent_history(
@@ -174,6 +173,7 @@ def test_append_adds_new_pin_and_credential_without_losing_absent_history(
 ):
     document = retained_document(repository_inventory, credential)
     old = document.credentials[credential.credential_id]
+    old_occurrences = old.occurrences
     new_occurrence = credential.occurrences[0].model_copy(
         update={
             "locator": credential.occurrences[0].locator.replace("manifest", "second")
@@ -182,7 +182,8 @@ def test_append_adds_new_pin_and_credential_without_losing_absent_history(
     candidate = credential.model_copy(update={"occurrences": (new_occurrence,)})
     published = merge_scan(document, document_for(repository_inventory, candidate))
     saved = published.credentials[credential.credential_id]
-    assert saved.occurrences == old.occurrences + (new_occurrence,)
+    assert saved is old
+    assert saved.occurrences == old_occurrences + (new_occurrence,)
     assert saved.extraction == old.extraction
     assert saved.judgment == old.judgment
     other = candidate.model_copy(update={"credential_id": "another-credential"})

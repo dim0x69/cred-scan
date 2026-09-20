@@ -687,6 +687,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
     <p class="eyebrow">04 / Persistence &amp; ownership</p>
     <h2 id="storage-title">What stays, what changes, what is temporary.</h2>
     <p class="section-intro">One backend → one report boundary → its selected scan targets and retained artifacts. Documents never combine findings from different boundaries. Inventory, report, judgment, and extraction writes are individual checkpoints, not a multi-document transaction.</p>
+    <p>Scan, judge, and extract directly mutate their owned in-memory Pydantic objects. Updates and merges do not copy models to preserve previous in-memory state. Discovery and candidate conversion finish before their results are applied. At each checkpoint, Boundary functions serialize every available document completely into the workspace, replacing each file atomically. Exceptions: Titus writes its cumulative datastore during scanning, and the extractor writes retained evidence bytes before Boundary checkpoints their extraction metadata.</p>
     <div class="table-scroll" role="region" aria-label="Persisted artifacts" tabindex="0">
       <table>
         <thead><tr><th scope="col">Artifact under boundary/</th><th scope="col">Model</th><th scope="col">Written by</th><th scope="col">Lifetime / meaning</th></tr></thead>

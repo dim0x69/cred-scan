@@ -1,4 +1,4 @@
-"""Pure append/merge policy for a boundary's credential checkpoint."""
+"""In-memory append/merge policy for a boundary's credentials."""
 
 from cred_scan.scan.models import CredentialOccurrence, CredentialsDocument
 
@@ -9,29 +9,22 @@ def merge_scan(
     """Append observations in first-seen order without erasing historical state."""
     if previous is not None and previous.boundary_id != discovered.boundary_id:
         raise ValueError("cannot merge credentials from another boundary")
-    updated = dict(previous.credentials) if previous is not None else {}
+    document = previous if previous is not None else discovered
     for credential_id, candidate in discovered.credentials.items():
-        old = updated.get(credential_id)
-        if old is None:
-            updated[credential_id] = candidate.model_copy(
-                update={"occurrences": _merge_occurrences((), candidate.occurrences)}
-            )
+        old = document.credentials.get(credential_id)
+        if old is None or old is candidate:
+            candidate.occurrences = _merge_occurrences((), candidate.occurrences)
+            document.credentials[credential_id] = candidate
             continue
-        updated[credential_id] = old.model_copy(
-            update={
-                "credential": old.credential or candidate.credential,
-                "occurrences": _merge_occurrences(
-                    old.occurrences, candidate.occurrences
-                ),
-                "judgment": (
-                    old.judgment
-                    if old.judgment.verdict != "PENDING"
-                    else candidate.judgment
-                ),
-                "extraction": old.extraction or candidate.extraction,
-            }
-        )
-    return discovered.model_copy(update={"credentials": updated})
+        old.credential = old.credential or candidate.credential
+        old.occurrences = _merge_occurrences(old.occurrences, candidate.occurrences)
+        if old.judgment.verdict == "PENDING":
+            old.judgment = candidate.judgment
+        old.extraction = old.extraction or candidate.extraction
+    document.report_generated_at = discovered.report_generated_at
+    document.incomplete = discovered.incomplete
+    document.errors = discovered.errors
+    return document
 
 
 def _merge_occurrences(

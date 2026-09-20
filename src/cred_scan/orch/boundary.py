@@ -316,8 +316,7 @@ class Boundary:
             target.result.started_at = datetime.now(UTC)
             target.result.finished_at = None
             self.checkpoint()
-            result = await self._scan_target(target.model_copy(deep=True))
-            self.inventory.complete_target(result)
+            result = await self._scan_target(target)
             self.checkpoint()
             LOGGER.info(
                 "scanned target=%s status=%s retryable=%s",
@@ -337,12 +336,9 @@ class Boundary:
         )
 
         report = await self.scanner.export_report(self.paths.datastore)
-        self.report = report.model_copy(
-            update={
-                "incomplete": report.incomplete or incomplete,
-                "errors": tuple(report.errors) + self.inventory.errors,
-            }
-        )
+        report.incomplete = report.incomplete or incomplete
+        report.errors = tuple(report.errors) + self.inventory.errors
+        self.report = report
         self._has_report = True
         self.checkpoint()
 

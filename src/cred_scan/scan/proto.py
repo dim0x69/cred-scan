@@ -23,7 +23,7 @@ class CredentialScanner(Protocol):
         work_dir: Path,
         datastore: Path,
     ) -> ScanTarget:
-        """Finish or stop the target's subprocess before returning or raising."""
+        """Update and return the owned target after its subprocess finishes or stops."""
         ...
 
     async def export_report(self, datastore: Path) -> TitusReport: ...

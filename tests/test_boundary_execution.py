@@ -83,16 +83,9 @@ def make_workspace(tmp_path, app_config, repository_inventory, monkeypatch):
 
 
 def completed(target, status="scanned", retryable=True):
-    return target.model_copy(
-        update={
-            "result": target.result.model_copy(
-                update={
-                    "status": status,
-                    "retryable": retryable,
-                }
-            )
-        }
-    )
+    target.result.status = status
+    target.result.retryable = retryable
+    return target
 
 
 def export_for(boundary):

@@ -97,29 +97,3 @@ class ScanBoundaryInventory(BaseModel):
         if len(scope_ids) != len(set(scope_ids)):
             raise ValueError("inventory must select only one scan target per scope")
         return self
-
-    def replace_target(self, replacement: ScanTarget) -> "ScanBoundaryInventory":
-        existing = next(
-            (item for item in self.targets if item.id == replacement.id), None
-        )
-        if existing is None:
-            raise KeyError(f"target does not exist: {replacement.id}")
-        if existing.model_dump(exclude={"result"}) != replacement.model_dump(
-            exclude={"result"}
-        ):
-            raise ValueError("target updates must preserve immutable source identity")
-        self.targets = tuple(
-            replacement if target.id == replacement.id else target
-            for target in self.targets
-        )
-        return self
-
-    def complete_target(self, target: ScanTarget) -> "ScanBoundaryInventory":
-        if target.result.status not in {"scanned", "partial", "failed"}:
-            raise ValueError("target updates must be terminal")
-        existing = next((item for item in self.targets if item.id == target.id), None)
-        if existing is None:
-            raise KeyError(f"target does not exist: {target.id}")
-        if existing.result.status != "running":
-            raise ValueError(f"target was not reserved: {target.id}")
-        return self.replace_target(target)

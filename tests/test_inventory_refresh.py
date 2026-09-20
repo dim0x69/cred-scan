@@ -143,7 +143,7 @@ def test_merge_reuses_results_but_refreshes_metadata(previous):
     fresh.targets[0].scope.tags = ("new-tag",)
     merged = merge_inventory(previous, fresh)
     assert merged.targets[0].result == previous.targets[0].result
-    assert merged.targets[0].result is not previous.targets[0].result
+    assert merged.targets[0].result is previous.targets[0].result
     assert merged.targets[0].scope.tags == ("new-tag",)
 
 

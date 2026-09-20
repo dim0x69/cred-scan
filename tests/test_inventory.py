@@ -261,48 +261,6 @@ def test_inventory_rejects_targets_from_another_boundary(repository_inventory):
         )
 
 
-def test_inventory_target_replacement_preserves_pinned_identity(repository_inventory):
-    target = repository_inventory.targets[0]
-    running = target.model_copy(
-        update={
-            "result": target.result.model_copy(update={"status": "running"}),
-        }
-    )
-
-    result = repository_inventory.replace_target(running)
-
-    assert result is repository_inventory
-    assert result.targets[0] == running
-
-    changed_scope = running.model_copy(
-        update={"scope": running.scope.model_copy(update={"digest": "sha256:other"})}
-    )
-    with pytest.raises(ValueError, match="pinned source identity"):
-        repository_inventory.replace_target(changed_scope)
-
-
-def test_inventory_target_completion_requires_running_target(repository_inventory):
-    target = repository_inventory.targets[0]
-    terminal = target.model_copy(
-        update={
-            "result": target.result.model_copy(update={"status": "scanned"}),
-        }
-    )
-
-    with pytest.raises(ValueError, match="was not reserved"):
-        repository_inventory.complete_target(terminal)
-
-    running = target.model_copy(
-        update={
-            "result": target.result.model_copy(update={"status": "running"}),
-        }
-    )
-    repository_inventory.replace_target(running)
-    completed = repository_inventory.complete_target(terminal)
-
-    assert completed.targets[0] == terminal
-
-
 def test_run_inventory_retires_error_only_empty_boundary(
     app_config, repository_inventory, monkeypatch
 ):
