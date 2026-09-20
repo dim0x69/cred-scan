@@ -1,1 +1,1 @@
-1. Align configuration sources with the agreed separation: runtime settings from config.yml; API keys and other secrets from environment variables or .env. Current settings sources accept YAML secrets and environment-provided nonsecret settings; restrict those sources and update configuration tests and documentation.
+No outstanding items.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -85,12 +85,12 @@ class AppConfig(BaseSettings):
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles
     backends: tuple[dict[str, Any], ...] = Field(min_length=1)
-    artifactory_api_key: str | None = Field(
+    artifactory_api_key: SecretStr | None = Field(
         default=None,
         validation_alias="ARTIFACTORY_API_KEY",
         repr=False,
     )
-    azure_openai_api_key: str | None = Field(
+    azure_openai_api_key: SecretStr | None = Field(
         default=None,
         validation_alias="AZURE_OPENAI_API_KEY",
         repr=False,

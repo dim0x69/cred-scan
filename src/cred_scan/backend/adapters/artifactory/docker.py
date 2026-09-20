@@ -420,7 +420,10 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         base_url: str,
         platform: str,
     ) -> None:
-        super().__init__(name, base_url, get_config().artifactory_api_key or "")
+        secret = get_config().artifactory_api_key
+        super().__init__(
+            name, base_url, secret.get_secret_value() if secret is not None else ""
+        )
         # Platform selection is a Docker concern, not common Artifactory setup.
         self.platform = platform
 

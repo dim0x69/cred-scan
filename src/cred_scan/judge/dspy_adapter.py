@@ -118,7 +118,8 @@ class DspyFindingJudge(FindingJudge):
             raise FatalJudgeError(
                 f"unsupported judge provider: {config.judge.provider}"
             )
-        api_key = config.azure_openai_api_key or ""
+        secret = config.azure_openai_api_key
+        api_key = secret.get_secret_value() if secret is not None else ""
         if not api_key.strip():
             raise FatalJudgeError("set AZURE_OPENAI_API_KEY")
         base_url = config.judge.base_url
