@@ -18,6 +18,7 @@ def merge_inventory(
     known = {target.id: target for target in current.targets} if current else {}
     for target in discovered.targets:
         target.result = known[target.id].result if target.id in known else ScanTargetResult()
+    discovered.publication_pending = bool(current and current.publication_pending)
     discovered.lifecycle = "active"
     discovered.stale_reason = None
     discovered.errors = ()

@@ -16,7 +16,7 @@ from cred_scan.orch.runtime import LocalRuntime
 LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(
-    help="Backend-agnostic credential scanner; each invocation processes boundaries concurrently.",
+    help="Backend-agnostic credential scanner; commands process boundaries concurrently.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -81,7 +81,7 @@ def scan(
         Path, typer.Option("--config", "-c", help="Central configuration file.")
     ] = Path("config.yml"),
 ) -> None:
-    """Scan boundaries concurrently, with sequential scan targets per boundary."""
+    """Scan boundaries concurrently, with sequential targets per boundary."""
     _run(
         "scan",
         config,
@@ -118,7 +118,6 @@ def extract(
         lambda runtime: runtime.extract(),
         "extracted {count} credential(s)",
     )
-
 
 if __name__ == "__main__":
     app()

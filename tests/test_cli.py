@@ -8,6 +8,11 @@ from cred_scan import cli
 from cred_scan.orch.models import AppConfig
 
 
+@pytest.fixture
+def app_config() -> AppConfig:
+    return Mock(spec=AppConfig)
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -35,7 +40,8 @@ def test_help_does_not_load_configuration_or_start_runtime(
 
 def test_missing_config_is_rejected(tmp_path) -> None:
     result = CliRunner().invoke(
-        cli.app, ["inventory", "--config", str(tmp_path / "missing.yml")]
+        cli.app,
+        ["inventory", "--config", str(tmp_path / "missing.yml")],
     )
 
     assert result.exit_code != 0

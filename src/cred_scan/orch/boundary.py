@@ -1,4 +1,4 @@
-"""One fully loaded boundary's inventory, scan, judgment, and evidence operations."""
+"""One exclusively owned boundary's inventory, scan, judgment, and evidence."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.orch.fsync import fsync_directory
+from cred_scan.orch.locking import boundary_lock
 from cred_scan.orch.models import BoundaryPaths
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.extract.evidence import (
@@ -42,12 +43,8 @@ LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
 
 
-class BoundaryBusyError(FileExistsError):
-    """Another operation owns this boundary's persisted sentinel."""
-
-
 class Boundary:
-    """Fully loaded mutable aggregate for one persisted report boundary."""
+    """Mutable aggregate loaded only while its boundary is exclusively owned."""
 
     def __init__(self, backend: BackendAdapter, path: Path) -> None:
         self.boundary_id = unquote(path.name)
@@ -56,76 +53,57 @@ class Boundary:
             boundary_dir=path,
         )
 
-        # Construction reads one consistent boundary snapshot.
-        with self._lock():
-            inventory = self._read(
-                self.paths.inventory,
-                ScanBoundaryInventory,
-            )
-            if inventory is None:
-                raise ValueError(f"missing boundary inventory: {self.paths.inventory}")
-            if inventory.boundary.id != self.boundary_id:
-                raise ValueError(
-                    "boundary inventory does not match boundary path: "
-                    f"{self.paths.inventory}"
-                )
-            report = self._read(self.paths.report, TitusReport)
-            if report is not None and report.boundary_id != self.boundary_id:
-                raise ValueError(
-                    f"report belongs to another boundary: {self.paths.report}"
-                )
-
-            credentials = self._read(
-                self.paths.credentials,
-                CredentialsDocument,
-            )
-            if credentials is not None and credentials.boundary_id != self.boundary_id:
-                raise ValueError(
-                    f"credentials belong to another boundary: {self.paths.credentials}"
-                )
-
-            self.inventory: ScanBoundaryInventory = inventory
-            self.report: TitusReport = report or TitusReport(
-                boundary_id=self.boundary_id,
-                generated_at="",
-                incomplete=True,
-            )
-            self.credentials: CredentialsDocument = credentials or (
-                CredentialsDocument(
-                    boundary_id=self.boundary_id,
-                    report_generated_at="",
-                    incomplete=True,
-                )
-            )
-            self._has_report = report is not None
-            self._has_credentials = credentials is not None
-
         self.backend = backend
-        self.reader: ContentReader = self.backend.content_reader(
-            self.scratch_dir,
-        )
-        self.judge_service = DspyFindingJudge()
-        self.scanner = TitusCliScanner(self.inventory, self.backend)
+        self.reader: ContentReader | None = None
+        self.judge_service: DspyFindingJudge | None = None
+        self.scanner: TitusCliScanner | None = None
         self._operation_active = False
         self._operation_lock = asyncio.Lock()
-        self.extractor = EvidenceExtractor(self.paths.boundary_dir)
+        self.extractor: EvidenceExtractor | None = None
 
-    @contextmanager
-    def _lock(self) -> Iterator[None]:
-        """Own this boundary with an atomically created sentinel file."""
-        path = self.paths.operation_lock
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            stream = path.open("x", encoding="utf-8")
-        except FileExistsError as error:
-            raise BoundaryBusyError(f"boundary busy: {self.boundary_id}") from error
+    def _load(self) -> None:
+        """Load the aggregate while holding boundary ownership."""
+        inventory = self._read(
+            self.paths.inventory,
+            ScanBoundaryInventory,
+        )
+        if inventory is None:
+            raise ValueError(f"missing boundary inventory: {self.paths.inventory}")
+        if inventory.boundary.id != self.boundary_id:
+            raise ValueError(
+                "boundary inventory does not match boundary path: "
+                f"{self.paths.inventory}"
+            )
+        report = self._read(self.paths.report, TitusReport)
+        if report is not None and report.boundary_id != self.boundary_id:
+            raise ValueError(
+                f"report belongs to another boundary: {self.paths.report}"
+            )
 
-        try:
-            with stream:
-                stream.write("locked\n")
-            yield
-        finally:
-            path.unlink(missing_ok=True)
+        credentials = self._read(
+            self.paths.credentials,
+            CredentialsDocument,
+        )
+        if credentials is not None and credentials.boundary_id != self.boundary_id:
+            raise ValueError(
+                f"credentials belong to another boundary: {self.paths.credentials}"
+            )
+
+        self.inventory: ScanBoundaryInventory = inventory
+        self.report: TitusReport = report or TitusReport(
+            boundary_id=self.boundary_id,
+            generated_at="",
+            incomplete=True,
+        )
+        self.credentials: CredentialsDocument = credentials or (
+            CredentialsDocument(
+                boundary_id=self.boundary_id,
+                report_generated_at="",
+                incomplete=True,
+            )
+        )
+        self._has_report = report is not None
+        self._has_credentials = credentials is not None
 
     @staticmethod
     def _read(
@@ -177,8 +155,10 @@ class Boundary:
                 pass
 
     async def aclose(self) -> None:
-        """Close the boundary reader and release its scratch context."""
-        await self.reader.aclose()
+        """Close an active reader, if command cleanup was interrupted."""
+        if self.reader is not None:
+            await self.reader.aclose()
+            self.reader = None
 
     @contextmanager
     def scratch_dir(self) -> Iterator[Path]:
@@ -196,14 +176,28 @@ class Boundary:
 
     @asynccontextmanager
     async def operation(self) -> AsyncIterator[Boundary]:
-        """Serialize this boundary's stages without blocking other boundaries."""
+        """Own one boundary from state load through command cleanup."""
         async with self._operation_lock:
-            with self._lock():
-                self._operation_active = True
+            with boundary_lock(self.paths.operation_lock) as descriptor:
+                self._load()
+                self.reader = self.backend.content_reader(self.scratch_dir)
                 try:
+                    self.judge_service = DspyFindingJudge()
+                    self.scanner = TitusCliScanner(self.inventory, self.backend)
+                    self.extractor = EvidenceExtractor(self.paths.boundary_dir)
+                    self.scanner.lock_fd = descriptor
+                    self._operation_active = True
                     yield self
                 finally:
                     self._operation_active = False
+                    if self.scanner is not None:
+                        self.scanner.lock_fd = None
+                    if self.reader is not None:
+                        await self.reader.aclose()
+                    self.reader = None
+                    self.judge_service = None
+                    self.scanner = None
+                    self.extractor = None
 
     def checkpoint(self) -> None:
         """Persist this boundary's current aggregate."""
@@ -225,6 +219,8 @@ class Boundary:
             )
 
     def needs_scan(self) -> bool:
+        if self.inventory.publication_pending:
+            return True
         if self.inventory.lifecycle == "stale" or not self.inventory.targets:
             return False
         return (
@@ -267,6 +263,7 @@ class Boundary:
 
             merged = merge_inventory(self.inventory, discovered)
             await self.reader.aclose()
+            self.reader = None
             self.inventory = merged
             self.reader = self.backend.content_reader(
                 self.scratch_dir,
@@ -283,9 +280,8 @@ class Boundary:
             return True
 
     async def _scan(self) -> None:
-        if self.inventory.lifecycle == "stale":
-            raise ValueError("cannot scan a stale boundary")
-
+        self.inventory.publication_pending = True
+        self.checkpoint()
         self.scanner.inventory = self.inventory
         interrupted = [
             target
@@ -300,7 +296,7 @@ class Boundary:
         eligible = tuple(
             target
             for target in self.inventory.targets
-            if (
+            if self.inventory.lifecycle != "stale" and (
                 target.result.status in {"pending", "running"}
                 or (
                     target.result.status in {"failed", "partial"}
@@ -350,6 +346,9 @@ class Boundary:
 
         self.credentials = merge_scan(self.credentials, candidates)
         self._has_credentials = True
+        self.checkpoint()
+        # Clear only after the report and merged credentials are durable.
+        self.inventory.publication_pending = False
         self.checkpoint()
 
         LOGGER.info(

@@ -1,14 +1,13 @@
-"""Offline inventory 8 -> 9 migration to latest-only scan targets.
+"""Offline inventory 8/9 -> 10 migration with publication recovery.
 
 Credentials, reports, cumulative Titus datastores, and evidence are untouched.
-Original inventories are backed up under .inventory-v8-backup before replacement.
+Original inventories are backed up before replacement.
 """
 
 import argparse
 import json
 import os
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import quote, unquote
@@ -17,22 +16,10 @@ from pydantic import BaseModel
 
 from cred_scan.backend.models import ScanBoundaryInventory
 from cred_scan.orch.fsync import fsync_directory
+from cred_scan.orch.locking import boundary_lock
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
-
-
-@contextmanager
-def _boundary_lock(path: Path) -> Iterator[None]:
-    """Own one boundary using the same sentinel convention as Boundary."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write("locked\n")
-
-    try:
-        yield
-    finally:
-        path.unlink(missing_ok=True)
 
 
 class _WorkspaceStorage:
@@ -56,9 +43,6 @@ class _WorkspaceStorage:
                     f"noncanonical boundary directory: {inventory_path.parent}"
                 )
             yield boundary_path
-
-    def lock(self, boundary_path: Path) -> AbstractContextManager[None]:
-        return _boundary_lock(boundary_path / ".operation.lock")
 
     def read(
         self,
@@ -137,14 +121,15 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
         )
 
     store = _WorkspaceStorage(workspace_dir)
-    pending: list[tuple[Path, bytes, ScanBoundaryInventory]] = []
+    pending: list[tuple[Path, bytes, int, ScanBoundaryInventory]] = []
 
     for boundary_path in store.boundaries:
         inventory_path = boundary_path / "inventory.json"
-        with store.lock(boundary_path):
+        with boundary_lock(boundary_path / ".operation.lock"):
             original_bytes = inventory_path.read_bytes()
-            original = _payload(inventory_path, {8, 9})
-            payload = original
+            original = _payload(inventory_path, {8, 9, 10})
+            original_version = original["schema_version"]
+            payload = dict(original)
             if original["schema_version"] == 8:
                 targets = []
                 for target in original["targets"]:
@@ -159,7 +144,12 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
                     scope.pop("pin_id", None)
                     target["scope"] = scope
                     targets.append(target)
-                payload = {**original, "schema_version": 9, "targets": targets}
+                payload["targets"] = targets
+            if original_version in {8, 9}:
+                payload["schema_version"] = 10
+                payload["publication_pending"] = (
+                    boundary_path / "titus.ds"
+                ).exists()
             inventory = _validate(inventory_path, ScanBoundaryInventory, payload)
             if boundary_path.name != quote(inventory.boundary.id, safe=""):
                 raise ValueError(
@@ -171,15 +161,22 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
                 8,
                 CredentialsDocument,
             )
-            if original["schema_version"] == 8:
-                pending.append((boundary_path, original_bytes, inventory))
+            if original_version in {8, 9}:
+                pending.append(
+                    (boundary_path, original_bytes, original_version, inventory)
+                )
 
     if apply:
-        for boundary_path, original_bytes, inventory in pending:
-            with store.lock(boundary_path):
+        for boundary_path, original_bytes, original_version, inventory in pending:
+            with boundary_lock(boundary_path / ".operation.lock"):
                 if (boundary_path / "inventory.json").read_bytes() != original_bytes:
                     raise ValueError(f"inventory changed during migration: {boundary_path}")
-                backup = workspace_dir / ".inventory-v8-backup" / boundary_path.name / "inventory.json"
+                backup = (
+                    workspace_dir
+                    / f".inventory-v{original_version}-backup"
+                    / boundary_path.name
+                    / "inventory.json"
+                )
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 with backup.open("xb") as stream:
                     stream.write(original_bytes)

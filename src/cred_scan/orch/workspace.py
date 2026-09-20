@@ -4,21 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import quote, unquote
 
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
 from cred_scan.backend.proto import BackendAdapter
-from cred_scan.orch.boundary import Boundary, BoundaryBusyError
+from cred_scan.orch.boundary import Boundary
+from cred_scan.orch.locking import BoundaryBusyError
 from pydantic import TypeAdapter
 
 from cred_scan.orch.models import BackendName
 from cred_scan.orch.global_config import get_config
 
+LOGGER = logging.getLogger(__name__)
+
 
 class Workspace:
-    """Own workspace services and one stable set of loaded boundaries."""
+    """Own backend lifetime and the command's persisted boundaries."""
 
     def __init__(self) -> None:
         self._workspace_dir = get_config().workspace.workspace_dir
@@ -67,22 +71,19 @@ class Workspace:
 
     @property
     def boundaries(self) -> tuple[Boundary, ...]:
-        """Load all persisted boundaries in deterministic ID order."""
+        """Construct unloaded boundaries in deterministic ID order."""
         if self._boundaries is None:
-            boundaries: list[Boundary] = []
-            for inventory_path in sorted(
-                self._workspace_dir.glob("*/inventory.json"),
-                key=lambda item: unquote(item.parent.name),
-            ):
-                try:
-                    boundaries.append(Boundary(self.backend, inventory_path.parent))
-                except BoundaryBusyError:
-                    continue
-            self._boundaries = tuple(boundaries)
+            self._boundaries = tuple(
+                Boundary(self.backend, inventory_path.parent)
+                for inventory_path in sorted(
+                    self._workspace_dir.glob("*/inventory.json"),
+                    key=lambda item: unquote(item.parent.name),
+                )
+            )
         return self._boundaries
 
     def boundary(self, boundary_id: str) -> Boundary:
-        """Return one fully loaded boundary."""
+        """Return one unloaded boundary aggregate."""
         for boundary in self.boundaries:
             if boundary.boundary_id == boundary_id:
                 return boundary
@@ -94,13 +95,13 @@ class Workspace:
     async def _run_boundaries(
         self, operation: Callable[[Boundary], Awaitable[int | bool]]
     ) -> int:
-        """Run a stage across boundaries; each boundary serializes its own work."""
+        """Run one command operation across boundaries concurrently."""
 
         async def run(boundary: Boundary) -> int:
             try:
                 return int(await operation(boundary))
-            except BoundaryBusyError:
-                # Another process owns this boundary's operation sentinel.
+            except BoundaryBusyError as error:
+                LOGGER.warning("skipping boundary: %s", error)
                 return 0
 
         async with asyncio.TaskGroup() as group:
@@ -132,14 +133,9 @@ class Workspace:
         async def close_resources() -> None:
             try:
                 if self._boundaries is not None:
-                    # Settle every reader before releasing the shared backend.
-                    results = await asyncio.gather(
-                        *(boundary.aclose() for boundary in self._boundaries),
-                        return_exceptions=True,
+                    await asyncio.gather(
+                        *(boundary.aclose() for boundary in self._boundaries)
                     )
-                    for result in results:
-                        if isinstance(result, BaseException):
-                            raise result
             finally:
                 await self.backend.aclose()
 

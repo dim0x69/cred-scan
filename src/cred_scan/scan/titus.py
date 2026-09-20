@@ -94,6 +94,7 @@ class TitusCliScanner(CredentialScanner):
         inventory: ScanBoundaryInventory,
         backend: BackendAdapter,
     ) -> None:
+        self.lock_fd: int | None = None
         self.config = get_config().titus
         self.inventory = inventory
         self.backend = backend
@@ -148,6 +149,7 @@ class TitusCliScanner(CredentialScanner):
                 cwd=work_dir,
                 env=environment,
                 stderr=asyncio.subprocess.PIPE,
+                pass_fds=() if self.lock_fd is None else (self.lock_fd,),
             )
         except OSError as error:
             LOGGER.exception("Titus process could not start target=%s", target.id)
@@ -206,6 +208,7 @@ class TitusCliScanner(CredentialScanner):
                 "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                pass_fds=() if self.lock_fd is None else (self.lock_fd,),
             )
         except OSError:
             LOGGER.exception(

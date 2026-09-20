@@ -73,7 +73,8 @@ class ScanTarget(BaseModel):
 class ScanBoundaryInventory(BaseModel):
     """The latest selected scan targets and their results for one boundary."""
 
-    schema_version: Literal[9] = 9
+    schema_version: Literal[10] = 10
+    publication_pending: bool = False
     generated_at: datetime
     boundary: ScanBoundaryRef
     lifecycle: Literal["active", "stale"] = "active"

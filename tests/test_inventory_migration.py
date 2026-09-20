@@ -1,4 +1,4 @@
-"""Inventory 8 -> 9 removes historical selections without touching evidence."""
+"""Inventory 8/9 -> 10 preserves history and requests one publication pass."""
 
 import json
 from datetime import UTC, datetime
@@ -64,13 +64,34 @@ def test_latest_inventory_migration_preserves_history_and_ids(tmp_path):
     assert path.read_bytes() == original
     assert migrate_workspace(tmp_path, apply=True) == 1
     migrated = ScanBoundaryInventory.model_validate_json(path.read_text())
-    assert migrated == inventory
+    assert migrated == inventory.model_copy(update={"publication_pending": True})
     assert migrated.targets[0].id == selected.id
     assert "pin_id" not in migrated.model_dump_json()
     backup = tmp_path / ".inventory-v8-backup" / boundary_dir.name / "inventory.json"
     assert backup.read_bytes() == original
     assert all(p.read_bytes() == content for p, content in preserved.items())
     assert migrate_workspace(tmp_path, apply=True) == 0
+
+
+def test_schema_9_without_datastore_does_not_request_publication(tmp_path):
+    repository = ArtifactoryRepository(id="artifactory:primary:repo", name="repo")
+    inventory = ScanBoundaryInventory(
+        generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        boundary=repository,
+    )
+    payload = inventory.model_dump(mode="json")
+    payload["schema_version"] = 9
+    payload.pop("publication_pending")
+    boundary_dir = tmp_path / quote(repository.id, safe="")
+    boundary_dir.mkdir()
+    (boundary_dir / "inventory.json").write_text(json.dumps(payload))
+
+    assert migrate_workspace(tmp_path, apply=True) == 1
+    migrated = ScanBoundaryInventory.model_validate_json(
+        (boundary_dir / "inventory.json").read_text()
+    )
+    assert not migrated.publication_pending
+    assert (boundary_dir / ".operation.lock").is_file()
 
 
 def test_migration_requires_existing_workspace(tmp_path):
