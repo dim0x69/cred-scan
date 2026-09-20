@@ -252,7 +252,7 @@ class Boundary:
         return any(
             (credential.extraction is not None and credential.extraction.status == "RETAINED")
             or (
-                credential.judgment.verdict == "VALID"
+                credential.judgment.verdict in {"VALID", "UNKNOWN"}
                 and (credential.extraction is None or credential.extraction.status == "ERROR")
             )
             for credential in self.credentials.credentials.values()
@@ -432,7 +432,7 @@ class Boundary:
                         credential.extraction.output_path,
                     )
                 continue
-            if credential.judgment.verdict != "VALID":
+            if credential.judgment.verdict not in {"VALID", "UNKNOWN"}:
                 continue
             if not (
                 credential.extraction is None or credential.extraction.status == "ERROR"

@@ -205,7 +205,7 @@
       </article>
       <article class="panel">
         <h3>Judgment</h3>
-        <p>The assessment attached to a credential: <code>PENDING</code>, <code>VALID</code>, <code>INVALID</code>, <code>UNKNOWN</code>, or <code>ERROR</code>. <code>VALID</code> and <code>UNKNOWN</code> enable new evidence retention. UNKNOWN support is agreed but pending implementation; see <a href="../TODO.md">TODO.md</a>.</p>
+        <p>The assessment attached to a credential: <code>PENDING</code>, <code>VALID</code>, <code>INVALID</code>, <code>UNKNOWN</code>, or <code>ERROR</code>. <code>VALID</code> and <code>UNKNOWN</code> enable new evidence retention.</p>
       </article>
       <article class="panel">
         <h3>Evidence</h3>
@@ -275,7 +275,7 @@
         <ul class="nodes">
           <li><a href="#model-credentials">CredentialsDocument</a><small>Per-credential judgments saved<br>Same <code>credentials.json</code></small></li>
         </ul>
-        <p class="stage-foot">Attempts <code>PENDING</code> / <code>ERROR</code>. A saved <strong>VALID</strong> or <strong>UNKNOWN</strong> judgment enables new evidence extraction (UNKNOWN support pending implementation).</p>
+        <p class="stage-foot">Attempts <code>PENDING</code> / <code>ERROR</code>. A saved <strong>VALID</strong> or <strong>UNKNOWN</strong> judgment enables new evidence extraction.</p>
       </li>
       <li class="stage extract">
         <span class="number">04 / EVIDENCE</span>
@@ -292,7 +292,7 @@
           <li><a href="#model-credentials">CredentialsDocument</a><small>Extraction metadata saved<br>Same <code>credentials.json</code></small></li>
           <li class="artifact">Evidence file bytes<small><code>evidence/&lt;credential&gt;/&lt;filename&gt;</code></small></li>
         </ul>
-        <p class="stage-foot">For RETAINED records, check file existence only and report missing files without automatic replacement (implementation pending). For missing/error extraction, retrieve exact source bytes; never overwrite an existing conflicting artifact.</p>
+        <p class="stage-foot">For RETAINED records, check file existence only and report missing files without automatic replacement. For missing/error extraction, retrieve exact source bytes; never overwrite an existing conflicting artifact.</p>
       </li>
     </ol>
     <div class="gate"><strong>Operator sequence:</strong> <code>inventory</code>, then <code>scan</code>, <code>judge</code>, and <code>extract</code>. Workspace runs the requested stage concurrently across boundaries. An async operation lock serializes stages within each Boundary; its file sentinel excludes other processes. It constructs each Boundary once; the Boundary loads its documents at construction, creates its boundary-local <code>.operation.lock</code> sentinel for an operation, checkpoints its own files, and removes the sentinel on release. Judge never extracts evidence; Extract only consumes saved VALID or UNKNOWN judgments.</div>
@@ -443,7 +443,7 @@ LocalRuntime: runs each command across boundaries concurrently</pre>
           <tr><td>Extraction success / ordinary error</td><td>Persist evidence before RETAINED metadata. On completion, EXTRACT becomes IDLE or READY for remaining errors. A saved VALID or UNKNOWN judgment is not repeated merely because evidence failed.</td></tr>
           <tr><td>Cancellation / fatal failure</td><td>Stop and reap the active Titus invocation before releasing scratch or boundary ownership, even after repeated cancellation. A task-group failure cancels and awaits other active boundaries. Close all readers before the shared backend. Completed scan targets stay checkpointed; only the interrupted target is RUNNING and unstarted targets remain pending. The next scan resets interrupted RUNNING targets. Ordinary item errors are saved and do not automatically abort.</td></tr>
           <tr><td>Stale boundary</td><td>Keep its inventory and history. Explicit scan, judge, or extract may process the selected boundary according to its persisted target and credential state; inaccessible content produces the usual failure, never a newer-source fallback.</td></tr>
-          <tr><td>No remaining work</td><td>All phases IDLE, publication pending false. Normal scan does not re-export completed boundaries. Exclusion-file changes alone do not reopen them. RETAINED evidence requires only a file-existence check under the agreed design (implementation pending).</td></tr>
+          <tr><td>No remaining work</td><td>All phases IDLE, publication pending false. Normal scan does not re-export completed boundaries. Exclusion-file changes alone do not reopen them. RETAINED evidence requires only a file-existence check on later extraction runs.</td></tr>
         </tbody>
       </table>
     </div>
@@ -708,7 +708,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
           <li>Workspace executes the requested stage concurrently across boundaries; inventory, scan, judge, and extract operations are serialized within each boundary.</li>
           <li>Each boundary owns one scanner, one judge, and one extractor. Scan targets and Titus invocations run sequentially within that boundary; Titus itself may use internal parallelism.</li>
           <li>A single <code>TitusCliScanner</code> serves each boundary. There is no <code>scan_concurrency</code> setting; <code>internal_workers</code> controls Titus internal parallelism. Retry transient scan failures up to three attempts; permanent failures do not retry. Checkpoint each completed scan target before starting the next.</li>
-          <li>Normal scan also drains previously published unfinished judgment/evidence on active boundaries without another Titus export. Completed scan work is skipped; the agreed evidence-existence check must still run when no extraction is pending (implementation pending).</li>
+          <li>Scan, judge, and extract run as separate commands. Completed scan work is skipped; extraction checks retained evidence even when no new extraction is pending.</li>
           <li>Stale boundaries and already-scanned targets do not start new scans. Removed scopes and replaced versions are absent from inventory.</li>
         </ul>
       </article>
@@ -717,7 +717,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <ul>
           <li>Append publication preserves old credentials, locator occurrences, judgments, and evidence metadata—even if a later report omits them.</li>
           <li>Scan, judge, and extract run in separate Python processes. Readers do not cache resolved locations or retrieved content. Temporary downloads are removed after use; retained evidence is persisted independently. Whole-image, repository, archive, and general blob caches are forbidden.</li>
-          <li>Agreed design: check only that each RETAINED file exists on later runs. Report missing files without automatic replacement. Do not verify contents, size, or hash. This check is pending implementation in TODO.md; current code skips RETAINED records.</li>
+          <li>Agreed design: check only that each RETAINED file exists on later runs. Report missing files without automatic replacement. Do not verify contents, size, or hash. Extraction checks RETAINED records even when no new evidence is pending.</li>
           <li>A saved VALID or UNKNOWN judgment survives a later extraction error, so extraction can retry without another LLM judgment.</li>
         </ul>
       </article>
