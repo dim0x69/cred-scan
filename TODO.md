@@ -1,3 +1,1 @@
 4. **P2 — Make interrupted workspace migration retryable.** A failure after backup creation but before inventory replacement currently makes the next attempt fail at exclusive backup creation. Reuse an existing backup only after verifying it matches the original inventory; preserve conflicting backups and fail clearly. Test interruption between backup and replacement and successful retry without losing history or evidence.
-
-8. Implement titus_scan_arguments

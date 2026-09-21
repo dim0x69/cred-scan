@@ -329,7 +329,12 @@ BackendAdapter.inventory(boundary_id)
         <pre>CredentialScanner.scan(
   target: ScanTarget, work_dir: Path,
   datastore: Path
-) → ScanTarget
+) → None
+
+ArtifactoryDockerBackend.titus_scan_arguments(inventory, target)
+  → --docker
+    --artifactory-repository &lt;inventory.boundary.name&gt;
+    &lt;scope.image&gt;@&lt;scope.digest&gt;
 
 CredentialScanner.export_report(datastore: Path)
   → TitusReport
@@ -339,7 +344,7 @@ deduplicate_report(
   inventory: ScanTargetInventory,
   resolver: ContentReader
 ) → CredentialsDocument</pre>
-        <p>The scanner mutates the boundary-owned target's <code>ScanTargetResult</code> and returns no replacement. All target invocations write to the same boundary datastore. Configured Titus arguments enable all supported extraction formats (<code>--extract all</code>), cap each extracted file at <code>100MB</code> (<code>--extract-max-size</code>), and set the per-file scan limit to 512 KiB (<code>--max-file-size 524288</code>). Conversion normalizes backend locators, groups credentials, applies exclusions, and preserves every source occurrence. After scan attempts finish and the boundary-wide export succeeds, failed scan targets mark the report incomplete but do not block judgment and extraction of available findings.</p>
+        <p>The scanner mutates the boundary-owned target's <code>ScanTargetResult</code> and returns no replacement. The Artifactory Docker adapter supplies Titus with the boundary's repository key and the exact selected image reference <code>scope.image@scope.digest</code>. The immutable child-manifest digest is used rather than a mutable tag or the parent/root digest; platform selection has already occurred during inventory discovery. Unsupported scope types fail permanently without starting Titus. All target invocations write to the same boundary datastore. Configured Titus arguments enable all supported extraction formats (<code>--extract all</code>), cap each extracted file at <code>100MB</code> (<code>--extract-max-size</code>), and set the per-file scan limit to 512 KiB (<code>--max-file-size 524288</code>). Conversion normalizes backend locators, groups credentials, applies exclusions, and preserves every source occurrence. After scan attempts finish and the boundary-wide export succeeds, failed scan targets mark the report incomplete but do not block judgment and extraction of available findings.</p>
         <p><code>merge_scan(previous, candidates)</code> returns the append-only <code>CredentialsDocument</code>; existing judgments and evidence metadata survive. <code>Boundary.scan()</code> mutates the in-memory aggregate and checkpoints the final report and credentials after publication.</p>
         <p class="port">Owner: <code>scan/</code> detects/converts; <code>orch/</code> checkpoints and publishes. Unresolvable locations stay in the raw report plus diagnostics, not in unresolved judge candidates.</p>
       </article>
