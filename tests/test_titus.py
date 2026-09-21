@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.backend.proto import UnsupportedTitusTargetError
 from cred_scan.orch.models import AppConfig
 from cred_scan.scan.models import ExclusionPolicy
@@ -31,7 +31,7 @@ def test_transient_titus_errors_are_retryable() -> None:
 
 def test_unsupported_target_becomes_failed_without_starting_titus(
     app_config: AppConfig,
-    repository_inventory: ScanBoundaryInventory,
+    repository_inventory: ScanTargetInventory,
     tmp_path: Path,
 ) -> None:
     backend = Mock()
@@ -58,7 +58,7 @@ def test_unsupported_target_becomes_failed_without_starting_titus(
 @pytest.mark.parametrize("phase", ["scan", "export"])
 def test_cancelled_titus_call_reaps_child_before_returning(
     app_config: AppConfig,
-    repository_inventory: ScanBoundaryInventory,
+    repository_inventory: ScanTargetInventory,
     tmp_path: Path,
     monkeypatch,
     phase: str,

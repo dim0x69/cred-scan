@@ -34,8 +34,12 @@ class BoundaryPaths(BaseModel):
     boundary_dir: Path
 
     @property
-    def inventory(self) -> Path:
-        return self.boundary_dir / "inventory.json"
+    def record(self) -> Path:
+        return self.boundary_dir / "boundary.json"
+
+    @property
+    def scan_targets(self) -> Path:
+        return self.boundary_dir / "scantargets.json"
 
     @property
     def operation_lock(self) -> Path:

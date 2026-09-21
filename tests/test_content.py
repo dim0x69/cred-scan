@@ -19,7 +19,7 @@ from cred_scan.backend.models import (
     ArtifactoryBackendConfig,
     ContentLocation,
     DockerImageScanScope,
-    ScanBoundaryInventory,
+    ScanTargetInventory,
     target_id_for,
 )
 from cred_scan.orch.models import WorkspaceConfig
@@ -37,7 +37,7 @@ COLON_PROVENANCE = (
 )
 
 
-def _locator(raw: str, inventory: ScanBoundaryInventory) -> ContentLocation:
+def _locator(raw: str, inventory: ScanTargetInventory) -> ContentLocation:
     parsed = docker.parse_provenance(raw)
     return ContentLocation(
         target_id=inventory.targets[0].id,
@@ -59,7 +59,7 @@ def backend(tmp_path: Path):
 
 
 def test_backend_provides_titus_arguments(
-    backend, repository_inventory: ScanBoundaryInventory
+    backend, repository_inventory: ScanTargetInventory
 ) -> None:
     target = repository_inventory.targets[0]
     assert isinstance(target.scope, DockerImageScanScope)
@@ -72,7 +72,7 @@ def test_backend_provides_titus_arguments(
 
 
 def test_reader_resolves_colon_filename_without_losing_prefix(
-    backend, repository_inventory: ScanBoundaryInventory
+    backend, repository_inventory: ScanTargetInventory
 ) -> None:
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
@@ -149,7 +149,7 @@ def test_cumulative_report_resolves_current_and_superseded_docker_pins(
 
 
 def test_reader_returns_complete_bytes(
-    backend, repository_inventory: ScanBoundaryInventory
+    backend, repository_inventory: ScanTargetInventory
 ) -> None:
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
@@ -165,14 +165,14 @@ def test_reader_returns_complete_bytes(
 
 
 def test_direct_reader_creation_requires_targets(
-    backend, repository_inventory: ScanBoundaryInventory
+    backend, repository_inventory: ScanTargetInventory
 ) -> None:
     with pytest.raises(ValueError, match="at least one target"):
         backend.content_reader(repository_inventory.boundary, ())
 
 
 def test_reader_validates_provenance_target(
-    backend, repository_inventory: ScanBoundaryInventory
+    backend, repository_inventory: ScanTargetInventory
 ) -> None:
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
@@ -185,7 +185,7 @@ def test_reader_validates_provenance_target(
 
 
 def test_metadata_provenance_resolves_as_config_blob(
-    backend, repository_inventory: ScanBoundaryInventory
+    backend, repository_inventory: ScanTargetInventory
 ) -> None:
     reader = backend.content_reader(
         repository_inventory.boundary, repository_inventory.targets
@@ -209,7 +209,7 @@ def _layer_bytes(
 
 
 def test_reader_rejects_unmapped_layer_instead_of_searching_other_layers(
-    repository_inventory: ScanBoundaryInventory, tmp_path: Path
+    repository_inventory: ScanTargetInventory, tmp_path: Path
 ) -> None:
     older = _layer_bytes(b"SECRET=older\n")
     newer = _layer_bytes(b"SECRET=newer\n")
@@ -274,7 +274,7 @@ def test_reader_rejects_unmapped_layer_instead_of_searching_other_layers(
 
 
 def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
-    repository_inventory: ScanBoundaryInventory, tmp_path: Path
+    repository_inventory: ScanTargetInventory, tmp_path: Path
 ) -> None:
     layer_content = b"A" * 512_001
     layer = _layer_bytes(layer_content)
@@ -342,7 +342,7 @@ def test_async_reader_returns_complete_files_and_uses_workspace_scratch(
 
 
 def test_reader_reads_the_selected_layer(
-    repository_inventory: ScanBoundaryInventory, tmp_path: Path
+    repository_inventory: ScanTargetInventory, tmp_path: Path
 ) -> None:
     newer = _layer_bytes(b"SECRET=newer\n")
     manifest = {

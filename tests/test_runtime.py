@@ -7,7 +7,7 @@ import pytest
 
 from cred_scan.extract import evidence as evidence_module
 
-from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
+from cred_scan.backend.models import ContentLocation, ContentRead, ScanTargetInventory
 from cred_scan.orch.execution import BoundaryExecution, Phase
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.orch.models import WorkspaceConfig
@@ -32,10 +32,10 @@ def make_boundary(tmp_path, inventory, findings=()):
     workspace.read.side_effect = store.read
     workspace.write.side_effect = store.write
     paths = store.boundary(inventory.boundary.id)
-    store.write(paths.inventory, inventory, ScanBoundaryInventory)
+    store.write(paths.inventory, inventory, ScanTargetInventory)
 
     def checkpoint(boundary):
-        store.write(boundary.paths.inventory, boundary.inventory, ScanBoundaryInventory)
+        store.write(boundary.paths.inventory, boundary.inventory, ScanTargetInventory)
         if boundary.report is not None:
             store.write(boundary.paths.report, boundary.report, TitusReport)
         if boundary.document is not None:

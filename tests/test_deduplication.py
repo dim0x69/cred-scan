@@ -7,7 +7,7 @@ from cred_scan.backend.models import (
     BackendConfig,
     DockerImageScanScope,
     ContentLocation,
-    ScanBoundaryInventory,
+    ScanTargetInventory,
     ScanTarget,
     target_id_for,
 )
@@ -24,7 +24,7 @@ def _resolved(target_id: str, raw_path: str, source_path: str, filename: str):
     )
 
 
-def target() -> tuple[ScanBoundaryInventory, ScanTarget]:
+def target() -> tuple[ScanTargetInventory, ScanTarget]:
     repository = ArtifactoryRepository(
         id="artifactory:primary:docker-local", name="docker-local"
     )
@@ -41,7 +41,7 @@ def target() -> tuple[ScanBoundaryInventory, ScanTarget]:
         boundary=repository,
         scope=scope,
     )
-    return ScanBoundaryInventory(
+    return ScanTargetInventory(
         generated_at=datetime.now(UTC),
         backend=BackendConfig(name="primary"),
         boundary=repository,

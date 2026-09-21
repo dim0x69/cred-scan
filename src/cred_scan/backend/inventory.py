@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTargetResult
+from cred_scan.backend.models import ScanTargetInventory, ScanTargetResult
 
 
 def merge_inventory(
-    current: ScanBoundaryInventory | None,
-    discovered: ScanBoundaryInventory,
-) -> ScanBoundaryInventory:
+    current: ScanTargetInventory | None,
+    discovered: ScanTargetInventory,
+) -> ScanTargetInventory:
     """Keep only discovered scan targets, reusing results for unchanged versions."""
-    if current is not None and current.boundary != discovered.boundary:
-        raise ValueError("inventory belongs to another boundary")
     if discovered.errors:
         raise ValueError("incomplete inventory discovery: " + "; ".join(discovered.errors))
 
@@ -19,7 +17,5 @@ def merge_inventory(
     for target in discovered.targets:
         target.result = known[target.id].result if target.id in known else ScanTargetResult()
     discovered.publication_pending = bool(current and current.publication_pending)
-    discovered.lifecycle = "active"
-    discovered.stale_reason = None
     discovered.errors = ()
     return discovered

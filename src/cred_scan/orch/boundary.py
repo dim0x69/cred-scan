@@ -17,7 +17,7 @@ from urllib.parse import unquote
 from pydantic import BaseModel
 
 from cred_scan.backend.inventory import merge_inventory
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
+from cred_scan.backend.models import BoundaryRecord, ScanTargetInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.orch.fsync import fsync_directory
 from cred_scan.orch.locking import boundary_lock
@@ -57,23 +57,40 @@ class Boundary:
         self.reader: ContentReader | None = None
         self.judge_service: DspyFindingJudge | None = None
         self.scanner: TitusCliScanner | None = None
-        self._operation_active = False
         self._operation_lock = asyncio.Lock()
         self.extractor: EvidenceExtractor | None = None
 
     def _load(self) -> None:
         """Load the aggregate while holding boundary ownership."""
+        record = self._read(self.paths.record, BoundaryRecord)
+        if record is None:
+            raise ValueError(f"missing boundary record: {self.paths.record}")
+        if record.boundary.id != self.boundary_id:
+            raise ValueError(
+                "boundary record does not match boundary path: "
+                f"{self.paths.record}"
+            )
+        if record.backend_id != self.backend.name:
+            raise ValueError(
+                "boundary record belongs to another backend: "
+                f"{self.paths.record}"
+            )
+        if record.availability != "available":
+            raise ValueError(f"boundary is not available: {self.boundary_id}")
         inventory = self._read(
-            self.paths.inventory,
-            ScanBoundaryInventory,
+            self.paths.scan_targets,
+            ScanTargetInventory,
         )
         if inventory is None:
-            raise ValueError(f"missing boundary inventory: {self.paths.inventory}")
+            raise ValueError(
+                f"missing boundary scan targets: {self.paths.scan_targets}"
+            )
         if inventory.boundary.id != self.boundary_id:
             raise ValueError(
-                "boundary inventory does not match boundary path: "
-                f"{self.paths.inventory}"
+                "boundary scan targets do not match boundary path: "
+                f"{self.paths.scan_targets}"
             )
+        self.record = record
         report = self._read(self.paths.report, TitusReport)
         if report is not None and report.boundary_id != self.boundary_id:
             raise ValueError(
@@ -89,7 +106,7 @@ class Boundary:
                 f"credentials belong to another boundary: {self.paths.credentials}"
             )
 
-        self.inventory: ScanBoundaryInventory = inventory
+        self.inventory: ScanTargetInventory = inventory
         self.report: TitusReport = report or TitusReport(
             boundary_id=self.boundary_id,
             generated_at="",
@@ -123,10 +140,6 @@ class Boundary:
         model_type: type[DocumentT],
     ) -> None:
         """Atomically write one document while this boundary owns its lock."""
-        if not self._operation_active:
-            raise RuntimeError(
-                "boundary document write requires the boundary operation"
-            )
         if not isinstance(document, model_type):
             raise TypeError(
                 f"expected {model_type.__name__}, got {type(document).__name__}"
@@ -180,34 +193,35 @@ class Boundary:
         async with self._operation_lock:
             with boundary_lock(self.paths.operation_lock) as descriptor:
                 self._load()
-                self.reader = self.backend.content_reader(self.scratch_dir)
                 try:
-                    self.judge_service = DspyFindingJudge()
-                    self.scanner = TitusCliScanner(self.inventory, self.backend)
-                    self.extractor = EvidenceExtractor(self.paths.boundary_dir)
-                    self.scanner.lock_fd = descriptor
-                    self._operation_active = True
+                    self._start_services(descriptor)
                     yield self
                 finally:
-                    self._operation_active = False
-                    if self.scanner is not None:
-                        self.scanner.lock_fd = None
-                    if self.reader is not None:
-                        await self.reader.aclose()
-                    self.reader = None
-                    self.judge_service = None
-                    self.scanner = None
-                    self.extractor = None
+                    await self._stop_services()
+
+    def _start_services(self, descriptor: int) -> None:
+        self.reader = self.backend.content_reader(self.scratch_dir)
+        self.scanner = TitusCliScanner(self.inventory, self.backend)
+        self.scanner.lock_fd = descriptor
+        self.judge_service = DspyFindingJudge()
+        self.extractor = EvidenceExtractor(self.paths.boundary_dir)
+
+    async def _stop_services(self) -> None:
+        if self.scanner is not None:
+            self.scanner.lock_fd = None
+        if self.reader is not None:
+            await self.reader.aclose()
+        self.reader = None
+        self.judge_service = None
+        self.scanner = None
+        self.extractor = None
 
     def checkpoint(self) -> None:
         """Persist this boundary's current aggregate."""
-        if not self._operation_active:
-            raise RuntimeError("boundary checkpoint requires the boundary operation")
-
         self._write(
-            self.paths.inventory,
+            self.paths.scan_targets,
             self.inventory,
-            ScanBoundaryInventory,
+            ScanTargetInventory,
         )
         if self._has_report:
             self._write(self.paths.report, self.report, TitusReport)
@@ -221,7 +235,7 @@ class Boundary:
     def needs_scan(self) -> bool:
         if self.inventory.publication_pending:
             return True
-        if self.inventory.lifecycle == "stale" or not self.inventory.targets:
+        if not self.inventory.targets:
             return False
         return (
             not self._has_report
@@ -255,22 +269,63 @@ class Boundary:
         )
 
     async def refresh_inventory(self) -> bool:
-        async with self.operation():
-            discovered = await self.backend.inventory(self.boundary_id)
+        async with self._operation_lock:
+            with boundary_lock(self.paths.operation_lock):
+                current = self._read(
+                    self.paths.scan_targets,
+                    ScanTargetInventory,
+                )
+                if current is not None and current.boundary.id != self.boundary_id:
+                    raise ValueError(
+                        "boundary scan targets do not match boundary path: "
+                        f"{self.paths.scan_targets}"
+                    )
+                discovered = await self.backend.inventory(self.boundary_id)
+                if discovered.boundary.id != self.boundary_id:
+                    raise ValueError("backend returned inventory for another boundary")
+                merged = merge_inventory(current, discovered)
+                record = BoundaryRecord(
+                    backend_id=self.backend.name,
+                    boundary=merged.boundary,
+                )
+                self._write(
+                    self.paths.scan_targets,
+                    merged,
+                    ScanTargetInventory,
+                )
+                self._write(
+                    self.paths.record,
+                    record,
+                    BoundaryRecord,
+                )
+                self.record = record
+                self.inventory = merged
+                return True
 
-            if discovered.boundary.id != self.boundary_id:
-                raise ValueError("backend returned inventory for another boundary")
-
-            merged = merge_inventory(self.inventory, discovered)
-            await self.reader.aclose()
-            self.reader = None
-            self.inventory = merged
-            self.reader = self.backend.content_reader(
-                self.scratch_dir,
-            )
-            self.scanner.inventory = self.inventory
-            self.checkpoint()
-            return True
+    async def mark_absent(self) -> bool:
+        async with self._operation_lock:
+            with boundary_lock(self.paths.operation_lock):
+                record = self._read(self.paths.record, BoundaryRecord)
+                if record is None:
+                    raise ValueError(f"missing boundary record: {self.paths.record}")
+                if record.boundary.id != self.boundary_id:
+                    raise ValueError(
+                        "boundary record does not match boundary path: "
+                        f"{self.paths.record}"
+                    )
+                if record.backend_id != self.backend.name:
+                    raise ValueError(
+                        "boundary record belongs to another backend: "
+                        f"{self.paths.record}"
+                    )
+                absent = record.model_copy(
+                    update={"availability": "absent"}
+                )
+                self._write(self.paths.record, absent, BoundaryRecord)
+                self.paths.scan_targets.unlink(missing_ok=True)
+                fsync_directory(self.paths.boundary_dir)
+                self.record = absent
+                return True
 
     async def scan(self) -> bool:
         async with self.operation():
@@ -280,9 +335,13 @@ class Boundary:
             return True
 
     async def _scan(self) -> None:
+        scanner = self.scanner
+        reader = self.reader
+        assert scanner is not None
+        assert reader is not None
         self.inventory.publication_pending = True
         self.checkpoint()
-        self.scanner.inventory = self.inventory
+        scanner.inventory = self.inventory
         interrupted = [
             target
             for target in self.inventory.targets
@@ -296,7 +355,7 @@ class Boundary:
         eligible = tuple(
             target
             for target in self.inventory.targets
-            if self.inventory.lifecycle != "stale" and (
+            if (
                 target.result.status in {"pending", "running"}
                 or (
                     target.result.status in {"failed", "partial"}
@@ -331,7 +390,7 @@ class Boundary:
             target.result.status != "scanned" for target in self.inventory.targets
         )
 
-        report = await self.scanner.export_report(self.paths.datastore)
+        report = await scanner.export_report(self.paths.datastore)
         report.incomplete = report.incomplete or incomplete
         report.errors = tuple(report.errors) + self.inventory.errors
         self.report = report
@@ -341,7 +400,7 @@ class Boundary:
         candidates = await deduplicate_report(
             self.report,
             self.inventory,
-            self.reader,
+            reader,
         )
 
         self.credentials = merge_scan(self.credentials, candidates)
@@ -360,10 +419,12 @@ class Boundary:
 
     async def _scan_target(self, target: ScanTarget) -> ScanTarget:
         """Own one target's scratch and all attempts on the same scanner."""
+        scanner = self.scanner
+        assert scanner is not None
         with self.scratch_dir() as work_dir:
             for attempt in range(3):
                 LOGGER.info("scanning target=%s attempt=%d/3", target.id, attempt + 1)
-                target = await self.scanner.scan(
+                target = await scanner.scan(
                     target, work_dir, self.paths.datastore
                 )
                 if (
@@ -382,6 +443,10 @@ class Boundary:
             return await self._judge()
 
     async def _judge(self) -> int:
+        judge_service = self.judge_service
+        reader = self.reader
+        assert judge_service is not None
+        assert reader is not None
         judged = 0
         for credential in tuple(self.credentials.credentials.values()):
             if credential.judgment.verdict not in {"PENDING", "ERROR"}:
@@ -389,9 +454,9 @@ class Boundary:
 
             judged += 1
             try:
-                result = await self.judge_service.judge(
+                result = await judge_service.judge(
                     credential,
-                    self.reader,
+                    reader,
                 )
             except FatalJudgeError:
                 raise
@@ -417,6 +482,10 @@ class Boundary:
             return await self._extract()
 
     async def _extract(self) -> int:
+        extractor = self.extractor
+        reader = self.reader
+        assert extractor is not None
+        assert reader is not None
         retained = 0
         for credential in tuple(self.credentials.credentials.values()):
             if credential.extraction is not None and credential.extraction.status == "RETAINED":
@@ -439,7 +508,7 @@ class Boundary:
                 continue
 
             try:
-                extraction = await self.extractor.extract(credential, self.reader)
+                extraction = await extractor.extract(credential, reader)
                 retained += 1
             except EvidenceConflictError:
                 raise

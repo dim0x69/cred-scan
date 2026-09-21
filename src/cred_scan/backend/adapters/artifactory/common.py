@@ -29,6 +29,8 @@ class ArtifactoryBackend(BackendAdapter):
             if normalized.endswith("/artifactory")
             else f"{normalized}/artifactory"
         )
+        if httpx.URL(self.base_url).scheme != "https":
+            raise ArtifactoryError("Artifactory base URL must use HTTPS")
         if not access_token.strip():
             raise ArtifactoryError("set ARTIFACTORY_ACCESS_TOKEN")
         self.session = httpx.AsyncClient(
@@ -73,9 +75,18 @@ class ArtifactoryBackend(BackendAdapter):
         """Return visible Artifactory repository metadata."""
         response = await self._get(f"{self.base_url}/api/repositories")
         try:
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError as error:
+                raise ArtifactoryError(
+                    "Artifactory repository list was not valid JSON"
+                ) from error
         finally:
             await response.aclose()
         if not isinstance(payload, list):
             raise ArtifactoryError("Artifactory repository list was not an array")
-        return [item for item in payload if isinstance(item, dict)]
+        if any(not isinstance(item, dict) for item in payload):
+            raise ArtifactoryError(
+                "Artifactory repository list contained a non-object entry"
+            )
+        return payload

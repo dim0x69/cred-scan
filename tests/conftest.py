@@ -8,7 +8,7 @@ from cred_scan.backend.models import (
     ArtifactoryRepository,
     BackendConfig,
     DockerImageScanScope,
-    ScanBoundaryInventory,
+    ScanTargetInventory,
     ScanTarget,
     target_id_for,
 )
@@ -23,7 +23,7 @@ def isolate_credentials(monkeypatch) -> None:
 
 
 @pytest.fixture
-def repository_inventory() -> ScanBoundaryInventory:
+def repository_inventory() -> ScanTargetInventory:
     repository = ArtifactoryRepository(
         id="artifactory:primary:docker-local", name="docker-local"
     )
@@ -40,7 +40,7 @@ def repository_inventory() -> ScanBoundaryInventory:
         boundary=repository,
         scope=scope,
     )
-    return ScanBoundaryInventory(
+    return ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         backend=BackendConfig(name="primary"),
         boundary=repository,
@@ -49,7 +49,7 @@ def repository_inventory() -> ScanBoundaryInventory:
 
 
 @pytest.fixture
-def credential(repository_inventory: ScanBoundaryInventory) -> Credential:
+def credential(repository_inventory: ScanTargetInventory) -> Credential:
     locator = (
         "docker://registry/docker-local/team/api@sha256:manifest/"
         "sha256:layer:etc/app.env"

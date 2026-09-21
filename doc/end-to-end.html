@@ -231,14 +231,16 @@
         <p class="io-label">In</p>
         <ul class="nodes">
           <li><a href="#model-config">AppConfig</a><small>Configured backend endpoints</small></li>
-          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Previous state, if any</small></li>
+          <li><code>BoundaryRecord</code><small>Enrollment and availability, if known</small></li>
+          <li><a href="#model-inventory">ScanTargetInventory</a><small>Previous scan targets, if available</small></li>
         </ul>
         <div class="down" aria-hidden="true">↓</div>
         <p class="io-label">Out · one per boundary</p>
         <ul class="nodes">
-          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Latest selected targets + results<br><code>inventory.json</code></small></li>
+          <li><code>BoundaryRecord</code><small><code>boundary.json</code></small></li>
+          <li><a href="#model-inventory">ScanTargetInventory</a><small>Latest selected targets + results<br><code>scantargets.json</code>, available boundaries only</small></li>
         </ul>
-        <p class="stage-foot"><code>cred-scan inventory</code><br>Refreshes the next persisted boundary. Inventory is a Boundary operation and must run alone.</p>
+        <p class="stage-foot"><code>cred-scan inventory</code><br>Discovers remote boundaries, refreshes available scan targets, and marks omitted registered boundaries absent. Inventory is a Boundary operation and must run alone per boundary.</p>
       </li>
       <li class="stage scan">
         <span class="number">02 / DETECTION</span>
@@ -246,14 +248,14 @@
         <p class="purpose">Scan eligible scan targets, export the boundary, normalize and append findings.</p>
         <p class="io-label">In</p>
         <ul class="nodes">
-          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Persisted; no discovery refresh</small></li>
+          <li><a href="#model-inventory">ScanTargetInventory</a><small>Persisted; no discovery refresh</small></li>
           <li><a href="#model-exclusions">ExclusionPolicy</a><small>Loaded once for this run</small></li>
           <li><a href="#model-credentials">CredentialsDocument</a><small>Previous checkpoint, if any</small></li>
         </ul>
         <div class="down" aria-hidden="true">↓</div>
         <p class="io-label">Out</p>
         <ul class="nodes">
-          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Target execution results updated</small></li>
+          <li><a href="#model-inventory">ScanTargetInventory</a><small>Target execution results updated</small></li>
           <li><a href="#model-report">TitusReport</a><small>Final boundary export · <code>report.json</code></small></li>
           <li><a href="#model-credentials">CredentialsDocument</a><small>Append-only observations · <code>credentials.json</code></small></li>
           <li class="artifact"><code>titus.ds/</code><small>One persistent boundary datastore</small></li>
@@ -267,7 +269,7 @@
         <p class="io-label">In</p>
         <ul class="nodes">
           <li><a href="#model-credentials">CredentialsDocument</a><small>Published observations</small></li>
-          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Read immutable occurrence paths</small></li>
+          <li><a href="#model-inventory">ScanTargetInventory</a><small>Read immutable occurrence paths</small></li>
           <li><a href="#model-judge-config">JudgeConfig</a><small>LLM and read-tool settings</small></li>
         </ul>
         <div class="down" aria-hidden="true">↓</div>
@@ -284,7 +286,7 @@
         <p class="io-label">In</p>
         <ul class="nodes">
           <li><a href="#model-credentials">CredentialsDocument</a><small>Select VALID or UNKNOWN credentials</small></li>
-          <li><a href="#model-inventory">ScanBoundaryInventory</a><small>Read immutable occurrence paths</small></li>
+          <li><a href="#model-inventory">ScanTargetInventory</a><small>Read immutable occurrence paths</small></li>
         </ul>
         <div class="down" aria-hidden="true">↓</div>
         <p class="io-label">Out</p>
@@ -307,17 +309,20 @@
     <div class="grid-two">
       <article class="panel phase-detail inventory">
         <h3>Inventory · backend-owned discovery</h3>
-        <pre>BackendAdapter.inventory(boundary_id)
-  → ScanBoundaryInventory</pre>
-        <p>The workspace owns one configured backend. The selected Boundary asks that backend to refresh its own inventory, mutates its in-memory inventory aggregate, and checkpoints it.</p>
+        <pre>BackendAdapter.discover_boundaries()
+  → tuple[boundary_id, ...]
+BackendAdapter.inventory(boundary_id)
+  → ScanTargetInventory</pre>
+        <p>The workspace owns one configured backend. It first discovers backend boundary IDs, reconciles them with persisted <code>boundary.json</code> records, and then initializes, refreshes, or marks each Boundary absent under that boundary's lock.</p>
         <ol>
           <li>Discover an Artifactory repository boundary and its logical Docker image scopes.</li>
           <li>Select the newest manifest/platform by timestamp in the backend and create immutable <code>ScanTarget</code> values.</li>
-          <li>Merge by canonical target ID; save one <code>ScanBoundaryInventory</code> per boundary.</li>
+          <li>Merge by canonical target ID; save current targets to <code>scantargets.json</code> and enrollment/availability to <code>boundary.json</code>.</li>
         </ol>
         <p><strong>Implemented:</strong> inventory keeps only the latest selected scan targets. Successful discovery replaces the selected list; absent scopes and old versions are removed. An unchanged scan target reuses its result; a newly selected scan target starts pending. Historical credentials, occurrence paths, judgments, and evidence survive inventory replacement. The boundary keeps one cumulative Titus datastore across scan runs; inventory replacement does not reset past scan data. Occurrence reads are independent of inventory: the ContentReader interprets each immutable path directly.</p>
-        <p><strong>Implemented:</strong> discovery must complete before updating inventory. Exceptions propagate to the user and leave the previous inventory unchanged, including its timestamp, scan targets, results, and lifecycle. Discovery errors and partial inventory are not stored. A missing boundary also raises; it does not rewrite the old inventory.</p>
-        <p class="port">Owner: <code>backend/</code> discovery and merge rules, coordinated by <code>orch/boundary.py</code>. Empty repositories without errors do not create report boundaries.</p>
+        <p><strong>Implemented:</strong> backend boundary discovery runs before scan-target initialization or refresh, enrolling repositories in an empty workspace and repositories added later. A successful authoritative listing marks omitted registered boundaries absent, removes their current <code>scantargets.json</code>, and retains their historical report, credentials, evidence, and datastore. If they reappear, new scan targets are written before the record becomes available. Boundary-list or per-boundary discovery failures leave existing records and scan targets unchanged.</p>
+        <p><strong>Implemented:</strong> catalog and tag-list pagination completes before target selection. Their payloads must be objects containing arrays of non-empty names; malformed JSON or shapes raise. Explicit empty arrays are successful discovery and may produce an inventory with no targets.</p>
+        <p class="port">Owner: <code>backend/</code> boundary and target discovery plus merge rules, coordinated by <code>orch/workspace.py</code> and <code>orch/boundary.py</code>. An available empty repository has an empty <code>scantargets.json</code>; an absent repository has no current scan-target document.</p>
       </article>
       <article class="panel phase-detail scan">
         <h3>Scan · target in, target result out</h3>
@@ -331,7 +336,7 @@ CredentialScanner.export_report(datastore: Path)
 
 deduplicate_report(
   report: TitusReport,
-  inventory: ScanBoundaryInventory,
+  inventory: ScanTargetInventory,
   resolver: ContentReader
 ) → CredentialsDocument</pre>
         <p>The returned target keeps its immutable identity and contains an updated <code>ScanTargetResult</code>. All target invocations write to the same boundary datastore. Configured Titus arguments enable all supported extraction formats (<code>--extract all</code>), cap each extracted file at <code>100MB</code> (<code>--extract-max-size</code>), and set the per-file scan limit to 512 KiB (<code>--max-file-size 524288</code>). Conversion normalizes backend locators, groups credentials, applies exclusions, and preserves every source occurrence. After scan attempts finish and the boundary-wide export succeeds, failed scan targets mark the report incomplete but do not block judgment and extraction of available findings.</p>
@@ -380,12 +385,12 @@ retain_first_evidence(
   <section id="execution" aria-labelledby="execution-title">
     <p class="eyebrow">Execution / Persisted obligations, exclusive live ownership</p>
     <h2 id="execution-title">One boundary can owe work in several phases.</h2>
-    <p class="section-intro">The runtime <code>Boundary</code> is the mutable aggregate for one exclusively owned boundary. Workspace owns one backend and constructs unloaded Boundaries for persisted inventories; services read resolved global configuration directly and the deduplicator and Titus obtain exclusions directly from global configuration, loaded once per run at first use. Each Boundary operation acquires ownership before reading inventory, report, and credentials. Those documents are changed in memory and written together at Boundary-owned checkpoints. There is no cross-boundary scheduler state.</p>
+    <p class="section-intro">The runtime <code>Boundary</code> is the mutable aggregate for one exclusively owned boundary. Workspace owns one backend and constructs unloaded Boundaries from persisted <code>boundary.json</code> records; services read resolved global configuration directly and the deduplicator and Titus obtain exclusions directly from global configuration, loaded once per run at first use. Each source-dependent Boundary operation acquires ownership before reading scan targets, report, and credentials. Those documents are changed in memory and written together at Boundary-owned checkpoints. There is no cross-boundary scheduler state.</p>
     <div class="grid-two">
       <article class="panel">
         <h3>Boundary ownership</h3>
         <pre>Boundary
-  inventory: ScanBoundaryInventory
+  inventory: ScanTargetInventory
   report: TitusReport
   credentials: CredentialsDocument
   scan()
@@ -405,13 +410,13 @@ boundary.scan() / judge() / extract()
   → run exactly one operation and cleanup
   → release ownership</pre>
         <ol>
-          <li>Construct unloaded <code>Boundary</code> objects for persisted inventories.</li>
+          <li>Construct unloaded <code>Boundary</code> objects from persisted <code>boundary.json</code> records; inventory commands first reconcile remotely discovered boundaries.</li>
           <li>Acquire the persistent boundary-local <code>.operation.lock</code> with an exclusive OS lock.</li>
           <li>Load current state only after ownership is acquired, then run exactly one requested operation.</li>
           <li>Mutate the in-memory aggregate and call <code>Boundary.checkpoint()</code>.</li>
           <li>Close the reader and release ownership after operation cleanup. The lock file remains; ownership is the OS lock, not file existence.</li>
         </ol>
-        <p><strong>Implemented execution model:</strong> one invocation may process different boundaries concurrently, but competing commands cannot overlap on the same boundary. Each owned Boundary creates one scanner, one judge, and one extractor for its operation. The scanner processes targets sequentially with at most one Titus invocation at a time; Titus's internal parallelism remains available. Each target is checkpointed before the next starts.</p>
+        <p><strong>Implemented execution model:</strong> one invocation may process different boundaries concurrently, but competing commands cannot overlap on the same boundary. Inventory creates no content services. Every Scan, Judge, or Extract operation creates one reader, scanner, judge, and extractor, then the requested command uses the services it needs. The scanner processes targets sequentially with at most one Titus invocation at a time; Titus's internal parallelism remains available. Each target is checkpointed before the next starts.</p>
       </article>
     </div>
     <div class="panel" style="margin-top: 1.25rem">
@@ -421,13 +426,13 @@ boundary.scan() / judge() / extract()
                               orch/fsync.py             boundary-owned storage
 
 orch: scratch/fsync helpers
-Workspace: one backend, persisted Boundary discovery, backend lifetime
+Workspace: one backend, remote plus persisted Boundary discovery, backend lifetime
 Boundary: lock-before-load aggregate, derived paths, atomic I/O, checkpoint, and four operations
 TitusCliScanner: one scanner per owned command, one active invocation at a time
 EvidenceExtractor: one extractor per owned command, first-occurrence retention
 LocalRuntime: runs one command operation across boundaries concurrently</pre>
       <p>The design rule is to keep module responsibilities clear and avoid circular dependencies; specific import directions are implementation choices. In the current implementation, Boundary uses its owner's concrete Workspace, backend content readers receive a scratch context, and Boundary's type-only Workspace reference avoids a runtime cycle. These details describe the current structure rather than prescribing a permanent import hierarchy.</p>
-      <p>Workspace owns one configured backend and constructs unloaded Boundaries for persisted inventories. Each Boundary operation acquires its OS lock before loading state, creates one TitusCliScanner, judge, and EvidenceExtractor, and closes operation resources before releasing ownership. Different boundaries may run concurrently. Scan targets and retries run sequentially and share the boundary datastore. Titus internal workers remain supported, and Titus inherits the lock descriptor. Scan, judge, and extract commands run in separate Python processes, without a source-content cache.</p>
+      <p>Workspace owns one configured backend and constructs unloaded Boundaries from persisted boundary records. Inventory commands first discover remote boundary IDs and reconcile availability without constructing content services. Source-dependent operations acquire the boundary OS lock before loading state and create the boundary's reader, scanner, judge, and extractor together; the requested command uses only what it needs. Different boundaries may run concurrently. Scan targets and retries run sequentially and share the boundary datastore. Titus internal workers remain supported, and Titus inherits the lock descriptor. Scan, judge, and extract commands run in separate Python processes, without a source-content cache.</p>
     </div>
     <div class="table-scroll" style="margin-top: 1.25rem" role="region" aria-label="Execution transitions" tabindex="0">
       <table>
@@ -475,12 +480,12 @@ LocalRuntime: runs one command operation across boundaries concurrently</pre>
     <h2 id="upgrade-title">Migrate the one existing workspace with each format change.</h2>
     <p>This is a single-user project with one existing workspace. A change to its persisted format includes migrating that workspace in the same task, preserving accumulated results and evidence. Migration should address the actual workspace; no general compatibility framework for a hypothetical installed user base is required. The commands below describe the current migration utility, which must be adapted when needed.</p>
     <p><strong>Stop all commands and any surviving old Titus subprocesses before upgrading.</strong> The old workspace is expected to have no lock files. Back up the complete workspace, including the datastore, before applying the upgrade.</p>
-    <p>Current contracts are <strong>inventory 10 · report 2 · credentials 8</strong>. Runtime commands do not require an execution checkpoint; target, judgment, extraction, and publication state are the source of truth.</p>
+    <p>Current contracts are <strong>boundary record 1 · scan targets 11 · report 2 · credentials 8</strong>. Runtime commands do not require an execution checkpoint; boundary availability, target, judgment, extraction, and publication state are the source of truth.</p>
     <pre>uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --dry-run
 # Back up the complete workspace before applying:
 uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --apply</pre>
-    <p>The offline migration upgrades inventory 8 or 9 to inventory 10. Obsolete inventory scan targets may be removed under the latest-only inventory change, while historical credentials, occurrence paths, judgments, evidence, and cumulative scan data remain preserved. A boundary with an existing Titus datastore is marked publication pending so its next explicit scan command performs one conservative export and merge without rescanning completed targets.</p>
-    <p>For each upgraded boundary, write the inventory only after all related documents validate. The tool itself does not scan, call an LLM, download content, audit evidence, or modify reports, credentials, evidence, or datastores.</p>
+    <p>The offline migration upgrades legacy inventory versions 8, 9, or 10 to <code>scantargets.json</code> version 11 and creates <code>boundary.json</code> version 1. It backs up and removes the original <code>inventory.json</code>. Obsolete scan targets may be removed under the latest-only rule, while historical credentials, occurrence paths, judgments, evidence, and cumulative scan data remain preserved. A boundary with an existing Titus datastore is marked publication pending so its next explicit scan command performs one conservative export and merge without rescanning completed targets.</p>
+    <p>For each upgraded boundary, write scan targets and the boundary record only after all related documents validate. The tool itself does not scan, call an LLM, download content, audit evidence, or modify reports, credentials, evidence, or datastores.</p>
     <p>There is no runtime migration, old-field alias, or automatic legacy default. A partially upgraded workspace must finish migration before normal commands run. Rollback uses a coherent workspace backup.</p>
   </section>
 
@@ -489,12 +494,24 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
     <h2 id="models-title">Top models → submodels → fields.</h2>
     <p class="section-intro">Trees show actual field nesting, not just conceptual ownership. <code>[]</code> means a collection; <code>?</code> means nullable. Union alternatives are shown under their field. References by ID are called out separately: a credential does not embed a full target or inventory. Click a tree heading to collapse or expand it.</p>
     <div class="grid-two model-grid">
+      <details class="model" open>
+        <summary><code>BoundaryRecord</code> <span class="chip">boundary.json · v1</span></summary>
+        <div class="model-body">
+          <p class="owner">Owner: <code>backend/models.py</code>. Workspace uses this document to enumerate enrolled boundaries independently of current scan targets.</p>
+          <ul class="tree">
+            <li><code>schema_version: 1</code></li>
+            <li><code>backend_id: str</code></li>
+            <li><code>boundary: ScanBoundaryRef</code></li>
+            <li><code>availability: "available" | "absent"</code></li>
+          </ul>
+        </div>
+      </details>
       <details class="model" id="model-inventory" open>
-        <summary><code>ScanBoundaryInventory</code> <span class="chip">inventory.json · v10</span></summary>
+        <summary><code>ScanTargetInventory</code> <span class="chip">scantargets.json · v11</span></summary>
         <div class="model-body">
           <p class="owner">Owner: aggregate unions in <code>backend/models.py</code>; shared identity bases in <code>backend/base_models.py</code>; Docker configuration and scopes in <code>backend/adapters/artifactory/docker.py</code>; Artifactory boundary shapes in <code>backend/adapters/artifactory/models.py</code>; package shapes in <code>backend/adapters/artifactory/package.py</code>; Git shapes in <code>backend/adapters/ghes.py</code>.</p>
           <ul class="tree">
-            <li><code>schema_version: 10</code></li>
+            <li><code>schema_version: 11</code></li>
             <li><code>publication_pending: bool</code></li>
             <li><code>generated_at: datetime</code></li>
             <li><code>backend.json</code><span class="hint">The workspace-level adapter discriminator contains only the backend name; inventories are grouped by the selected runtime adapter.</span></li>
@@ -505,13 +522,9 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
                 <li><code>kind: "artifactory" | "git-organization"</code><span class="hint">Artifactory repository or Git organization; not an image or commit.</span></li>
               </ul>
             </li>
-            <li><code>lifecycle: "active" | "stale"</code></li>
-            <li><code>stale_reason: str?</code></li>
             <li id="model-target"><code>targets: <span class="type">ScanTarget[]</span></code>
               <ul>
                 <li><code>id: str</code><span class="hint">Canonical target_id_for(scope) = scope.id + "@" + scope.version_id.</span></li>
-                <li><code>backend_id: str</code><span class="hint">Matches inventory.backend.name.</span></li>
-                <li><code>boundary: <span class="type">ScanBoundaryRef</span></code><span class="hint">Same owner as inventory.boundary.</span></li>
                 <li id="model-scope"><code>scope: <span class="type">ScanScopeRef</span></code>
                   <ul>
                     <li><code>id</code> + <code>version_id</code><span class="hint">Computed logical identity + immutable version identity.</span></li>
@@ -614,7 +627,7 @@ uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --a
     <div class="panel relations" id="identity">
       <h3>Containment is not the same as identity.</h3>
       <pre>Logical ownership:   ScanBoundary → ScanScope → latest immutable ScanTarget per scope
-Actual nesting:      ScanBoundaryInventory.targets[] → ScanTarget.{boundary, scope, result}
+Actual nesting:      ScanTargetInventory.targets[] → ScanTarget.{scope, result}
 
 Document join:       TitusReport.boundary_id ────────────┐
                      CredentialsDocument.boundary_id ───┴→ inventory.boundary.id
@@ -693,7 +706,8 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
       <table>
         <thead><tr><th scope="col">Artifact under boundary/</th><th scope="col">Model</th><th scope="col">Written by</th><th scope="col">Lifetime / meaning</th></tr></thead>
         <tbody>
-          <tr><td><code>inventory.json</code></td><td><a href="#model-inventory">ScanBoundaryInventory</a></td><td>Inventory; Boundary checkpoints</td><td>Stores only the latest selected scan target per scope and its scan result.</td></tr>
+          <tr><td><code>boundary.json</code></td><td><code>BoundaryRecord</code></td><td>Inventory reconciliation</td><td>Registers boundary identity and whether its backend source is currently available.</td></tr>
+          <tr><td><code>scantargets.json</code></td><td><a href="#model-inventory">ScanTargetInventory</a></td><td>Inventory; Boundary checkpoints</td><td>Exists only for available boundaries and stores the latest selected scan target per scope and its scan result.</td></tr>
           <tr><td><code>titus.ds/</code></td><td>None — Titus datastore</td><td>Scan</td><td>Persistent and shared by all scan targets in this boundary; never target scratch.</td></tr>
           <tr><td><code>report.json</code></td><td><a href="#model-report">TitusReport</a></td><td>Scan final export</td><td>Latest cumulative raw findings and rule metadata.</td></tr>
           <tr><td><code>credentials.json</code></td><td><a href="#model-credentials">CredentialsDocument</a></td><td>Scan → Judge → Extract</td><td>Append-only observations; per-credential judgment and extraction checkpoints.</td></tr>
@@ -707,10 +721,10 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <h3>Scheduling and handoff</h3>
         <ul>
           <li>Each per-boundary command operation holds exclusive ownership from state load through cleanup. One invocation may process different boundaries concurrently.</li>
-          <li>The owned boundary creates one scanner, one judge, and one extractor. Scan targets and Titus invocations run sequentially; Titus itself may use internal parallelism.</li>
+          <li>Inventory creates no content services. Scan, Judge, and Extract each create only their required reader and operation-specific service. Scan targets and Titus invocations run sequentially; Titus itself may use internal parallelism.</li>
           <li>A single <code>TitusCliScanner</code> serves each boundary. There is no <code>scan_concurrency</code> setting; <code>internal_workers</code> controls Titus internal parallelism. Retry transient scan failures up to three attempts; permanent failures do not retry. Checkpoint each completed scan target before starting the next.</li>
           <li>Scan, judge, and extract run as separate commands. Completed scan work is skipped; extraction checks retained evidence even when no new extraction is pending.</li>
-          <li>Stale boundaries and already-scanned targets do not start new scans. Removed scopes and replaced versions are absent from inventory.</li>
+          <li>Absent boundaries and already-scanned targets do not start new scans. Removed scopes and replaced versions are absent from current scan targets.</li>
         </ul>
       </article>
       <article class="panel">
@@ -731,7 +745,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
     <p class="section-intro">Schematic identifiers below describe the boundary inventory and backend locator flow. No credential value is shown.</p>
     <div class="panel">
       <ol class="timeline">
-        <li><strong>Inventory.</strong> The Artifactory backend discovers repository <code>docker-local</code>, image scope <code>payments/api</code>, and selected child manifest <code>M1</code>. It writes a <code>ScanBoundaryInventory</code> containing a <code>ScanTarget</code> whose <code>boundary</code> is the repository and whose <code>scope</code> is a <code>DockerImageScanScope</code> at immutable manifest M1.</li>
+        <li><strong>Inventory.</strong> The Artifactory backend discovers repository <code>docker-local</code>, image scope <code>payments/api</code>, and selected child manifest <code>M1</code>. It writes a <code>ScanTargetInventory</code> containing a <code>ScanTarget</code> whose <code>boundary</code> is the repository and whose <code>scope</code> is a <code>DockerImageScanScope</code> at immutable manifest M1.</li>
         <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains a finding at <code>app.env</code>. Conversion retains its complete backend locator as a credential occurrence.</li>
         <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> containing the complete backend locator. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
         <li><strong>Judge.</strong> The judge receives C1 and a content reader. Assume it returns <code>JudgmentResult(verdict="VALID", reasoning=…)</code>. Orchestration saves this result to the latest <code>credentials.json</code>.</li>

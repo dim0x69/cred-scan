@@ -10,7 +10,7 @@ from urllib.parse import quote
 import pytest
 
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.orch import boundary as boundary_module
 from cred_scan.orch.boundary import Boundary
 from cred_scan.orch.locking import BoundaryBusyError, boundary_lock
@@ -25,7 +25,7 @@ from cred_scan.scan.models import (
 
 def make_boundary(tmp_path, monkeypatch, *, publication_pending=False):
     reference = ArtifactoryRepository(id="artifactory:primary:repo", name="repo")
-    inventory = ScanBoundaryInventory(
+    inventory = ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         boundary=reference,
         publication_pending=publication_pending,
@@ -131,7 +131,7 @@ def test_pending_publication_exports_without_scanning(tmp_path, monkeypatch):
     assert asyncio.run(boundary.scan())
     scanner.scan.assert_not_awaited()
     scanner.export_report.assert_awaited_once_with(boundary.paths.datastore)
-    current = ScanBoundaryInventory.model_validate_json(
+    current = ScanTargetInventory.model_validate_json(
         boundary.paths.inventory.read_text()
     )
     assert not current.publication_pending
@@ -175,7 +175,7 @@ def test_interrupted_publication_remains_pending(
     with pytest.raises((RuntimeError, OSError)):
         asyncio.run(boundary.scan())
 
-    current = ScanBoundaryInventory.model_validate_json(
+    current = ScanTargetInventory.model_validate_json(
         boundary.paths.inventory.read_text()
     )
     assert current.publication_pending

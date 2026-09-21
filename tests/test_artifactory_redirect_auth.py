@@ -12,6 +12,9 @@ from cred_scan.backend.adapters.artifactory.common import (
 
 
 class RedirectBackend(ArtifactoryBackend):
+    async def discover_boundaries(self):
+        raise NotImplementedError
+
     def titus_scan_arguments(self, inventory, target):
         raise NotImplementedError
 

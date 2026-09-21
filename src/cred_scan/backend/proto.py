@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from cred_scan.backend.models import (
         ContentLocation,
         ContentRead,
-        ScanBoundaryInventory,
+        ScanTargetInventory,
         ScanTarget,
     )
 
@@ -35,8 +35,11 @@ class BackendAdapter(ABC):
     async def aclose(self) -> None: ...
 
     @abstractmethod
+    async def discover_boundaries(self) -> tuple[str, ...]: ...
+
+    @abstractmethod
     def titus_scan_arguments(
-        self, inventory: ScanBoundaryInventory, target: ScanTarget
+        self, inventory: ScanTargetInventory, target: ScanTarget
     ) -> tuple[str, ...]: ...
 
     @abstractmethod
@@ -48,7 +51,7 @@ class BackendAdapter(ABC):
         ...
 
     @abstractmethod
-    async def inventory(self, boundary_id: str) -> ScanBoundaryInventory: ...
+    async def inventory(self, boundary_id: str) -> ScanTargetInventory: ...
 
 
 class ContentReader(Protocol):

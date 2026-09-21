@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 from pathspec import PathSpec
 
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.backend.proto import ContentReader
 from cred_scan.orch.global_config import get_exclusions
 from cred_scan.scan.exclusions import match_credential_exclusion
@@ -112,7 +112,7 @@ def _path_spec(policy: ExclusionPolicy) -> PathSpec:
 
 def report_from_export(
     raw_report: list[dict[str, Any]],
-    inventory: ScanBoundaryInventory,
+    inventory: ScanTargetInventory,
     *,
     incomplete: bool = False,
     errors: tuple[str, ...] = (),
@@ -128,7 +128,7 @@ def report_from_export(
 
 async def deduplicate_report(
     report: TitusReport,
-    inventory: ScanBoundaryInventory,
+    inventory: ScanTargetInventory,
     resolver: ContentReader,
 ) -> CredentialsDocument:
     """Resolve all raw locations before producing persisted credentials."""

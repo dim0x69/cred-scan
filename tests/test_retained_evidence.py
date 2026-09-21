@@ -8,7 +8,7 @@ from urllib.parse import quote
 import pytest
 
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
-from cred_scan.backend.models import ContentLocation, ContentRead, ScanBoundaryInventory
+from cred_scan.backend.models import ContentLocation, ContentRead, ScanTargetInventory
 from cred_scan.extract import evidence as evidence_module
 from cred_scan.extract.evidence import evidence_path
 from cred_scan.extract.models import ExtractionResult
@@ -25,7 +25,7 @@ def test_retained_file_check_preserves_history(
     repository = ArtifactoryRepository(id="artifactory:primary:repo", name="repo")
     boundary_dir = tmp_path / quote(repository.id, safe="")
     boundary_dir.mkdir()
-    inventory = ScanBoundaryInventory(
+    inventory = ScanTargetInventory(
         generated_at=datetime.now(UTC), boundary=repository,
     )
     (boundary_dir / "inventory.json").write_text(inventory.model_dump_json())
@@ -91,7 +91,7 @@ def extraction_boundary(tmp_path, monkeypatch):
     repository = ArtifactoryRepository(id="artifactory:primary:repo", name="repo")
     path = tmp_path / quote(repository.id, safe="")
     path.mkdir()
-    inventory = ScanBoundaryInventory(generated_at=datetime.now(UTC), boundary=repository)
+    inventory = ScanTargetInventory(generated_at=datetime.now(UTC), boundary=repository)
     (path / "inventory.json").write_text(inventory.model_dump_json())
     reader = Mock(aclose=AsyncMock())
     reader.resolve_location = AsyncMock(return_value=ContentLocation(

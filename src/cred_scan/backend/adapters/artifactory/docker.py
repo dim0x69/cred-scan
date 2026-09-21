@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from cred_scan.backend.models import (
         ContentLocation,
         ContentRead,
-        ScanBoundaryInventory,
+        ScanTargetInventory,
         ScanTarget,
     )
 from cred_scan.backend.proto import (
@@ -476,36 +476,53 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
 
     async def list_images(self, repository: str) -> set[str]:
         url = f"{self.base_url}/api/docker/{quote(repository, safe='')}/v2/_catalog"
-        images: set[str] = set()
-        next_url: str | None = url
-        while next_url:
-            response = await self._get(next_url)
-            try:
-                payload = response.json()
-                next_url = response.links.get("next", {}).get("url")
-            finally:
-                await response.aclose()
-            if isinstance(payload, dict):
-                images.update(
-                    str(item) for item in payload.get("repositories", []) if item
-                )
-        return images
+        return set(await self._paginated_names(url, "repositories", "catalog"))
 
     async def list_tags(self, repository: str, image: str) -> list[str]:
         url = (
             f"{self.base_url}/api/docker/{quote(repository, safe='')}/v2/"
             f"{quote(image, safe='/')}/tags/list"
         )
-        response = await self._get(url)
-        try:
-            payload = response.json()
-        finally:
-            await response.aclose()
-        tags = payload.get("tags", []) if isinstance(payload, dict) else []
-        return sorted({str(tag) for tag in tags if tag})
+        return list(await self._paginated_names(url, "tags", "tag list"))
+
+    async def _paginated_names(
+        self, url: str, field: str, response_name: str
+    ) -> tuple[str, ...]:
+        values: set[str] = set()
+        next_url: str | None = url
+        while next_url:
+            response = await self._get(next_url)
+            try:
+                try:
+                    payload = response.json()
+                except ValueError as error:
+                    raise ArtifactoryError(
+                        f"Artifactory {response_name} was not valid JSON"
+                    ) from error
+                if not isinstance(payload, dict):
+                    raise ArtifactoryError(
+                        f"Artifactory {response_name} was not an object"
+                    )
+                items = payload.get(field)
+                if not isinstance(items, list):
+                    raise ArtifactoryError(
+                        f"Artifactory {response_name} {field} was not an array"
+                    )
+                if any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in items
+                ):
+                    raise ArtifactoryError(
+                        f"Artifactory {response_name} {field} contained an invalid name"
+                    )
+                values.update(items)
+                next_url = response.links.get("next", {}).get("url")
+            finally:
+                await response.aclose()
+        return tuple(sorted(values))
 
     def titus_scan_arguments(
-        self, inventory: ScanBoundaryInventory, target: ScanTarget
+        self, inventory: ScanTargetInventory, target: ScanTarget
     ) -> tuple[str, ...]:
         scope = target.scope
         if not isinstance(scope, DockerImageScanScope):
@@ -536,6 +553,36 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             id=f"artifactory:{self.name}:{name}", name=name
         )
         return repository
+
+    @staticmethod
+    def _repository_name(metadata: dict[str, Any]) -> str:
+        name = metadata.get("key") or metadata.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ArtifactoryError("Artifactory repository has no valid name")
+        return name
+
+    @staticmethod
+    def _is_supported_repository(metadata: dict[str, Any]) -> bool:
+        package_type = metadata.get("packageType")
+        repository_type = metadata.get("type", metadata.get("rclass"))
+        if not isinstance(package_type, str) or not isinstance(
+            repository_type, str
+        ):
+            raise ArtifactoryError(
+                "Artifactory repository has invalid package or repository type"
+            )
+        return package_type.lower() == "docker" and repository_type.lower() in {
+            "local",
+            "local-repo",
+        }
+
+    async def discover_boundaries(self) -> tuple[str, ...]:
+        boundary_ids = {
+            self._repository(self._repository_name(metadata)).id
+            for metadata in await self.repositories()
+            if self._is_supported_repository(metadata)
+        }
+        return tuple(sorted(boundary_ids))
 
     async def _platform_manifest(
         self, repository: str, image: str, reference: str, platform: str
@@ -613,9 +660,9 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             manifest_timestamp=newest_timestamp,
         )
 
-    async def inventory(self, boundary_id: str) -> ScanBoundaryInventory:
+    async def inventory(self, boundary_id: str) -> ScanTargetInventory:
         from cred_scan.backend.models import (  # noqa: PLC0415
-            ScanBoundaryInventory,
+            ScanTargetInventory,
             ScanTarget,
             target_id_for,
         )
@@ -623,31 +670,20 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         generated_at = datetime.now(UTC)
         repositories = await self.repositories()
         for metadata in repositories:
-            name = metadata.get("key") or metadata.get("name")
-            if not isinstance(name, str):
-                continue
+            name = self._repository_name(metadata)
             repository = self._repository(name)
             if repository.id != boundary_id:
                 continue
-            package_type = str(metadata.get("packageType", "")).lower()
-            repository_type = str(
-                metadata.get("type", metadata.get("rclass", ""))
-            ).lower()
-            if package_type != "docker" or repository_type not in {
-                "local",
-                "local-repo",
-            }:
+            if not self._is_supported_repository(metadata):
                 LOGGER.warning(
-                    "skipping unsupported Artifactory repository %s (%s/%s)",
+                    "skipping unsupported Artifactory repository %s",
                     name,
-                    repository_type,
-                    package_type,
                 )
                 continue
             images = sorted(await self.list_images(name))
             if not images:
                 LOGGER.info("skipping empty Artifactory repository %s", name)
-                return ScanBoundaryInventory(
+                return ScanTargetInventory(
                     generated_at=generated_at,
                     boundary=repository,
                 )
@@ -659,12 +695,10 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                 targets.append(
                     ScanTarget(
                         id=target_id_for(scope),
-                        backend_id=self.name,
-                        boundary=repository,
                         scope=scope,
                     )
                 )
-            return ScanBoundaryInventory(
+            return ScanTargetInventory(
                 generated_at=generated_at,
                 boundary=repository,
                 targets=tuple(targets),

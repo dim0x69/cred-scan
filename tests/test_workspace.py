@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.orch import workspace as storage
 from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.common.workspace import WorkspaceBusyError
@@ -26,7 +26,7 @@ def test_failed_write_preserves_checkpoint(
 ):
     workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     path = workspace.boundary(repository_inventory.boundary.id).inventory
-    workspace.write(path, repository_inventory, ScanBoundaryInventory)
+    workspace.write(path, repository_inventory, ScanTargetInventory)
     original = path.read_bytes()
     failing = Mock(side_effect=OSError("injected write failure"))
     with monkeypatch.context() as patch:
@@ -40,13 +40,13 @@ def test_failed_write_preserves_checkpoint(
             workspace.write(
                 path,
                 repository_inventory.model_copy(update={"errors": ("new",)}),
-                ScanBoundaryInventory,
+                ScanTargetInventory,
             )
     assert path.read_bytes() == original
     assert not list(path.parent.glob(".*.tmp"))
     reopened = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
-    assert reopened.read(path, ScanBoundaryInventory) == repository_inventory
-    workspace.write(path, repository_inventory, ScanBoundaryInventory)  # Lock released.
+    assert reopened.read(path, ScanTargetInventory) == repository_inventory
+    workspace.write(path, repository_inventory, ScanTargetInventory)  # Lock released.
 
 
 def test_operation_lock_is_shared_and_released_after_exception(tmp_path):
@@ -155,11 +155,11 @@ def test_only_missing_document_returns_none(tmp_path, payload):
 def test_wrong_model_is_rejected_before_creating_boundary(tmp_path):
     workspace = Workspace(WorkspaceConfig(workspace_dir=tmp_path))
     paths = workspace.boundary("boundary")
-    with pytest.raises(TypeError, match="expected ScanBoundaryInventory"):
+    with pytest.raises(TypeError, match="expected ScanTargetInventory"):
         workspace.write(
             paths.inventory,
             TitusReport(boundary_id="boundary", generated_at="now"),
-            ScanBoundaryInventory,
+            ScanTargetInventory,
         )
     assert not paths.boundary_dir.exists()
 
@@ -175,7 +175,7 @@ def test_paths_are_frozen_io_free_and_inventory_discovery_includes_stale(
     with pytest.raises(ValidationError, match="frozen"):
         setattr(paths, "boundary_id", "other")
     stale = repository_inventory.model_copy(update={"lifecycle": "stale"})
-    workspace.write(paths.inventory, stale, ScanBoundaryInventory)
+    workspace.write(paths.inventory, stale, ScanTargetInventory)
     orphan = workspace.boundary("not-inventoried")
     orphan.boundary_dir.mkdir()
     orphan.credentials.write_text("{}")
@@ -205,7 +205,7 @@ def test_file_is_fsynced_before_atomic_replacement(
 
     monkeypatch.setattr(storage.os, "fsync", record_fsync)
     monkeypatch.setattr(Path, "replace", record_replace)
-    workspace.write(path, repository_inventory, ScanBoundaryInventory)
+    workspace.write(path, repository_inventory, ScanTargetInventory)
     assert events == ["fsync", "replace", "fsync"]
 
 

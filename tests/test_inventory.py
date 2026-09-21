@@ -14,7 +14,7 @@ from cred_scan.backend.models import (
     GitOrganization,
     GitRepositoryScanScope,
     PackageScanScope,
-    ScanBoundaryInventory,
+    ScanTargetInventory,
     ScanTarget,
     target_id_for,
 )
@@ -33,7 +33,7 @@ def make_workspace(tmp_path):
 
 def make_inventory(
     backend_name: str = "primary", digest: str = "sha256:first"
-) -> ScanBoundaryInventory:
+) -> ScanTargetInventory:
     repository = ArtifactoryRepository(
         id="artifactory:primary:docker-local", name="docker-local"
     )
@@ -50,7 +50,7 @@ def make_inventory(
         boundary=repository,
         scope=scope,
     )
-    return ScanBoundaryInventory(
+    return ScanTargetInventory(
         generated_at=datetime.now(timezone.utc),
         backend=BackendConfig(name=backend_name),
         boundary=repository,
@@ -74,14 +74,14 @@ def test_scope_identity_is_stable_while_pin_changes():
 
 
 def test_workspace_inventory_round_trip(
-    app_config: AppConfig, repository_inventory: ScanBoundaryInventory
+    app_config: AppConfig, repository_inventory: ScanTargetInventory
 ):
     workspace = Workspace(app_config.workspace)
     repository = workspace.boundary(repository_inventory.boundary.id)
-    workspace.write(repository.inventory, repository_inventory, ScanBoundaryInventory)
+    workspace.write(repository.inventory, repository_inventory, ScanTargetInventory)
 
     assert repository.inventory.exists()
-    loaded = workspace.read(repository.inventory, ScanBoundaryInventory)
+    loaded = workspace.read(repository.inventory, ScanTargetInventory)
     assert loaded is not None
     assert loaded.backend.name == "primary"
     assert loaded.boundary == repository_inventory.boundary
@@ -92,21 +92,21 @@ def test_typed_workspace_distinguishes_missing_and_invalid_documents(tmp_path):
     workspace = make_workspace(tmp_path)
     repository = workspace.boundary("repository")
 
-    assert workspace.read(repository.inventory, ScanBoundaryInventory) is None
-    with pytest.raises(TypeError, match="expected ScanBoundaryInventory"):
+    assert workspace.read(repository.inventory, ScanTargetInventory) is None
+    with pytest.raises(TypeError, match="expected ScanTargetInventory"):
         workspace.write(
             repository.inventory,
             TitusReport(
                 boundary_id="repository",
                 generated_at="2026-01-01T00:00:00+00:00",
             ),
-            ScanBoundaryInventory,
+            ScanTargetInventory,
         )
 
     repository.inventory.parent.mkdir(parents=True, exist_ok=True)
     repository.inventory.write_text('{"schema_version": 1}')
     with pytest.raises(ValidationError):
-        workspace.read(repository.inventory, ScanBoundaryInventory)
+        workspace.read(repository.inventory, ScanTargetInventory)
 
 
 def test_evidence_paths_are_safe_and_repository_relative(tmp_path):
@@ -131,15 +131,15 @@ def test_backend_inventory_merge_adds_new_pins_without_removing_old_targets(tmp_
     workspace = make_workspace(tmp_path)
     first = make_inventory()
     repository = workspace.boundary(first.boundary.id)
-    workspace.write(repository.inventory, first, ScanBoundaryInventory)
+    workspace.write(repository.inventory, first, ScanTargetInventory)
 
     later = make_inventory(digest="sha256:later")
     merged = merge_inventory(
-        workspace.read(repository.inventory, ScanBoundaryInventory), later
+        workspace.read(repository.inventory, ScanTargetInventory), later
     )
-    workspace.write(repository.inventory, merged, ScanBoundaryInventory)
+    workspace.write(repository.inventory, merged, ScanTargetInventory)
 
-    result = workspace.read(repository.inventory, ScanBoundaryInventory)
+    result = workspace.read(repository.inventory, ScanTargetInventory)
     assert result is not None
     scope = result.targets[0].scope
     assert isinstance(scope, DockerImageScanScope)
@@ -191,7 +191,7 @@ def test_inventory_merge_retains_canonical_git_target_ids():
         boundary=boundary,
         scope=scope,
     )
-    current = ScanBoundaryInventory(
+    current = ScanTargetInventory(
         generated_at=datetime.now(timezone.utc),
         backend=backend,
         boundary=boundary,
@@ -234,7 +234,7 @@ def test_inventory_document_has_backend_configuration_only(tmp_path):
     workspace = make_workspace(tmp_path)
     inventory_document = make_inventory()
     repository = workspace.boundary(inventory_document.boundary.id)
-    workspace.write(repository.inventory, inventory_document, ScanBoundaryInventory)
+    workspace.write(repository.inventory, inventory_document, ScanTargetInventory)
     payload = json.loads(repository.inventory.read_text())
 
     assert payload["backend"] == {"name": "primary"}
@@ -253,7 +253,7 @@ def test_inventory_merge_rejects_backend_mismatch(tmp_path):
 def test_inventory_rejects_targets_from_another_boundary(repository_inventory):
     target = repository_inventory.targets[0].model_copy(update={"backend_id": "other"})
     with pytest.raises(ValueError, match="belong to its backend and boundary"):
-        ScanBoundaryInventory(
+        ScanTargetInventory(
             generated_at=repository_inventory.generated_at,
             backend=repository_inventory.backend,
             boundary=repository_inventory.boundary,
@@ -274,7 +274,7 @@ def test_run_inventory_retires_error_only_empty_boundary(
         BoundaryExecution(boundary_id=failed.boundary.id),
         BoundaryExecution,
     )
-    workspace.write(paths.inventory, failed, ScanBoundaryInventory)
+    workspace.write(paths.inventory, failed, ScanTargetInventory)
     backend = Mock(
         inventory=AsyncMock(
             return_value=[repository_inventory.model_copy(update={"targets": ()})]
@@ -290,7 +290,7 @@ def test_run_inventory_retires_error_only_empty_boundary(
             return await inventory.run_inventory(app_config, workspace)
 
     assert asyncio.run(refresh()) == 1
-    refreshed = workspace.read(paths.inventory, ScanBoundaryInventory)
+    refreshed = workspace.read(paths.inventory, ScanTargetInventory)
     assert refreshed.targets == () and refreshed.errors == ()
     assert refreshed.lifecycle == "active"
     backend.aclose.assert_awaited_once()
@@ -316,7 +316,7 @@ def test_run_inventory_persists_adapter_returned_boundaries(
     state = workspace.read(paths.execution, BoundaryExecution)
     assert state.scan == PhaseStatus.READY
     assert (
-        workspace.read(paths.inventory, ScanBoundaryInventory) == repository_inventory
+        workspace.read(paths.inventory, ScanTargetInventory) == repository_inventory
     )
     backend.aclose.assert_awaited_once()
 
@@ -370,7 +370,7 @@ def test_inventory_persistence_rejects_noncanonical_pin_without_replacing_file(
     current = make_inventory()
     workspace = make_workspace(tmp_path)
     path = workspace.boundary(current.boundary.id).inventory
-    workspace.write(path, current, ScanBoundaryInventory)
+    workspace.write(path, current, ScanTargetInventory)
     original = path.read_bytes()
     payload = current.model_dump(mode="json")
     if field == "id":
@@ -386,12 +386,12 @@ def test_inventory_persistence_rejects_noncanonical_pin_without_replacing_file(
             }
         )
     with pytest.raises(ValidationError, match="target ID must match"):
-        ScanBoundaryInventory.model_validate(payload)
+        ScanTargetInventory.model_validate(payload)
     with pytest.raises(ValidationError, match="target ID must match"):
         workspace.write(
             path,
             current.model_copy(update={"targets": (changed,)}),
-            ScanBoundaryInventory,
+            ScanTargetInventory,
         )
     assert path.read_bytes() == original
 
@@ -401,7 +401,7 @@ def test_inventory_rejects_previous_identity_schema(version):
     payload = make_inventory().model_dump(mode="json")
     payload["schema_version"] = version
     with pytest.raises(ValidationError, match="schema_version"):
-        ScanBoundaryInventory.model_validate(payload)
+        ScanTargetInventory.model_validate(payload)
 
 
 @pytest.mark.parametrize("status", ["scanned", "partial", "failed"])
@@ -420,8 +420,8 @@ def test_rediscovery_reuses_historical_pin_and_execution_result(tmp_path, status
     assert merge_inventory(restored, make_inventory()).targets == restored.targets
     workspace = make_workspace(tmp_path)
     path = workspace.boundary(first.boundary.id).inventory
-    workspace.write(path, restored, ScanBoundaryInventory)
-    assert workspace.read(path, ScanBoundaryInventory) == restored
+    workspace.write(path, restored, ScanTargetInventory)
+    assert workspace.read(path, ScanTargetInventory) == restored
 
 
 def test_repeated_multi_pin_discovery_is_idempotent():
@@ -515,7 +515,7 @@ def test_boundary_failure_and_reappearance_preserve_artifacts(
 ):
     workspace = Workspace(app_config)
     paths = workspace.boundary(repository_inventory.boundary.id)
-    workspace.write(paths.inventory, repository_inventory, ScanBoundaryInventory)
+    workspace.write(paths.inventory, repository_inventory, ScanTargetInventory)
     workspace.write(
         paths.execution,
         BoundaryExecution(boundary_id=repository_inventory.boundary.id),
@@ -548,16 +548,16 @@ def test_boundary_failure_and_reappearance_preserve_artifacts(
 
     backend.inventory.return_value = []
     asyncio.run(refresh())
-    assert workspace.read(paths.inventory, ScanBoundaryInventory).lifecycle == "stale"
+    assert workspace.read(paths.inventory, ScanTargetInventory).lifecycle == "stale"
     backend.inventory.return_value = [
         repository_inventory.model_copy(update={"targets": (), "errors": ("HTTP 503",)})
     ]
     asyncio.run(refresh())
-    failed = workspace.read(paths.inventory, ScanBoundaryInventory)
+    failed = workspace.read(paths.inventory, ScanTargetInventory)
     assert failed.lifecycle == "stale" and failed.errors == ("HTTP 503",)
     backend.inventory.return_value = [repository_inventory]
     asyncio.run(refresh())
-    returned = workspace.read(paths.inventory, ScanBoundaryInventory)
+    returned = workspace.read(paths.inventory, ScanTargetInventory)
     assert returned.lifecycle == "active" and returned.stale_reason is None
     assert returned.targets == repository_inventory.targets
     assert all(p.read_bytes() == content for p, content in artifacts.items())

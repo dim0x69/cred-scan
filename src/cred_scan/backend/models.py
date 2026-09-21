@@ -21,6 +21,15 @@ ScanBoundaryRef = ArtifactoryRepository | GitOrganization
 ScanScopeRef = DockerImageScanScope | PackageScanScope | GitRepositoryScanScope
 
 
+class BoundaryRecord(BaseModel):
+    """Durable boundary enrollment and current backend availability."""
+
+    schema_version: Literal[1] = 1
+    backend_id: str
+    boundary: ScanBoundaryRef
+    availability: Literal["available", "absent"] = "available"
+
+
 def target_id_for(scope: ScanScope) -> str:
     """Return the stable ID for one immutable scan target."""
     return f"{scope.id}@{scope.version_id}"
@@ -55,11 +64,9 @@ class ScanTargetResult(BaseModel):
 
 
 class ScanTarget(BaseModel):
-    """One immutable scan target owned by one boundary and worker."""
+    """One immutable source version owned by its containing inventory."""
 
     id: str
-    backend_id: str
-    boundary: ScanBoundaryRef
     scope: ScanScopeRef
     result: ScanTargetResult = Field(default_factory=ScanTargetResult)
 
@@ -70,27 +77,18 @@ class ScanTarget(BaseModel):
         return self
 
 
-class ScanBoundaryInventory(BaseModel):
+class ScanTargetInventory(BaseModel):
     """The latest selected scan targets and their results for one boundary."""
 
-    schema_version: Literal[10] = 10
+    schema_version: Literal[11] = 11
     publication_pending: bool = False
     generated_at: datetime
     boundary: ScanBoundaryRef
-    lifecycle: Literal["active", "stale"] = "active"
-    stale_reason: str | None = None
     targets: tuple[ScanTarget, ...] = ()
     errors: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def validate_target_ownership(self) -> "ScanBoundaryInventory":
-        if any(
-            target.boundary != self.boundary
-            for target in self.targets
-        ):
-            raise ValueError(
-                "inventory targets must belong to its backend and boundary"
-            )
+    def validate_selection(self) -> "ScanTargetInventory":
         target_ids = [target.id for target in self.targets]
         if len(target_ids) != len(set(target_ids)):
             raise ValueError("inventory target IDs must be unique")

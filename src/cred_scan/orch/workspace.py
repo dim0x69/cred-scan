@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
+from cred_scan.backend.models import BoundaryRecord
 from cred_scan.backend.proto import BackendAdapter
 from cred_scan.orch.boundary import Boundary
 from cred_scan.orch.locking import BoundaryBusyError
@@ -74,13 +75,46 @@ class Workspace:
         """Construct unloaded boundaries in deterministic ID order."""
         if self._boundaries is None:
             self._boundaries = tuple(
-                Boundary(self.backend, inventory_path.parent)
-                for inventory_path in sorted(
-                    self._workspace_dir.glob("*/inventory.json"),
+                Boundary(self.backend, record_path.parent)
+                for record_path in sorted(
+                    self._workspace_dir.glob("*/boundary.json"),
                     key=lambda item: unquote(item.parent.name),
                 )
             )
         return self._boundaries
+
+    def _registered_boundary_ids(self) -> set[str]:
+        boundary_ids = set()
+        for record_path in self._workspace_dir.glob("*/boundary.json"):
+            boundary_id = unquote(record_path.parent.name)
+            record = Boundary._read(record_path, BoundaryRecord)
+            if record is None or record.boundary.id != boundary_id:
+                raise ValueError(
+                    f"boundary record does not match directory: {record_path}"
+                )
+            if record.backend_id != self.backend.name:
+                raise ValueError(
+                    f"boundary record belongs to another backend: {record_path}"
+                )
+            boundary_ids.add(boundary_id)
+        return boundary_ids
+
+    def _available_boundaries(self) -> tuple[Boundary, ...]:
+        available = []
+        for boundary in self.boundaries:
+            record = Boundary._read(boundary.paths.record, BoundaryRecord)
+            if record is None or record.boundary.id != boundary.boundary_id:
+                raise ValueError(
+                    f"boundary record does not match directory: {boundary.paths.record}"
+                )
+            if record.backend_id != self.backend.name:
+                raise ValueError(
+                    "boundary record belongs to another backend: "
+                    f"{boundary.paths.record}"
+                )
+            if record.availability == "available":
+                available.append(boundary)
+        return tuple(available)
 
     def boundary(self, boundary_id: str) -> Boundary:
         """Return one unloaded boundary aggregate."""
@@ -93,7 +127,9 @@ class Workspace:
         )
 
     async def _run_boundaries(
-        self, operation: Callable[[Boundary], Awaitable[int | bool]]
+        self,
+        operation: Callable[[Boundary], Awaitable[int | bool]],
+        boundaries: tuple[Boundary, ...] | None = None,
     ) -> int:
         """Run one command operation across boundaries concurrently."""
 
@@ -104,25 +140,45 @@ class Workspace:
                 LOGGER.warning("skipping boundary: %s", error)
                 return 0
 
+        selected = self.boundaries if boundaries is None else boundaries
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(run(boundary)) for boundary in self.boundaries]
+            tasks = [
+                group.create_task(run(boundary))
+                for boundary in selected
+            ]
         return sum(task.result() for task in tasks)
 
     async def inventory(self) -> int:
-        result = await self._run_boundaries(Boundary.refresh_inventory)
+        discovered = await self.backend.discover_boundaries()
+        discovered_ids = set(discovered)
+        boundary_ids = self._registered_boundary_ids() | discovered_ids
+        self._boundaries = tuple(
+            Boundary(
+                self.backend,
+                self._workspace_dir / quote(boundary_id, safe=""),
+            )
+            for boundary_id in sorted(boundary_ids)
+        )
+        result = await self._run_boundaries(
+            lambda boundary: (
+                boundary.refresh_inventory()
+                if boundary.boundary_id in discovered_ids
+                else boundary.mark_absent()
+            )
+        )
         marker = self._workspace_dir / "backend.json"
-        if not marker.exists() and any(self._workspace_dir.glob("*/inventory.json")):
+        if not marker.exists() and any(self._workspace_dir.glob("*/boundary.json")):
             marker.write_text(json.dumps({"name": self.backend.name}, indent=2) + "\n")
         return result
 
     async def scan(self) -> int:
-        return await self._run_boundaries(Boundary.scan)
+        return await self._run_boundaries(Boundary.scan, self._available_boundaries())
 
     async def judge(self) -> int:
-        return await self._run_boundaries(Boundary.judge)
+        return await self._run_boundaries(Boundary.judge, self._available_boundaries())
 
     async def extract(self) -> int:
-        return await self._run_boundaries(Boundary.extract)
+        return await self._run_boundaries(Boundary.extract, self._available_boundaries())
 
     async def close(self) -> None:
         if self._closed:

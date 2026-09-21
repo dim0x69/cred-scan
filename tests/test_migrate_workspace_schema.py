@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.orch.models import WorkspaceConfig
 from cred_scan.common.workspace import WorkspaceBusyError
 from cred_scan.orch.workspace import Workspace
@@ -66,7 +66,7 @@ def test_inventory_only_upgrade_dry_run_and_apply(tmp_path, repository_inventory
     assert migrate_workspace(tmp_path) == 1
     assert snapshot(tmp_path) == before
     assert migrate_workspace(tmp_path, apply=True) == 1
-    inventory = store.read(paths.inventory, ScanBoundaryInventory)
+    inventory = store.read(paths.inventory, ScanTargetInventory)
     assert inventory == repository_inventory
     state = store.read(paths.execution, BoundaryExecution)
     assert state.scan == PhaseStatus.READY
@@ -114,7 +114,7 @@ def test_results_and_history_survive_with_conservative_publication(
     for path, content in before.items():
         if path != paths.inventory.relative_to(tmp_path):
             assert (tmp_path / path).read_bytes() == content
-    assert store.read(paths.inventory, ScanBoundaryInventory) == repository_inventory
+    assert store.read(paths.inventory, ScanTargetInventory) == repository_inventory
     state = store.read(paths.execution, BoundaryExecution)
     assert state.scan_publication_pending
     assert [state.status(p) for p in Phase] == [PhaseStatus.READY] * 3
@@ -202,7 +202,7 @@ def test_runtime_rejects_old_inventory_without_defaulting(repository_inventory):
     payload = repository_inventory.model_dump(mode="json")
     payload["schema_version"] = 7
     with pytest.raises(ValidationError, match="schema_version"):
-        ScanBoundaryInventory.model_validate(payload)
+        ScanTargetInventory.model_validate(payload)
 
 
 def test_upgraded_inventory_requires_valid_execution(tmp_path, repository_inventory):

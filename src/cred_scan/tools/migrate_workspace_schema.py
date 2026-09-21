@@ -1,7 +1,7 @@
-"""Offline inventory 8/9 -> 10 migration with publication recovery.
+"""Offline workspace migration to boundary records and scantargets.json.
 
 Credentials, reports, cumulative Titus datastores, and evidence are untouched.
-Original inventories are backed up before replacement.
+Original inventory.json files are backed up before replacement.
 """
 
 import argparse
@@ -14,7 +14,7 @@ from urllib.parse import quote, unquote
 
 from pydantic import BaseModel
 
-from cred_scan.backend.models import ScanBoundaryInventory
+from cred_scan.backend.models import BoundaryRecord, ScanTargetInventory
 from cred_scan.orch.fsync import fsync_directory
 from cred_scan.orch.locking import boundary_lock
 from cred_scan.scan.models import CredentialsDocument, TitusReport
@@ -121,11 +121,27 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
         )
 
     store = _WorkspaceStorage(workspace_dir)
-    pending: list[tuple[Path, bytes, int, ScanBoundaryInventory]] = []
+    backend_payload = json.loads(
+        (workspace_dir / "backend.json").read_text(encoding="utf-8")
+    )
+    if not isinstance(backend_payload, dict):
+        raise ValueError(f"{workspace_dir / 'backend.json'}: invalid backend marker")
+    backend_id = backend_payload.get("name")
+    if not isinstance(backend_id, str) or not backend_id:
+        raise ValueError(f"{workspace_dir / 'backend.json'}: invalid backend name")
+    pending: list[
+        tuple[Path, bytes, int, ScanTargetInventory, BoundaryRecord]
+    ] = []
 
     for boundary_path in store.boundaries:
         inventory_path = boundary_path / "inventory.json"
         with boundary_lock(boundary_path / ".operation.lock"):
+            for destination in (
+                boundary_path / "boundary.json",
+                boundary_path / "scantargets.json",
+            ):
+                if destination.exists():
+                    raise ValueError(f"migration destination already exists: {destination}")
             original_bytes = inventory_path.read_bytes()
             original = _payload(inventory_path, {8, 9, 10})
             original_version = original["schema_version"]
@@ -146,11 +162,13 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
                     targets.append(target)
                 payload["targets"] = targets
             if original_version in {8, 9}:
-                payload["schema_version"] = 10
                 payload["publication_pending"] = (
                     boundary_path / "titus.ds"
                 ).exists()
-            inventory = _validate(inventory_path, ScanBoundaryInventory, payload)
+            payload["schema_version"] = 11
+            payload.pop("lifecycle", None)
+            payload.pop("stale_reason", None)
+            inventory = _validate(inventory_path, ScanTargetInventory, payload)
             if boundary_path.name != quote(inventory.boundary.id, safe=""):
                 raise ValueError(
                     f"{inventory_path}: boundary directory does not match inventory"
@@ -161,13 +179,28 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
                 8,
                 CredentialsDocument,
             )
-            if original_version in {8, 9}:
-                pending.append(
-                    (boundary_path, original_bytes, original_version, inventory)
+            record = BoundaryRecord(
+                backend_id=backend_id,
+                boundary=inventory.boundary,
+            )
+            pending.append(
+                (
+                    boundary_path,
+                    original_bytes,
+                    original_version,
+                    inventory,
+                    record,
                 )
+            )
 
     if apply:
-        for boundary_path, original_bytes, original_version, inventory in pending:
+        for (
+            boundary_path,
+            original_bytes,
+            original_version,
+            inventory,
+            record,
+        ) in pending:
             with boundary_lock(boundary_path / ".operation.lock"):
                 if (boundary_path / "inventory.json").read_bytes() != original_bytes:
                     raise ValueError(f"inventory changed during migration: {boundary_path}")
@@ -184,10 +217,17 @@ def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
                     os.fsync(stream.fileno())
                 fsync_directory(backup.parent)
                 store.write(
-                    boundary_path / "inventory.json",
+                    boundary_path / "scantargets.json",
                     inventory,
-                    ScanBoundaryInventory,
+                    ScanTargetInventory,
                 )
+                store.write(
+                    boundary_path / "boundary.json",
+                    record,
+                    BoundaryRecord,
+                )
+                (boundary_path / "inventory.json").unlink()
+                fsync_directory(boundary_path)
 
     return len(pending)
 
@@ -200,7 +240,7 @@ def main() -> int:
     mode.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     count = migrate_workspace(args.workspace_dir, apply=args.apply)
-    action = "upgraded" if args.apply else "would upgrade"
+    action = "migrated" if args.apply else "would migrate"
     print(f"{action} {count} boundary(ies)")
     return 0
 

@@ -47,11 +47,11 @@ sys.meta_path.insert(0, RejectRuntime())
 importlib.import_module(sys.argv[1])
 if sys.argv[1] == 'cred_scan.orch.configuration':
     assert 'cred_scan.orch.execution' not in sys.modules
-from cred_scan.backend.models import ScanBoundaryInventory, DockerImageScanScope
+from cred_scan.backend.models import ScanTargetInventory, DockerImageScanScope
 from cred_scan.backend.adapters.artifactory.models import DockerImageScanScope as OwnedDockerImageScanScope
 from cred_scan.orch.models import AppConfig
 assert DockerImageScanScope is OwnedDockerImageScanScope
-ScanBoundaryInventory.model_json_schema()
+ScanTargetInventory.model_json_schema()
 AppConfig.model_json_schema()
 from cred_scan.orch.execution import BoundaryExecution
 BoundaryExecution.model_json_schema()
@@ -87,7 +87,7 @@ def test_inventory_roundtrip_uses_provider_models_and_retains_pinned_identity(
     repository_inventory,
 ):
     payload = repository_inventory.model_dump(mode="json")
-    restored = models.ScanBoundaryInventory.model_validate(payload)
+    restored = models.ScanTargetInventory.model_validate(payload)
     assert restored.model_dump(mode="json") == payload
     assert type(restored.boundary) is artifactory_models.ArtifactoryRepository
     scope = restored.targets[0].scope

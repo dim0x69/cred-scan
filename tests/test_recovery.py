@@ -11,7 +11,7 @@ from cred_scan.extract import evidence as evidence_module
 from cred_scan.backend.models import (
     ContentLocation,
     ContentRead,
-    ScanBoundaryInventory,
+    ScanTargetInventory,
     target_id_for,
 )
 from cred_scan.backend.proto import BackendAdapter, ContentReader
@@ -44,7 +44,7 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
 
     def seed(inventory, candidate):
         paths = workspace.boundary(inventory.boundary.id)
-        workspace.write(paths.inventory, inventory, ScanBoundaryInventory)
+        workspace.write(paths.inventory, inventory, ScanTargetInventory)
         workspace.write(
             paths.execution,
             BoundaryExecution(boundary_id=inventory.boundary.id),
@@ -114,7 +114,7 @@ def harness(app_config, repository_inventory, credential, monkeypatch):
 
     async def export(datastore):
         inventory = workspace.read(
-            datastore.parent / "inventory.json", ScanBoundaryInventory
+            datastore.parent / "inventory.json", ScanTargetInventory
         )
         assert inventory is not None
         return TitusReport(boundary_id=inventory.boundary.id, generated_at="new")
@@ -157,12 +157,12 @@ def test_claim_interrupt_restarts_from_disk_without_rescanning_completed_pin(
         }
     )
     inventory = h.inventory.model_copy(update={"targets": (first, second)})
-    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, inventory, ScanTargetInventory)
 
     async def interrupt(target, work_dir, *_):
         assert target.id == second.id
         saved = Workspace(h.config.workspace).read(
-            h.paths.inventory, ScanBoundaryInventory
+            h.paths.inventory, ScanTargetInventory
         )
         assert saved is not None
         assert [t.result.status for t in saved.targets] == ["scanned", "running"]
@@ -386,7 +386,7 @@ def test_cancellation_closes_services_and_releases_operation_lock(harness, phase
             assert all(reader.aclose.await_count == 1 for reader in h.readers)
             assert all(backend.aclose.await_count == 1 for backend in h.backends)
             saved = Workspace(h.config.workspace).read(
-                h.paths.inventory, ScanBoundaryInventory
+                h.paths.inventory, ScanTargetInventory
             )
             assert saved is not None
             assert saved.targets[0].result.status == (
@@ -540,7 +540,7 @@ def test_later_scan_and_non_valid_judgment_preserve_indexed_evidence(harness):
     path = h.paths.boundary_dir / old.extraction.output_path
     original_bytes = path.read_bytes()
     # A new pin makes another scan due. Its empty report must preserve history.
-    current = h.workspace.read(h.paths.inventory, ScanBoundaryInventory)
+    current = h.workspace.read(h.paths.inventory, ScanTargetInventory)
     old_target = current.targets[0].model_copy(update={"lifecycle": "superseded"})
     new_scope = old_target.scope.model_copy(update={"digest": "sha256:new"})
     new_target = old_target.model_copy(
@@ -552,7 +552,7 @@ def test_later_scan_and_non_valid_judgment_preserve_indexed_evidence(harness):
         }
     )
     current.targets = (old_target, new_target)
-    h.workspace.write(h.paths.inventory, current, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, current, ScanTargetInventory)
     assert asyncio.run(LocalRuntime(h.config).scan()) == 1
     after_scan = Workspace(h.config.workspace).read(
         h.paths.credentials, CredentialsDocument
@@ -678,7 +678,7 @@ def test_target_snapshot_processes_each_eligible_pin_once_per_run(
                 "targets": (original, other),
             }
         ),
-        ScanBoundaryInventory,
+        ScanTargetInventory,
     )
     seen = []
 
@@ -705,7 +705,7 @@ def test_target_snapshot_processes_each_eligible_pin_once_per_run(
         if attempts:
             assert len(set(seen)) == 1
         saved = Workspace(h.config.workspace).read(
-            h.paths.inventory, ScanBoundaryInventory
+            h.paths.inventory, ScanTargetInventory
         )
         assert saved is not None and saved.targets[0] == original
         assert saved.targets[1].result.status == (
@@ -765,7 +765,7 @@ def test_scheduler_handoff_waits_for_publication_checkpoint(
 def test_scan_with_no_boundaries_constructs_no_phase_services(harness, monkeypatch):
     h = harness
     inventory = h.inventory.model_copy(update={"lifecycle": "stale"})
-    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, inventory, ScanTargetInventory)
     scanner = Mock(side_effect=AssertionError("no scanner needed"))
     judge = Mock(side_effect=AssertionError("no judge needed"))
     backend = Mock(side_effect=AssertionError("no backend needed"))
@@ -793,7 +793,7 @@ def test_snapshot_order_and_immutable_completion_are_preserved(harness, change_p
     inventory = h.inventory.model_copy(
         update={"targets": h.inventory.targets + (extra,)}
     )
-    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, inventory, ScanTargetInventory)
     old_report = h.paths.report.read_bytes()
     seen = []
 
@@ -816,7 +816,7 @@ def test_snapshot_order_and_immutable_completion_are_preserved(harness, change_p
     else:
         assert asyncio.run(LocalRuntime(h.config).scan()) == 1
         assert seen == [target.id for target in inventory.targets]
-    saved = h.workspace.read(h.paths.inventory, ScanBoundaryInventory)
+    saved = h.workspace.read(h.paths.inventory, ScanTargetInventory)
     assert saved is not None
     assert [t.scope for t in saved.targets] == [t.scope for t in inventory.targets]
     assert [t.result.status for t in saved.targets] == (
@@ -828,7 +828,7 @@ def test_snapshot_order_and_immutable_completion_are_preserved(harness, change_p
 def test_stale_recovery_uses_saved_credentials_without_scanning(harness, command):
     h = harness
     inventory = h.inventory.model_copy(update={"lifecycle": "stale"})
-    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, inventory, ScanTargetInventory)
     if command == "extract":
         document = h.workspace.read(h.paths.credentials, CredentialsDocument)
         document.credentials[h.credential.credential_id].judgment = JudgmentResult(
@@ -851,7 +851,7 @@ def test_normal_scan_drains_persisted_judgment_without_titus_then_skips_complete
     h = harness
     inventory = h.inventory.model_copy(deep=True)
     inventory.targets[0].result.status = "scanned"
-    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, inventory, ScanTargetInventory)
     assert asyncio.run(LocalRuntime(h.config).scan()) == 1
     h.scanner.scan.assert_not_awaited()
     h.scanner.export_report.assert_not_awaited()
@@ -1003,7 +1003,7 @@ def test_real_handoff_extracts_older_valid_before_judging_later_pending(harness)
     h = harness
     inventory = h.inventory.model_copy(deep=True)
     inventory.targets[0].result.status = "scanned"
-    h.workspace.write(h.paths.inventory, inventory, ScanBoundaryInventory)
+    h.workspace.write(h.paths.inventory, inventory, ScanTargetInventory)
     document = h.workspace.read(h.paths.credentials, CredentialsDocument)
     older = h.credential.model_copy(
         update={"credential_id": "a-older", "judgment": JudgmentResult(verdict="VALID")}

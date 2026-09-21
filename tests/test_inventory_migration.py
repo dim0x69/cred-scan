@@ -8,7 +8,7 @@ import pytest
 
 from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget, target_id_for
+from cred_scan.backend.models import ScanTargetInventory, ScanTarget, target_id_for
 from cred_scan.scan.models import Credential, CredentialOccurrence, CredentialsDocument, TitusReport
 from cred_scan.tools.migrate_workspace_schema import migrate_workspace
 
@@ -23,7 +23,7 @@ def test_latest_inventory_migration_preserves_history_and_ids(tmp_path):
         id=target_id_for(scope), backend_id="primary", boundary=repository, scope=scope,
     )
     selected.result.status = "scanned"
-    inventory = ScanBoundaryInventory(
+    inventory = ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC), boundary=repository,
         targets=(selected,),
     )
@@ -63,7 +63,7 @@ def test_latest_inventory_migration_preserves_history_and_ids(tmp_path):
     assert migrate_workspace(tmp_path) == 1
     assert path.read_bytes() == original
     assert migrate_workspace(tmp_path, apply=True) == 1
-    migrated = ScanBoundaryInventory.model_validate_json(path.read_text())
+    migrated = ScanTargetInventory.model_validate_json(path.read_text())
     assert migrated == inventory.model_copy(update={"publication_pending": True})
     assert migrated.targets[0].id == selected.id
     assert "pin_id" not in migrated.model_dump_json()
@@ -75,7 +75,7 @@ def test_latest_inventory_migration_preserves_history_and_ids(tmp_path):
 
 def test_schema_9_without_datastore_does_not_request_publication(tmp_path):
     repository = ArtifactoryRepository(id="artifactory:primary:repo", name="repo")
-    inventory = ScanBoundaryInventory(
+    inventory = ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         boundary=repository,
     )
@@ -87,7 +87,7 @@ def test_schema_9_without_datastore_does_not_request_publication(tmp_path):
     (boundary_dir / "inventory.json").write_text(json.dumps(payload))
 
     assert migrate_workspace(tmp_path, apply=True) == 1
-    migrated = ScanBoundaryInventory.model_validate_json(
+    migrated = ScanTargetInventory.model_validate_json(
         (boundary_dir / "inventory.json").read_text()
     )
     assert not migrated.publication_pending

@@ -14,7 +14,7 @@ from cred_scan.backend.models import (
     GitRepositoryScanScope,
     PackageScanScope,
     ScanBoundary,
-    ScanBoundaryInventory,
+    ScanTargetInventory,
     ScanScope,
     ScanTarget,
     target_id_for,
@@ -61,7 +61,7 @@ def test_boundary_contains_logical_scopes_and_immutable_target_pins(kind):
         boundary=boundary,
         scope=scope,
     )
-    inventory = ScanBoundaryInventory(
+    inventory = ScanTargetInventory(
         generated_at=now,
         backend=BackendConfig(name="primary"),
         boundary=boundary,
@@ -75,7 +75,7 @@ def test_boundary_contains_logical_scopes_and_immutable_target_pins(kind):
     assert stored_target["boundary"] == payload["boundary"]
     assert stored_target["scope"]["kind"] == kind
     assert "source" not in stored_target
-    restored = ScanBoundaryInventory.model_validate(payload)
+    restored = ScanTargetInventory.model_validate(payload)
     assert restored == inventory
     assert restored.targets[0].id == f"{scope.id}@{scope.pin_id}"
 
@@ -87,7 +87,7 @@ def test_schema_number_only_does_not_upgrade_old_inventory_fields(repository_inv
     target["source"] = target.pop("scope")
     target["scope"] = target.pop("boundary")
     with pytest.raises(ValidationError):
-        ScanBoundaryInventory.model_validate(payload)
+        ScanTargetInventory.model_validate(payload)
 
 
 @pytest.mark.parametrize("kind", ["report", "credentials"])
@@ -124,8 +124,8 @@ def test_workspace_boundary_identifier_and_paths_are_unchanged(
     assert boundary.boundary_id == boundary_id
     assert boundary.boundary_dir == tmp_path / quote(boundary_id, safe="")
     assert boundary.datastore == boundary.boundary_dir / "titus.ds"
-    workspace.write(boundary.inventory, repository_inventory, ScanBoundaryInventory)
+    workspace.write(boundary.inventory, repository_inventory, ScanTargetInventory)
     assert (
-        workspace.read(boundary.inventory, ScanBoundaryInventory)
+        workspace.read(boundary.inventory, ScanTargetInventory)
         == repository_inventory
     )

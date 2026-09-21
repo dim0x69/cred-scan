@@ -10,7 +10,7 @@ import pytest
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend, DockerImageScanScope
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
 from cred_scan.backend.inventory import merge_inventory
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget, target_id_for
+from cred_scan.backend.models import ScanTargetInventory, ScanTarget, target_id_for
 from cred_scan.orch import boundary as boundary_module
 from cred_scan.orch.boundary import Boundary
 
@@ -26,7 +26,7 @@ def previous():
         id=target_id_for(scope), backend_id="primary", boundary=repository, scope=scope,
     )
     target.result.status = "scanned"
-    return ScanBoundaryInventory(
+    return ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         boundary=repository, targets=(target,),
     )
@@ -112,7 +112,7 @@ def test_successful_refresh_updates_inventory(loaded_boundary):
     successful = discovery(boundary.inventory).model_copy(update={"errors": ()})
     boundary.backend.inventory.return_value = successful
     assert asyncio.run(boundary.refresh_inventory())
-    saved = ScanBoundaryInventory.model_validate_json(boundary.paths.inventory.read_text())
+    saved = ScanTargetInventory.model_validate_json(boundary.paths.inventory.read_text())
     assert saved.generated_at == successful.generated_at
     assert saved.targets[-1].id == successful.targets[0].id
     assert saved.targets[-1].result.status == "pending"
@@ -150,7 +150,7 @@ def test_merge_reuses_results_but_refreshes_metadata(previous):
 def test_inventory_rejects_two_versions_of_same_scope(previous):
     newer = discovery(previous).targets[0]
     with pytest.raises(ValueError, match="one scan target per scope"):
-        ScanBoundaryInventory(
+        ScanTargetInventory(
             generated_at=previous.generated_at, boundary=previous.boundary,
             targets=(*previous.targets, newer),
         )

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget
+from cred_scan.backend.models import ScanTargetInventory, ScanTarget
 from cred_scan.backend.proto import (
     BackendAdapter,
     UnsupportedTitusTargetError,
@@ -91,7 +91,7 @@ async def _spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
 class TitusCliScanner(CredentialScanner):
     def __init__(
         self,
-        inventory: ScanBoundaryInventory,
+        inventory: ScanTargetInventory,
         backend: BackendAdapter,
     ) -> None:
         self.lock_fd: int | None = None

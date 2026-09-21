@@ -13,7 +13,7 @@ import pytest
 from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
 from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
 from cred_scan.backend.inventory import merge_inventory
-from cred_scan.backend.models import ScanBoundaryInventory, ScanTarget, target_id_for
+from cred_scan.backend.models import ScanTargetInventory, ScanTarget, target_id_for
 from cred_scan.backend.proto import UnsupportedTitusTargetError
 from cred_scan.extract.models import ExtractionResult
 from cred_scan.orch import boundary as boundary_module
@@ -37,7 +37,7 @@ def inventory():
         image="registry/repo/image", digest="sha256:old", root_digest="sha256:old",
         platform="linux/amd64", manifest_timestamp=datetime(2026, 1, 1, tzinfo=UTC),
     )
-    return ScanBoundaryInventory(
+    return ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC), boundary=repository,
         targets=(ScanTarget(
             id=target_id_for(scope), backend_id="primary", boundary=repository, scope=scope,
@@ -123,7 +123,7 @@ def test_scan_retries_mutate_owned_target_and_recover_from_disk(boundary, monkey
     async def scan(actual, scratch, datastore):
         assert actual is target
         assert actual.result.status == "running"
-        persisted = ScanBoundaryInventory.model_validate_json(boundary.paths.inventory.read_text())
+        persisted = ScanTargetInventory.model_validate_json(boundary.paths.inventory.read_text())
         assert persisted.targets[0].result.status == "running"
         attempts.append(actual)
         if len(attempts) == 1:
