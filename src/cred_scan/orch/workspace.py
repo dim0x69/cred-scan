@@ -51,8 +51,6 @@ class Workspace:
                 f"{backend_name}"
             )
         if backend_name == "artifactory_docker":
-            if backend_config is None:
-                raise AssertionError("backend configuration disappeared")
             return ArtifactoryDockerBackend(
                 name=backend_name,
                 base_url=str(backend_config["base_url"]),

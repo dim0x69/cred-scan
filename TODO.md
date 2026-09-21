@@ -83,8 +83,7 @@ Relevant source: [DSPy adapter](src/cred_scan/judge/dspy_adapter.py).
   growing occurrence lists with an insertion-ordered dictionary keyed by locator,
   preserving first-occurrence order.
   Source: [scan credential conversion](src/cred_scan/scan/credentials.py).
-- [ ] **Remove unused indirection and unreachable checks.** Remove the uncalled
+- [x] **Remove unused indirection and unreachable checks.** Remove the uncalled
   `run_inventory()` wrapper and the second, unreachable `backend_config is None`
   check in `Workspace._load_backend()`.
-  Sources: [inventory wrapper](src/cred_scan/orch/inventory.py),
-  [Workspace](src/cred_scan/orch/workspace.py).
+  Source: [Workspace](src/cred_scan/orch/workspace.py).
