@@ -29,12 +29,11 @@ Relevant source: [Docker adapter](src/cred_scan/backend/adapters/artifactory/doc
 
 ## Source reads and evidence
 
-- [ ] **P2 — Normalize harmless tar member path components.**
-  `safe_member_path()` rejects ordinary names such as `./etc/app.env`, causing
-  archive lookup to skip an existing file and breaking judgment/extraction reads.
-  Normalize harmless `.` and repeated-separator components while continuing to
-  reject traversal. Test both locator parsing and actual archive lookup, including
-  unsafe paths.
+- [x] **P2 — Normalize tar member path components.**
+  Titus cleans reported paths with `path.Clean()`, while later archive lookup sees
+  raw tar member names again. Use the same cleaning semantics for both sides,
+  preserve raw locators, accept `..`, and reject only empty paths. Test locator
+  parsing and actual archive lookup.
 
 Relevant source: [Docker reader](src/cred_scan/backend/adapters/artifactory/docker.py).
 

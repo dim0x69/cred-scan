@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import posixpath
 import re
 import tarfile
 from collections.abc import AsyncIterator, Callable
@@ -107,14 +108,18 @@ class DockerMetadataProvenance(BaseModel):
 DockerProvenance = DockerLayerProvenance | DockerMetadataProvenance
 
 
-def safe_member_path(value: str) -> str:
+def normalize_titus_layer_path(value: str) -> str:
+    """Normalize a Docker layer path using Titus-compatible semantics."""
+    # Titus cleans the tar header before putting its path in the report, but
+    # this reader sees the original tar header again during a later read. Clean
+    # both sides so harmless spellings such as ./etc//app.env still match.
     normalized = value.replace("\\", "/").lstrip("/")
-    parts = normalized.split("/")
-    if not normalized or any(part in {"", ".", ".."} for part in parts):
-        raise LayerEvidenceError("invalid or unsafe layer member path")
-    result = str(PurePosixPath(normalized))
-    if result in {"", "."} or result.startswith("../"):
-        raise LayerEvidenceError("invalid or unsafe layer member path")
+    result = posixpath.normpath(normalized)
+    # Keep the raw full locator unchanged; this result is only a transient
+    # archive comparison key. Titus's path.Clean accepts .., and extraction
+    # reads the tar member object directly rather than constructing a host path.
+    if result == ".":
+        raise LayerEvidenceError("invalid empty layer member path")
     return result
 
 
@@ -142,7 +147,7 @@ def parse_provenance(value: str) -> DockerProvenance:
             image=layer["image"],
             manifest=layer["manifest"],
             layer=layer["layer"],
-            path=safe_member_path(layer["path"]),
+            path=normalize_titus_layer_path(layer["path"]),
         )
     raise LayerEvidenceError(
         "invalid Titus Docker provenance path; expected a layer file, "
@@ -299,7 +304,7 @@ class ArtifactoryDockerReader(ContentReader):
                     if not member.isfile():
                         continue
                     try:
-                        member_path = safe_member_path(member.name)
+                        member_path = normalize_titus_layer_path(member.name)
                     except LayerEvidenceError:
                         continue
                     if (
