@@ -50,9 +50,11 @@ def test_unsupported_target_becomes_failed_without_starting_titus(
         )
     )
 
-    assert result.result.status == "failed"
-    assert result.result.errors == ("unsupported source",)
-    assert not result.result.retryable
+    assert result is None
+    target = repository_inventory.targets[0]
+    assert target.result.status == "failed"
+    assert target.result.errors == ("unsupported source",)
+    assert not target.result.retryable
     assert not (tmp_path / "scratch").exists()
 
 

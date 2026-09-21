@@ -1,6 +1,8 @@
 """Occurrence paths are readable without historical inventory targets."""
 
 import asyncio
+import io
+import tarfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,6 +13,7 @@ import pytest
 
 from cred_scan.backend.adapters.artifactory.docker import (
     ArtifactoryDockerReader,
+    DockerLayerProvenance,
 )
 
 
@@ -63,3 +66,27 @@ def test_reader_reads_paths_from_multiple_repositories(resolved: bool) -> None:
             await reader.aclose()
 
     asyncio.run(read_repositories())
+
+
+def test_archive_lookup_returns_only_file_bytes(tmp_path) -> None:
+    archive_path = tmp_path / "layer.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        content = b"SECRET"
+        member = tarfile.TarInfo("etc/app.env")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+    provenance = DockerLayerProvenance(
+        raw_path="synthetic",
+        registry="registry.example",
+        repository="repository",
+        image="team/api",
+        manifest="sha256:manifest",
+        layer="sha256:layer",
+        path="etc/app.env",
+    )
+    reader = object.__new__(ArtifactoryDockerReader)
+
+    result = reader._find_file_in_archive(archive_path, provenance)
+
+    assert result == b"SECRET"
+    assert not isinstance(result, tuple)

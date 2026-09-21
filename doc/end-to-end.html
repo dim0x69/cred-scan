@@ -339,7 +339,7 @@ deduplicate_report(
   inventory: ScanTargetInventory,
   resolver: ContentReader
 ) → CredentialsDocument</pre>
-        <p>The returned target keeps its immutable identity and contains an updated <code>ScanTargetResult</code>. All target invocations write to the same boundary datastore. Configured Titus arguments enable all supported extraction formats (<code>--extract all</code>), cap each extracted file at <code>100MB</code> (<code>--extract-max-size</code>), and set the per-file scan limit to 512 KiB (<code>--max-file-size 524288</code>). Conversion normalizes backend locators, groups credentials, applies exclusions, and preserves every source occurrence. After scan attempts finish and the boundary-wide export succeeds, failed scan targets mark the report incomplete but do not block judgment and extraction of available findings.</p>
+        <p>The scanner mutates the boundary-owned target's <code>ScanTargetResult</code> and returns no replacement. All target invocations write to the same boundary datastore. Configured Titus arguments enable all supported extraction formats (<code>--extract all</code>), cap each extracted file at <code>100MB</code> (<code>--extract-max-size</code>), and set the per-file scan limit to 512 KiB (<code>--max-file-size 524288</code>). Conversion normalizes backend locators, groups credentials, applies exclusions, and preserves every source occurrence. After scan attempts finish and the boundary-wide export succeeds, failed scan targets mark the report incomplete but do not block judgment and extraction of available findings.</p>
         <p><code>merge_scan(previous, candidates)</code> returns the append-only <code>CredentialsDocument</code>; existing judgments and evidence metadata survive. <code>Boundary.scan()</code> mutates the in-memory aggregate and checkpoints the final report and credentials after publication.</p>
         <p class="port">Owner: <code>scan/</code> detects/converts; <code>orch/</code> checkpoints and publishes. Unresolvable locations stay in the raw report plus diagnostics, not in unresolved judge candidates.</p>
       </article>
@@ -358,7 +358,7 @@ deduplicate_report(
       <article class="panel phase-detail extract">
         <h3>Extract · source bytes in, evidence out</h3>
         <pre>Boundary.extract()
-  → int  # newly retained artifacts
+  → int  # credentials selected for extraction
 
 ContentReader.resolve_location(raw_path: str)
   → ContentLocation
@@ -373,12 +373,12 @@ retain_first_evidence(
 
 <em>mutate credential.extraction and persist the current document</em></pre>
         <p>For a VALID or UNKNOWN credential, orchestration selects only <code>occurrences[0].locator</code>. Extraction reads the exact backend locator independently of judgment. Additional occurrence files read by the judge do not become retained evidence. Python writes and hashes the first occurrence's file, then checkpoints <code>ExtractionResult</code>.</p>
-        <p><code>Boundary.extract()</code> returns the <strong>number of newly retained artifacts</strong>. RETAINED credentials receive only a file-existence check on every extraction run, including when no new extraction is pending. Missing files are reported without automatic replacement; contents, size, and hash are not verified. Missing evidence is logged with its boundary, credential, and stored path; the RETAINED metadata remains unchanged. Retrieval/write errors can save extraction <code>ERROR</code> while keeping the saved VALID or UNKNOWN judgment.</p>
+        <p><code>Boundary.extract()</code> selects eligible credentials once and returns the <strong>number of attempted extractions</strong>, including handled attempts that save <code>ERROR</code>. RETAINED credentials are audited separately with a file-existence check on every extraction run, including when no new extraction is pending, and do not contribute to the count. Missing files are reported without automatic replacement; contents, size, and hash are not verified. Missing evidence is logged with its boundary, credential, and stored path; the RETAINED metadata remains unchanged. Retrieval/write errors keep the saved VALID or UNKNOWN judgment.</p>
         <p class="port">Owner: <code>extract/evidence.py</code> owns destinations, existence checks, and retention; <code>orch/</code> owns eligibility, session lifetime, and persistence. The dedicated <code>extract/</code> module owns the extractor, evidence functions, and <code>ExtractionResult</code> in <code>extract/models.py</code>.</p>
       </article>
     </div>
     <aside class="note" style="margin-top: 1.25rem">
-      <strong>Return value ≠ persisted output.</strong> Each command runs its requested stage across persisted boundaries concurrently. Inventory returns the refreshed-boundary count; Scan returns the completed-boundary count; Judge returns the attempted-credential count; Extract returns the newly retained count. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
+      <strong>Return value ≠ persisted output.</strong> Each command runs its requested stage across persisted boundaries concurrently. Inventory returns the refreshed-boundary count; Scan returns the completed-boundary count; Judge and Extract return their selected credential counts. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
     </aside>
   </section>
 
@@ -447,7 +447,7 @@ LocalRuntime: runs one command operation across boundaries concurrently</pre>
           <tr><td>Separate judgment and evidence</td><td><code>judge</code> saves each judgment. <code>extract</code> later consumes saved VALID or UNKNOWN judgments. There is never concurrent mutation of one boundary.</td></tr>
           <tr><td>Extraction success / ordinary error</td><td>Persist evidence before RETAINED metadata. Extraction errors remain eligible for a later explicit extract command. A saved VALID or UNKNOWN judgment is not repeated merely because evidence failed.</td></tr>
           <tr><td>Cancellation / fatal failure</td><td>Stop and reap the active Titus invocation before releasing scratch or boundary ownership, even after repeated cancellation. Close the command's reader before its backend. Completed scan targets stay checkpointed; only the interrupted target is running and unstarted targets remain pending. A later explicit scan resets the interrupted target. Ordinary item errors are saved and do not automatically abort.</td></tr>
-          <tr><td>Stale boundary</td><td>Keep its inventory and history. Explicit scan, judge, or extract may process the selected boundary according to its persisted target and credential state; inaccessible content produces the usual failure, never a newer-source fallback.</td></tr>
+          <tr><td>Absent boundary</td><td>Remove its current scan targets and skip scan, judge, and extract while retaining reports, credentials, evidence, and the cumulative datastore.</td></tr>
           <tr><td>No remaining work</td><td>Publication pending is false and no item is eligible for the requested command. Scan does not re-export completed boundaries. Exclusion-file changes alone do not reopen them. RETAINED evidence requires only a file-existence check on later extraction runs.</td></tr>
         </tbody>
       </table>
@@ -721,7 +721,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <h3>Scheduling and handoff</h3>
         <ul>
           <li>Each per-boundary command operation holds exclusive ownership from state load through cleanup. One invocation may process different boundaries concurrently.</li>
-          <li>Inventory creates no content services. Scan, Judge, and Extract each create only their required reader and operation-specific service. Scan targets and Titus invocations run sequentially; Titus itself may use internal parallelism.</li>
+          <li>Inventory creates no content services. Scan, Judge, and Extract each create the boundary reader, scanner, judge, and extractor together; the requested command uses what it needs. Scan targets and Titus invocations run sequentially; Titus itself may use internal parallelism.</li>
           <li>A single <code>TitusCliScanner</code> serves each boundary. There is no <code>scan_concurrency</code> setting; <code>internal_workers</code> controls Titus internal parallelism. Retry transient scan failures up to three attempts; permanent failures do not retry. Checkpoint each completed scan target before starting the next.</li>
           <li>Scan, judge, and extract run as separate commands. Completed scan work is skipped; extraction checks retained evidence even when no new extraction is pending.</li>
           <li>Absent boundaries and already-scanned targets do not start new scans. Removed scopes and replaced versions are absent from current scan targets.</li>
@@ -745,7 +745,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
     <p class="section-intro">Schematic identifiers below describe the boundary inventory and backend locator flow. No credential value is shown.</p>
     <div class="panel">
       <ol class="timeline">
-        <li><strong>Inventory.</strong> The Artifactory backend discovers repository <code>docker-local</code>, image scope <code>payments/api</code>, and selected child manifest <code>M1</code>. It writes a <code>ScanTargetInventory</code> containing a <code>ScanTarget</code> whose <code>boundary</code> is the repository and whose <code>scope</code> is a <code>DockerImageScanScope</code> at immutable manifest M1.</li>
+        <li><strong>Inventory.</strong> The Artifactory backend discovers repository <code>docker-local</code>, image scope <code>payments/api</code>, and selected child manifest <code>M1</code>. It writes a <code>ScanTargetInventory</code> owned by the repository and containing a <code>ScanTarget</code> whose <code>scope</code> is a <code>DockerImageScanScope</code> at immutable manifest M1.</li>
         <li><strong>Scan.</strong> The target is scanned into that boundary’s <code>titus.ds</code>. After all eligible targets finish, the final <code>TitusReport</code> contains a finding at <code>app.env</code>. Conversion retains its complete backend locator as a credential occurrence.</li>
         <li><strong>Publish.</strong> Conversion creates credential <code>C1</code>, with one <code>CredentialOccurrence</code> containing the complete backend locator. Its <code>JudgmentResult</code> starts PENDING and <code>extraction</code> is null. After exclusions, merge and persist the <code>CredentialsDocument</code>. Only now may it reach Judge.</li>
         <li><strong>Judge.</strong> The judge receives C1 and a content reader. Assume it returns <code>JudgmentResult(verdict="VALID", reasoning=…)</code>. Orchestration saves this result to the latest <code>credentials.json</code>.</li>

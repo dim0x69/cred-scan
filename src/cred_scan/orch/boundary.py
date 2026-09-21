@@ -252,22 +252,6 @@ class Boundary:
             )
         )
 
-    def needs_judge(self) -> bool:
-        return any(
-            credential.judgment.verdict in {"PENDING", "ERROR"}
-            for credential in self.credentials.credentials.values()
-        )
-
-    def needs_extract(self) -> bool:
-        return any(
-            (credential.extraction is not None and credential.extraction.status == "RETAINED")
-            or (
-                credential.judgment.verdict in {"VALID", "UNKNOWN"}
-                and (credential.extraction is None or credential.extraction.status == "ERROR")
-            )
-            for credential in self.credentials.credentials.values()
-        )
-
     async def refresh_inventory(self) -> bool:
         async with self._operation_lock:
             with boundary_lock(self.paths.operation_lock):
@@ -371,20 +355,15 @@ class Boundary:
             target.result.started_at = datetime.now(UTC)
             target.result.finished_at = None
             self.checkpoint()
-            result = await self._scan_target(target)
+            await self._scan_target(target)
             self.checkpoint()
             LOGGER.info(
                 "scanned target=%s status=%s retryable=%s",
-                result.id,
-                result.result.status,
-                result.result.retryable,
+                target.id,
+                target.result.status,
+                target.result.retryable,
             )
-            if result.result.errors:
-                LOGGER.error(
-                    "scan target=%s errors=%s",
-                    result.id,
-                    "; ".join(result.result.errors),
-                )
+            self._log_scan_errors(target)
 
         incomplete = bool(self.inventory.errors) or any(
             target.result.status != "scanned" for target in self.inventory.targets
@@ -417,29 +396,32 @@ class Boundary:
             self.credentials.incomplete,
         )
 
-    async def _scan_target(self, target: ScanTarget) -> ScanTarget:
+    def _log_scan_errors(self, target: ScanTarget) -> None:
+        if target.result.errors:
+            LOGGER.error(
+                "scan target=%s errors=%s",
+                target.id,
+                "; ".join(target.result.errors),
+            )
+
+    async def _scan_target(self, target: ScanTarget) -> None:
         """Own one target's scratch and all attempts on the same scanner."""
         scanner = self.scanner
         assert scanner is not None
         with self.scratch_dir() as work_dir:
             for attempt in range(3):
                 LOGGER.info("scanning target=%s attempt=%d/3", target.id, attempt + 1)
-                target = await scanner.scan(
-                    target, work_dir, self.paths.datastore
-                )
+                await scanner.scan(target, work_dir, self.paths.datastore)
                 if (
                     target.result.status == "scanned"
                     or not target.result.retryable
                     or attempt == 2
                 ):
-                    return target
+                    return
                 target.result.status = "running"
-        raise AssertionError("scan attempts finished without a result")
 
     async def judge(self) -> int:
         async with self.operation():
-            if not self.needs_judge():
-                return 0
             return await self._judge()
 
     async def _judge(self) -> int:
@@ -447,12 +429,12 @@ class Boundary:
         reader = self.reader
         assert judge_service is not None
         assert reader is not None
-        judged = 0
-        for credential in tuple(self.credentials.credentials.values()):
-            if credential.judgment.verdict not in {"PENDING", "ERROR"}:
-                continue
-
-            judged += 1
+        selected = tuple(
+            credential
+            for credential in self.credentials.credentials.values()
+            if credential.judgment.verdict in {"PENDING", "ERROR"}
+        )
+        for credential in selected:
             try:
                 result = await judge_service.judge(
                     credential,
@@ -473,12 +455,10 @@ class Boundary:
 
             credential.judgment = result
             self.checkpoint()
-        return judged
+        return len(selected)
 
     async def extract(self) -> int:
         async with self.operation():
-            if not self.needs_extract():
-                return 0
             return await self._extract()
 
     async def _extract(self) -> int:
@@ -486,8 +466,8 @@ class Boundary:
         reader = self.reader
         assert extractor is not None
         assert reader is not None
-        retained = 0
-        for credential in tuple(self.credentials.credentials.values()):
+        credentials = tuple(self.credentials.credentials.values())
+        for credential in credentials:
             if credential.extraction is not None and credential.extraction.status == "RETAINED":
                 if not evidence_exists(
                     self.paths.boundary_dir, credential.credential_id, credential.extraction
@@ -499,17 +479,19 @@ class Boundary:
                         credential.credential_id,
                         credential.extraction.output_path,
                     )
-                continue
-            if credential.judgment.verdict not in {"VALID", "UNKNOWN"}:
-                continue
-            if not (
-                credential.extraction is None or credential.extraction.status == "ERROR"
-            ):
-                continue
 
+        selected = tuple(
+            credential
+            for credential in credentials
+            if credential.judgment.verdict in {"VALID", "UNKNOWN"}
+            and (
+                credential.extraction is None
+                or credential.extraction.status == "ERROR"
+            )
+        )
+        for credential in selected:
             try:
                 extraction = await extractor.extract(credential, reader)
-                retained += 1
             except EvidenceConflictError:
                 raise
             except Exception as error:
@@ -525,4 +507,4 @@ class Boundary:
 
             credential.extraction = extraction
             self.checkpoint()
-        return retained
+        return len(selected)

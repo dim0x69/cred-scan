@@ -111,7 +111,7 @@ class TitusCliScanner(CredentialScanner):
         target: ScanTarget,
         work_dir: Path,
         datastore: Path,
-    ) -> ScanTarget:
+    ) -> None:
         # Update the boundary-owned target; Boundary checkpoints after retries.
         try:
             source_arguments = self.backend.titus_scan_arguments(self.inventory, target)
@@ -124,7 +124,7 @@ class TitusCliScanner(CredentialScanner):
             target.result.status = "failed"
             target.result.errors = (str(error),)
             target.result.retryable = False
-            return target
+            return
         work_dir.mkdir(parents=True, exist_ok=True)
         command = [
             self.config.executable,
@@ -157,7 +157,7 @@ class TitusCliScanner(CredentialScanner):
             target.result.errors = (str(error),)
             target.result.started_at = started
             target.result.finished_at = datetime.now(UTC)
-            return target
+            return
         warnings = 0
         permanent_failure = False
         try:
@@ -195,7 +195,6 @@ class TitusCliScanner(CredentialScanner):
         target.result.retryable = not permanent_failure
         target.result.started_at = started
         target.result.finished_at = datetime.now(UTC)
-        return target
 
     async def export_report(self, datastore: Path) -> TitusReport:
         try:

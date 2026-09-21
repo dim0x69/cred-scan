@@ -312,8 +312,7 @@ class ArtifactoryDockerReader(ContentReader):
         self,
         archive_path: Path,
         provenance: DockerProvenance,
-        digest: str,
-    ) -> tuple[bytes, dict[str, Any]] | None:
+    ) -> bytes | None:
         with archive_path.open("rb") as stream:
             with tarfile.open(fileobj=stream, mode="r|*") as archive:
                 for member in archive:
@@ -334,15 +333,7 @@ class ArtifactoryDockerReader(ContentReader):
                             f"could not read layer member: {member_path}"
                         )
                     with source:
-                        content = source.read()
-                    return (
-                        content,
-                        {
-                            "path": member_path,
-                            "layer": digest,
-                            "size": member.size,
-                        },
-                    )
+                        return source.read()
         return None
 
     async def _find_file(self, provenance: DockerProvenance) -> bytes:
@@ -357,12 +348,11 @@ class ArtifactoryDockerReader(ContentReader):
         archive_path = await self._download_blob(provenance, digest)
         result = await _read_archive(
             archive_path,
-            lambda: self._find_file_in_archive(archive_path, provenance, digest),
+            lambda: self._find_file_in_archive(archive_path, provenance),
         )
         if result is None:
             raise LayerEvidenceError(f"file was not found: {provenance.path}")
-        content, _ = result
-        return content
+        return result
 
     async def resolve_location(self, raw_path: str) -> ContentLocation:
         from cred_scan.backend.models import ContentLocation  # noqa: PLC0415
