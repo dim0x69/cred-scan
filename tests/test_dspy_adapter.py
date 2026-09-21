@@ -61,11 +61,12 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
     )
     serialized, registry = _judge_input(expanded)
 
-    assert len(serialized) <= 120_000
     payload = json.loads(serialized)
     assert set(payload) == {"credential", "locations"}
-    assert len(payload["locations"]) == 100
-    assert len(registry) == 100
+    assert len(payload["locations"]) == 10
+    assert len(registry) == 10
+    assert set(registry) == {item["id"] for item in payload["locations"]}
+    assert " : " not in serialized
 
 
 def test_missing_judge_configuration_is_fatal(
@@ -121,7 +122,8 @@ def test_judge_uses_native_async_dspy_and_content_tools(
             }
             return SimpleNamespace(verdict="VALID", reason="synthetic judgment")
 
-    def make_react(_signature, *, tools, max_iters):
+    def make_react(signature, *, tools, max_iters):
+        captured["signature"] = signature
         captured["tools"] = tools
         captured["max_iters"] = max_iters
         return Program()
@@ -136,6 +138,15 @@ def test_judge_uses_native_async_dspy_and_content_tools(
     assert judged.verdict == "VALID"
     assert judged.reasoning == "synthetic judgment"
     assert captured["max_iters"] == config.judge.max_iterations
+    signature = captured["signature"]
+    field = signature.fields["credential_json"]
+    description = getattr(field, "description", None)
+    if description is None:
+        extra = getattr(field, "json_schema_extra", None) or {}
+        description = extra.get("desc") or extra.get("description")
+    assert description is not None
+    assert "first location's file (location-0)" in description
+    assert "additional locations" in description
     assert content.read.await_count == 1
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)

@@ -19,7 +19,9 @@ from cred_scan.orch.global_config import get_config
 
 LOGGER = logging.getLogger(__name__)
 
-_MAX_JUDGE_INPUT_CHARS = 120_000
+# Bound locator metadata without pretending character counts predict model tokens.
+# The configured provider and DSPy remain authoritative for context-window limits.
+_MAX_JUDGE_LOCATIONS = 10
 _MAX_PATH_CHARS = 2_048
 
 _FATAL_EXCEPTION_NAMES = frozenset(
@@ -60,29 +62,30 @@ def _judge_input(
     registry: dict[str, str] = {}
     seen: dict[str, str] = {}
     for occurrence in credential.occurrences:
+        # Keep the first occurrence and only a small number of alternatives.
+        if len(locations) >= _MAX_JUDGE_LOCATIONS:
+            break
         locator = occurrence.locator
         location_id = seen.get(locator)
         if location_id is None:
             location_id = f"location-{len(registry)}"
             seen[locator] = location_id
             registry[location_id] = locator
-        descriptor = {
-            "id": location_id,
-            "path": locator[:_MAX_PATH_CHARS],
-        }
-        candidate = [*locations, descriptor]
-        serialized = json.dumps(
-            {"credential": credential.credential, "locations": candidate},
-            sort_keys=True,
-            separators=(",", ":"),
+        locations.append(
+            {
+                "id": location_id,
+                # The model sees a bounded hint; the tool registry retains the
+                # full immutable locator for exact source access.
+                "path": locator[:_MAX_PATH_CHARS],
+            }
         )
-        if len(serialized) > _MAX_JUDGE_INPUT_CHARS:
-            break
-        locations.append(descriptor)
+    # Serialize once in the format delivered to DSPy; do not estimate a token
+    # budget by repeatedly serializing each growing prefix.
     return (
         json.dumps(
             {"credential": credential.credential, "locations": locations},
             sort_keys=True,
+            separators=(",", ":"),
         ),
         registry,
     )
@@ -140,7 +143,9 @@ class DspyFindingJudge(FindingJudge):
                 credential_json: str = dspy.InputField(
                     desc=(
                         "JSON with exactly the detected credential value and "
-                        "source locations. Use each location id with the content "
+                        "source locations, ordered by occurrence. Prefer the "
+                        "first location's file (location-0), but inspect additional "
+                        "locations when useful. Use location ids with the content "
                         "tools to inspect source bytes; decide whether the value "
                         "appears real rather than an example."
                     )
@@ -158,6 +163,9 @@ class DspyFindingJudge(FindingJudge):
                     location_id,
                 )
                 location = await content.resolve_location(locator)
+                # Return the exact observation. We do not impose a guessed byte
+                # or token limit here; DSPy handles the provider's actual context
+                # window and its ReAct trajectory truncation.
                 content_bytes = (await content.read(location)).content
                 try:
                     decoded = content_bytes.decode("utf-8")
@@ -189,8 +197,13 @@ class DspyFindingJudge(FindingJudge):
                 kwargs["api_version"] = api_version
             deployment = self.model.removeprefix("azure/").removeprefix("openai/")
             provider = "openai" if "/openai/v1" in base_url.rstrip("/") else "azure"
+            # A fresh LM and program are created for each credential, so a
+            # credential never inherits another credential's ReAct context.
             lm = dspy.LM(f"{provider}/{deployment}", **kwargs)
             with dspy.context(lm=lm, disable_history=True):
+                # disable_history prevents secret-bearing requests from being
+                # retained in DSPy's in-memory history; it does not remove the
+                # active credential or its observations from the current call.
                 if get_config().judge.layer_tools.enabled:
                     program = dspy.ReAct(
                         Signature,

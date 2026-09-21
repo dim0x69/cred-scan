@@ -40,21 +40,17 @@ Relevant source: [Docker reader](src/cred_scan/backend/adapters/artifactory/dock
 
 ## Judgment input and instructions
 
-- [ ] **P2 — Enforce the judge input-size limit consistently.**
-  `_judge_input()` measures compact JSON but returns differently formatted JSON;
-  a reproduction produced 131,633 characters against the 120,000-character limit.
-  Oversized credential values can also exceed the limit while leaving no visible
-  locations, and the registry includes a location rejected by the size check.
-  Use identical serialization for measurement and delivery, explicitly handle
-  oversized values, and register only included locations. Test limit boundaries,
-  large credentials, and registry/payload consistency.
-- [ ] **P2 — Add the first-occurrence preference to the judge instructions.**
-  The signature currently requests source inspection without expressing the
-  existing invariant's preference for the first occurrence. Add that instruction
-  explicitly while allowing additional occurrence reads, and cover it in a test.
-- [ ] **Simplification — Avoid repeatedly serializing the growing judge input.**
-  Combine this with the size-limit fix: accumulate the payload with consistent
-  size accounting instead of serializing every growing prefix.
+- [x] **P2 — Bound judge input and observations consistently.**
+  Judge input now presents at most ten ordered locations and uses one compact
+  serialization; the approximate JSON character context-window counter was
+  removed. The registry contains only presented locations, while oversized
+  inputs and source observations are left to the provider's actual context
+  limit and DSPy's trajectory handling.
+- [x] **P2 — Add the first-occurrence preference to the judge instructions.**
+  The signature prefers the first location while allowing additional occurrence
+  reads, and the behavior is covered by a test.
+- [x] **Simplification — Avoid repeatedly serializing the growing judge input.**
+  The final compact JSON is serialized once after selecting the ten locations.
 
 Relevant source: [DSPy adapter](src/cred_scan/judge/dspy_adapter.py).
 
