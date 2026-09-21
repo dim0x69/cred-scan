@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import dspy
 import pytest
+from pydantic import SecretStr
 
 from cred_scan.judge.dspy_adapter import (
     DspyFindingJudge,
@@ -15,6 +16,7 @@ from cred_scan.judge.dspy_adapter import (
 )
 from cred_scan.judge.proto import FatalJudgeError
 from cred_scan.backend.models import ContentLocation, ContentRead
+from cred_scan.orch import global_config
 from cred_scan.orch.models import AppConfig
 
 
@@ -66,9 +68,12 @@ def test_judge_input_contains_only_bounded_value_and_paths(credential) -> None:
     assert len(registry) == 100
 
 
-def test_missing_judge_configuration_is_fatal(app_config: AppConfig) -> None:
+def test_missing_judge_configuration_is_fatal(
+    app_config: AppConfig, monkeypatch
+) -> None:
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
     with pytest.raises(FatalJudgeError, match="AZURE_OPENAI_API_KEY"):
-        DspyFindingJudge(app_config)._configuration()
+        DspyFindingJudge()._configuration()
 
 
 @pytest.mark.parametrize(
@@ -80,7 +85,7 @@ def test_judge_uses_native_async_dspy_and_content_tools(
 ) -> None:
     config = app_config.model_copy(
         update={
-            "azure_openai_api_key": "synthetic-key",
+            "azure_openai_api_key": SecretStr("synthetic-key"),
             "judge": app_config.judge.model_copy(
                 update={"base_url": "https://example.invalid/openai/v1"}
             ),
@@ -124,8 +129,9 @@ def test_judge_uses_native_async_dspy_and_content_tools(
     monkeypatch.setattr(dspy, "LM", Mock(return_value=object()))
     monkeypatch.setattr(dspy, "context", lambda **_kwargs: nullcontext())
     monkeypatch.setattr(dspy, "ReAct", make_react)
+    monkeypatch.setattr(global_config, "CONFIG", config)
 
-    judged = asyncio.run(DspyFindingJudge(config).judge(credential, content))
+    judged = asyncio.run(DspyFindingJudge().judge(credential, content))
 
     assert judged.verdict == "VALID"
     assert judged.reasoning == "synthetic judgment"

@@ -4,12 +4,10 @@ from pathlib import Path
 import pytest
 
 from cred_scan.backend.models import (
-    ArtifactoryBackendConfig,
     ArtifactoryRepository,
-    BackendConfig,
     DockerImageScanScope,
-    ScanTargetInventory,
     ScanTarget,
+    ScanTargetInventory,
     target_id_for,
 )
 from cred_scan.orch.models import AppConfig, TitusConfig, WorkspaceConfig
@@ -36,13 +34,10 @@ def repository_inventory() -> ScanTargetInventory:
     )
     target = ScanTarget(
         id=target_id_for(scope),
-        backend_id="primary",
-        boundary=repository,
         scope=scope,
     )
     return ScanTargetInventory(
         generated_at=datetime(2026, 1, 1, tzinfo=UTC),
-        backend=BackendConfig(name="primary"),
         boundary=repository,
         targets=(target,),
     )
@@ -63,13 +58,20 @@ def credential(repository_inventory: ScanTargetInventory) -> Credential:
 
 @pytest.fixture
 def app_config(tmp_path: Path) -> AppConfig:
+    paths = tmp_path / "paths.list"
+    values = tmp_path / "values.list"
+    paths.write_text("")
+    values.write_text("")
     return AppConfig(
         workspace=WorkspaceConfig.model_validate({"workspace-dir": tmp_path}),
         titus=TitusConfig(executable="unused-titus"),
         exclusions=ExclusionFiles(
-            paths=tmp_path / "paths.list", credentials=tmp_path / "values.list"
+            paths=paths, credentials=values
         ),
-        backend=ArtifactoryBackendConfig(
-            name="primary", base_url="https://example.invalid/artifactory"
+        backends=(
+            {
+                "name": "artifactory_docker",
+                "base_url": "https://example.invalid/artifactory",
+            },
         ),
     )

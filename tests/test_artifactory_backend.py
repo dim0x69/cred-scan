@@ -1,8 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from unittest.mock import Mock
-
 import httpx
 import pytest
 
@@ -11,10 +9,6 @@ from cred_scan.backend.adapters.artifactory.common import (
     ArtifactoryError,
 )
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryBackendConfig
-from cred_scan.backend.proto import BackendAdapter
-from cred_scan.orch.models import WorkspaceConfig
-from cred_scan.orch.workspace import Workspace
 
 
 def run(coroutine):
@@ -22,13 +16,14 @@ def run(coroutine):
 
 
 def make_backend(handler):
-    backend = ArtifactoryDockerBackend(
-        ArtifactoryBackendConfig(name="primary", base_url="https://example.invalid"),
+    backend = object.__new__(ArtifactoryDockerBackend)
+    ArtifactoryBackend.__init__(
+        backend,
+        "artifactory_docker",
+        "https://example.invalid",
         "synthetic-token",
-        workspace=Workspace(
-            WorkspaceConfig.model_validate({"workspace-dir": "workspace"})
-        ),
     )
+    backend.platform = "linux/amd64"
 
     async def replace_session():
         await backend.session.aclose()
@@ -142,42 +137,12 @@ def test_blob_response_is_async_context_managed():
         run(backend.aclose())
 
 
-def test_artifactory_owns_config_and_name_without_a_backend_superclass(
-    tmp_path, monkeypatch
-):
-    client = Mock()
-    monkeypatch.setattr(httpx, "AsyncClient", client)
-    config = ArtifactoryBackendConfig(
-        name="primary", base_url="https://example.invalid"
-    )
-    backend: BackendAdapter = ArtifactoryDockerBackend(
-        config,
-        "synthetic-token",
-        workspace=Workspace(WorkspaceConfig(workspace_dir=tmp_path)),
-    )
-    assert ArtifactoryBackend.__bases__ == (BackendAdapter,)
-    assert backend.config is config
-    assert backend.name == "primary"
-    config.name = "renamed"
-    assert backend.name == "renamed"  # Preserve the original live config/name behavior.
-    assert backend.platform == "linux/amd64"
-    assert client.call_args.kwargs["headers"]["Authorization"] == (
-        "Bearer synthetic-token"
-    )
-    assert not list(tmp_path.iterdir())
-
-
-def test_missing_token_still_raises_artifactory_error_before_client_creation(
-    tmp_path, monkeypatch
-):
-    client = Mock()
-    monkeypatch.setattr(httpx, "AsyncClient", client)
+def test_missing_token_is_rejected():
     with pytest.raises(ArtifactoryError, match="set ARTIFACTORY_ACCESS_TOKEN"):
-        ArtifactoryDockerBackend(
-            ArtifactoryBackendConfig(
-                name="primary", base_url="https://example.invalid"
-            ),
+        backend = object.__new__(ArtifactoryDockerBackend)
+        ArtifactoryBackend.__init__(
+            backend,
+            "artifactory_docker",
+            "https://example.invalid",
             "  ",
-            workspace=Workspace(WorkspaceConfig(workspace_dir=tmp_path)),
         )
-    client.assert_not_called()

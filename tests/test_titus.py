@@ -7,8 +7,8 @@ import pytest
 
 from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.backend.proto import UnsupportedTitusTargetError
+from cred_scan.orch import global_config
 from cred_scan.orch.models import AppConfig
-from cred_scan.scan.models import ExclusionPolicy
 from cred_scan.scan.titus import TitusCliScanner, _is_permanent_titus_error
 
 
@@ -33,19 +33,20 @@ def test_unsupported_target_becomes_failed_without_starting_titus(
     app_config: AppConfig,
     repository_inventory: ScanTargetInventory,
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
     backend = Mock()
     backend.titus_scan_arguments.side_effect = UnsupportedTitusTargetError(
         "unsupported source"
     )
-    scanner = TitusCliScanner(app_config.titus, repository_inventory, backend)
+    scanner = TitusCliScanner(repository_inventory, backend)
 
     result = asyncio.run(
         scanner.scan(
             repository_inventory.targets[0],
             tmp_path / "scratch",
             tmp_path / "titus.ds",
-            ExclusionPolicy(path_file="path-exclusions.list"),
         )
     )
 
@@ -63,6 +64,7 @@ def test_cancelled_titus_call_reaps_child_before_returning(
     monkeypatch,
     phase: str,
 ) -> None:
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
     # Exercise real subprocess cancellation without invoking Titus or any backend.
     spawn = asyncio.create_subprocess_exec
 
@@ -89,17 +91,12 @@ def test_cancelled_titus_call_reaps_child_before_returning(
             "registry/docker-local/team/api@sha256:manifest",
         )
         app_config.titus.internal_workers = 7
-        scanner = TitusCliScanner(
-            app_config.titus,
-            repository_inventory,
-            backend,
-        )
+        scanner = TitusCliScanner(repository_inventory, backend)
         if phase == "scan":
             operation = scanner.scan(
                 repository_inventory.targets[0],
                 tmp_path / "scratch",
                 tmp_path / "titus.ds",
-                ExclusionPolicy(path_file="path-exclusions.list"),
             )
         else:
             operation = scanner.export_report(tmp_path / "titus.ds")
@@ -131,6 +128,7 @@ def test_cancelled_titus_call_reaps_child_before_returning(
 def test_repeated_cancellation_waits_for_reaping(
     app_config, repository_inventory, tmp_path, monkeypatch, phase
 ):
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
     async def scenario():
         entered, reaping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         process = Mock(returncode=None)
@@ -159,13 +157,12 @@ def test_repeated_cancellation_waits_for_reaping(
             asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
         )
         backend = Mock(titus_scan_arguments=Mock(return_value=("synthetic",)))
-        scanner = TitusCliScanner(app_config.titus, repository_inventory, backend)
+        scanner = TitusCliScanner(repository_inventory, backend)
         operation = (
             scanner.scan(
                 repository_inventory.targets[0],
                 tmp_path / "scratch",
                 tmp_path / "titus.ds",
-                ExclusionPolicy(path_file=tmp_path / "paths"),
             )
             if phase == "scan"
             else scanner.export_report(tmp_path / "titus.ds")
@@ -191,6 +188,7 @@ def test_repeated_cancellation_waits_for_reaping(
 def test_cancellation_during_launch_waits_and_reaps(
     app_config, repository_inventory, tmp_path, monkeypatch, phase, launch_fails
 ):
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
     async def scenario():
         launching, release = asyncio.Event(), asyncio.Event()
         process = Mock(returncode=None)
@@ -205,7 +203,6 @@ def test_cancellation_during_launch_waits_and_reaps(
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
         scanner = TitusCliScanner(
-            app_config.titus,
             repository_inventory,
             Mock(titus_scan_arguments=Mock(return_value=("synthetic",))),
         )
@@ -214,7 +211,6 @@ def test_cancellation_during_launch_waits_and_reaps(
                 repository_inventory.targets[0],
                 tmp_path / "scratch",
                 tmp_path / "titus.ds",
-                ExclusionPolicy(path_file=tmp_path / "paths"),
             )
             if phase == "scan"
             else scanner.export_report(tmp_path / "titus.ds")

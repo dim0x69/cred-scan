@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock
 
 from cred_scan.backend.models import (
     ArtifactoryRepository,
-    BackendConfig,
-    DockerImageScanScope,
     ContentLocation,
-    ScanTargetInventory,
+    DockerImageScanScope,
     ScanTarget,
+    ScanTargetInventory,
     target_id_for,
 )
+from cred_scan.scan import credentials as credentials_module
 from cred_scan.scan.credentials import credential_identity, deduplicate_report
 from cred_scan.scan.models import ExclusionPolicy, TitusReport
 
@@ -37,13 +37,10 @@ def target() -> tuple[ScanTargetInventory, ScanTarget]:
     )
     scan_target = ScanTarget(
         id=target_id_for(scope),
-        backend_id="primary",
-        boundary=repository,
         scope=scope,
     )
     return ScanTargetInventory(
         generated_at=datetime.now(UTC),
-        backend=BackendConfig(name="primary"),
         boundary=repository,
         targets=(scan_target,),
     ), scan_target
@@ -56,7 +53,9 @@ def test_rule_specific_groups_merge_same_value() -> None:
     assert credential_identity(first)[1] == "secret"
 
 
-def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
+def test_dedup_uses_backend_resolved_locations_and_path_exclusions(
+    monkeypatch,
+) -> None:
     repository, scan_target = target()
     raw_path = "docker://registry/docker-local/team/api@sha256:image/sha256:layer:etc/app:prod.env"
     raw = [
@@ -76,6 +75,7 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
     policy = ExclusionPolicy(
         path_file="path-exclusions.list", path_patterns=("site-packages/",)
     )
+    monkeypatch.setattr(credentials_module, "get_exclusions", lambda: policy)
     resolver = AsyncMock()
     resolver.resolve_location.side_effect = [
         _resolved(scan_target.id, raw_path, "etc/app:prod.env", "app:prod.env"),
@@ -91,13 +91,13 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions() -> None:
         generated_at="2026-01-01T00:00:00+00:00",
         findings=tuple(raw),
     )
-    document = asyncio.run(deduplicate_report(report, repository, policy, resolver))
+    document = asyncio.run(deduplicate_report(report, repository, resolver))
     credential = next(iter(document.credentials.values()))
     assert credential.paths == (raw_path,)
     assert credential.occurrences[0].locator == raw_path
 
 
-def test_dedup_omits_credential_when_all_locations_are_excluded() -> None:
+def test_dedup_omits_credential_when_all_locations_are_excluded(monkeypatch) -> None:
     repository, scan_target = target()
     raw_path = (
         "docker://registry/docker-local/team/api@sha256:image/"
@@ -122,13 +122,16 @@ def test_dedup_omits_credential_when_all_locations_are_excluded() -> None:
     policy = ExclusionPolicy(
         path_file="path-exclusions.list", path_patterns=("vendor/",)
     )
+    monkeypatch.setattr(credentials_module, "get_exclusions", lambda: policy)
 
-    document = asyncio.run(deduplicate_report(report, repository, policy, resolver))
+    document = asyncio.run(deduplicate_report(report, repository, resolver))
 
     assert document.credentials == {}
 
 
-def test_dedup_can_exclude_every_credential_and_return_empty_document() -> None:
+def test_dedup_can_exclude_every_credential_and_return_empty_document(
+    monkeypatch,
+) -> None:
     repository, scan_target = target()
     paths = (
         "docker://registry/docker-local/team/api@sha256:image/"
@@ -164,13 +167,14 @@ def test_dedup_can_exclude_every_credential_and_return_empty_document() -> None:
     policy = ExclusionPolicy(
         path_file="path-exclusions.list", path_patterns=("vendor/",)
     )
+    monkeypatch.setattr(credentials_module, "get_exclusions", lambda: policy)
 
-    document = asyncio.run(deduplicate_report(report, repository, policy, resolver))
+    document = asyncio.run(deduplicate_report(report, repository, resolver))
 
     assert document.credentials == {}
 
 
-def test_unavailable_locations_remain_raw_and_produce_diagnostics():
+def test_unavailable_locations_produce_diagnostics(monkeypatch):
     inventory, scan_target = target()
     report = TitusReport(
         boundary_id=inventory.boundary.id,
@@ -197,10 +201,13 @@ def test_unavailable_locations_remain_raw_and_produce_diagnostics():
         _resolved(scan_target.id, "available", "etc/app.env", "app.env"),
         ValueError("ambiguous retained target"),
     ]
+    monkeypatch.setattr(
+        credentials_module,
+        "get_exclusions",
+        lambda: ExclusionPolicy(path_file="paths.list"),
+    )
     document = asyncio.run(
-        deduplicate_report(
-            report, inventory, ExclusionPolicy(path_file="paths.list"), resolver
-        )
+        deduplicate_report(report, inventory, resolver)
     )
     assert report.model_dump_json() == original
     assert document.incomplete
