@@ -303,6 +303,148 @@ def test_discovers_supported_local_docker_boundaries():
         run(backend.aclose())
 
 
+def test_pagination_failure_preserves_previous_inventory(tmp_path, monkeypatch):
+    boundary_id = "artifactory:artifactory_docker:repo"
+    boundary_path = write_boundary(tmp_path, inventory(boundary_id, with_target=True))
+    record_path = boundary_path / "boundary.json"
+    targets_path = boundary_path / "scantargets.json"
+    before_record = record_path.read_bytes()
+    before_targets = targets_path.read_bytes()
+
+    async def handler(request):
+        if request.url.path == "/artifactory/api/repositories":
+            return httpx.Response(
+                200,
+                json=[
+                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
+                ],
+            )
+        if request.url.path.endswith("/v2/_catalog"):
+            return httpx.Response(
+                200,
+                json={"repositories": ["image"]},
+                headers={"Link": '<?page=2>; rel="next"'},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    backend = http_backend(handler)
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+    try:
+        with pytest.raises(ExceptionGroup) as raised:
+            run(workspace.inventory())
+    finally:
+        run(backend.aclose())
+
+    assert any(
+        isinstance(error, ArtifactoryError)
+        and "pagination loop" in str(error)
+        for error in raised.value.exceptions
+    )
+    assert record_path.read_bytes() == before_record
+    assert targets_path.read_bytes() == before_targets
+
+
+@pytest.mark.parametrize(
+    ("old_timestamp_header", "new_timestamp_header"),
+    [
+        (None, None),
+        ("not-a-date", "not-a-date"),
+        (None, "Thu, 01 Jan 2026 00:00:00 GMT"),
+    ],
+    ids=["all-missing", "all-malformed", "mixed"],
+)
+def test_unusable_manifest_timestamps_fail_latest_selection(
+    old_timestamp_header, new_timestamp_header
+):
+    async def handler(request):
+        if request.url.path.endswith("/tags/list"):
+            return httpx.Response(200, json={"tags": ["old", "new"]})
+        if request.url.path.endswith("/manifests/old"):
+            timestamp_header = old_timestamp_header
+        elif request.url.path.endswith("/manifests/new"):
+            timestamp_header = new_timestamp_header
+        else:
+            raise AssertionError(f"unexpected request: {request.url}")
+        return httpx.Response(
+            200,
+            json={"schemaVersion": 2},
+            headers=(
+                {"Last-Modified": timestamp_header}
+                if timestamp_header is not None
+                else {}
+            ),
+        )
+
+    backend = http_backend(handler)
+    try:
+        with pytest.raises(ArtifactoryError, match="usable manifest timestamp"):
+            run(backend._select_latest("repo", "image", "linux/amd64"))
+    finally:
+        run(backend.aclose())
+
+
+@pytest.mark.parametrize(
+    "timestamp_header",
+    [None, "not-a-date"],
+    ids=["missing", "malformed"],
+)
+def test_timestamp_discovery_failure_preserves_previous_inventory(
+    tmp_path, monkeypatch, timestamp_header
+):
+    boundary_id = "artifactory:artifactory_docker:repo"
+    boundary_path = write_boundary(tmp_path, inventory(boundary_id, with_target=True))
+    record_path = boundary_path / "boundary.json"
+    targets_path = boundary_path / "scantargets.json"
+    before_record = record_path.read_bytes()
+    before_targets = targets_path.read_bytes()
+
+    async def handler(request):
+        if request.url.path == "/artifactory/api/repositories":
+            return httpx.Response(
+                200,
+                json=[
+                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
+                ],
+            )
+        if request.url.path.endswith("/v2/_catalog"):
+            return httpx.Response(200, json={"repositories": ["image"]})
+        if request.url.path.endswith("/tags/list"):
+            return httpx.Response(200, json={"tags": ["old", "new"]})
+        if request.url.path.endswith("/manifests/old"):
+            return httpx.Response(
+                200,
+                json={"schemaVersion": 2},
+                headers=(
+                    {"Last-Modified": timestamp_header}
+                    if timestamp_header is not None
+                    else {}
+                ),
+            )
+        if request.url.path.endswith("/manifests/new"):
+            return httpx.Response(
+                200,
+                json={"schemaVersion": 2},
+                headers={"Last-Modified": "Thu, 01 Jan 2026 00:00:00 GMT"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    backend = http_backend(handler)
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+    try:
+        with pytest.raises(ExceptionGroup) as raised:
+            run(workspace.inventory())
+    finally:
+        run(backend.aclose())
+
+    assert any(
+        isinstance(error, ArtifactoryError)
+        and "usable manifest timestamp" in str(error)
+        for error in raised.value.exceptions
+    )
+    assert record_path.read_bytes() == before_record
+    assert targets_path.read_bytes() == before_targets
+
+
 def test_tag_pagination_is_complete_before_latest_selection():
     async def handler(request):
         if request.url.params.get("page") == "2":

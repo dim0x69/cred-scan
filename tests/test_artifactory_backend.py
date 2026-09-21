@@ -82,6 +82,65 @@ def test_async_backend_preserves_authentication_and_paginates_catalog():
     assert all(request.headers["User-Agent"] == "cred-scan/0.1" for request in seen)
 
 
+@pytest.mark.parametrize(
+    ("method", "field", "first_value", "second_value"),
+    [
+        ("images", "repositories", "team/api", "team/web"),
+        ("tags", "tags", "old", "new"),
+    ],
+)
+def test_relative_pagination_links_are_resolved(
+    method, field, first_value, second_value
+):
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.params.get("page") == "2":
+            return httpx.Response(200, json={field: [second_value]})
+        return httpx.Response(
+            200,
+            json={field: [first_value]},
+            headers={"Link": '<?page=2>; rel="next"'},
+        )
+
+    backend = make_backend(handler)
+    try:
+        result = run(
+            backend.list_images("docker-local")
+            if method == "images"
+            else backend.list_tags("docker-local", "team/api")
+        )
+    finally:
+        run(backend.aclose())
+
+    assert set(result) == {first_value, second_value}
+    assert [request.url.params.get("page") for request in seen] == [None, "2"]
+    assert all(request.url.is_absolute_url for request in seen)
+
+
+def test_repeated_pagination_links_fail_without_repeating_the_request():
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={"repositories": ["team/api"]},
+            headers={"Link": '<?page=2>; rel="next"'},
+        )
+
+    backend = make_backend(handler)
+    try:
+        with pytest.raises(ArtifactoryError, match="pagination loop"):
+            run(backend.list_images("docker-local"))
+    finally:
+        run(backend.aclose())
+
+    assert len(seen) == 2
+    assert [request.url.params.get("page") for request in seen] == [None, "2"]
+
+
 def test_manifest_parses_digest_and_timestamp():
     timestamp = datetime(2026, 1, 1, tzinfo=UTC)
 

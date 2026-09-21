@@ -16,7 +16,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 from typing import Any, Literal, cast
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import aiofiles
 import httpx
@@ -461,8 +461,16 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
     ) -> tuple[str, ...]:
         values: set[str] = set()
         next_url: str | None = url
+        visited_urls: set[str] = set()
         while next_url:
-            response = await self._get(next_url)
+            request_url = str(next_url)
+            if request_url in visited_urls:
+                raise ArtifactoryError(
+                    f"Artifactory {response_name} pagination loop detected at "
+                    f"{request_url}"
+                )
+            visited_urls.add(request_url)
+            response = await self._get(request_url)
             try:
                 try:
                     payload = response.json()
@@ -487,7 +495,10 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                         f"Artifactory {response_name} {field} contained an invalid name"
                     )
                 values.update(items)
-                next_url = response.links.get("next", {}).get("url")
+                link = response.links.get("next", {}).get("url")
+                next_url = (
+                    urljoin(str(response.url), link) if link else None
+                )
             finally:
                 await response.aclose()
         return tuple(sorted(values))
@@ -602,8 +613,11 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             root_digest, digest, timestamp = await self._platform_manifest(
                 repository, image, tag, platform
             )
-            if timestamp is not None:
-                candidates.append((timestamp, tag, root_digest, digest))
+            if timestamp is None:
+                raise ArtifactoryError(
+                    f"image {image} tag {tag} has no usable manifest timestamp"
+                )
+            candidates.append((timestamp, tag, root_digest, digest))
         if not candidates:
             return None
         newest_timestamp = max(item[0] for item in candidates)

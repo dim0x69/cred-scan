@@ -12,12 +12,12 @@ over P2 items and cleanup.
   received the Bearer token. Resolve and validate next-page URLs before requesting
   them; rejecting cross-origin and non-HTTPS pagination is the proposed fix.
   Add regression coverage for both cases.
-- [ ] **P2 — Support relative pagination links and detect pagination loops.**
+- [x] **P2 — Support relative pagination links and detect pagination loops.**
   Relative links currently fail because they are passed directly to a client
   without a base URL. Resolve them against the response URL and track visited
   URLs. Test relative catalog/tag links and repeated next-page URLs, preserving
   existing inventory when pagination fails.
-- [ ] **P1 — Fail discovery when missing timestamps prevent latest-version selection.**
+- [x] **P1 — Fail discovery when missing timestamps prevent latest-version selection.**
   `_select_latest()` silently ignores tags without usable manifest timestamps.
   If all timestamps are missing, it returns no scan target and inventory refresh
   removes the previous selection; mixed timestamps can produce an incomplete
