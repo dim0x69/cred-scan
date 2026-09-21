@@ -3,9 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from cred_scan.backend.models import (
+from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository,
     DockerImageScanScope,
+)
+from cred_scan.backend.models import (
     ScanTarget,
     ScanTargetInventory,
     target_id_for,

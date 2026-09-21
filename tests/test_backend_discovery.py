@@ -8,11 +8,11 @@ import httpx
 import pytest
 
 from cred_scan.backend.adapters.artifactory.common import ArtifactoryError
-from cred_scan.backend.adapters.artifactory.docker import (
-    ArtifactoryDockerBackend,
+from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
+from cred_scan.backend.adapters.artifactory.models import (
+    ArtifactoryRepository,
     DockerImageScanScope,
 )
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
 from cred_scan.backend.models import (
     BoundaryRecord,
     ScanTargetInventory,

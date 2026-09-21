@@ -148,7 +148,7 @@ async def deduplicate_report(
             {
                 "credential_id": credential_id,
                 "credential": value,
-                "occurrences": [],
+                "occurrences": {},
             },
         )
         if item["credential"] is None and value is not None:
@@ -170,11 +170,11 @@ async def deduplicate_report(
                 continue
             if spec.match_file(resolved.source_path):
                 continue
-            if not any(
-                occurrence["locator"] == resolved.locator
-                for occurrence in item["occurrences"]
-            ):
-                item["occurrences"].append({"locator": resolved.locator})
+            # Dict order keeps the first occurrence stable for evidence extraction.
+            item["occurrences"].setdefault(
+                resolved.locator,
+                {"locator": resolved.locator},
+            )
 
     active: dict[str, Credential] = {}
     for credential_id, raw in grouped.items():
@@ -184,7 +184,12 @@ async def deduplicate_report(
         # intentionally remains strict.
         if not raw["occurrences"]:
             continue
-        credential = Credential.model_validate(raw)
+        credential = Credential.model_validate(
+            {
+                **raw,
+                "occurrences": tuple(raw["occurrences"].values()),
+            }
+        )
         if match_credential_exclusion(policy, credential.credential or "") is None:
             active[credential_id] = credential
     return CredentialsDocument(

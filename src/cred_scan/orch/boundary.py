@@ -43,6 +43,13 @@ LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
 
 
+def _target_needs_scan(target: ScanTarget) -> bool:
+    result = target.result
+    return result.status in {"pending", "running"} or (
+        result.status in {"failed", "partial"} and result.retryable
+    )
+
+
 class Boundary:
     """Mutable aggregate loaded only while its boundary is exclusively owned."""
 
@@ -240,16 +247,7 @@ class Boundary:
         return (
             not self._has_report
             or not self._has_credentials
-            or any(
-                (
-                    target.result.status in {"pending", "running"}
-                    or (
-                        target.result.status in {"failed", "partial"}
-                        and target.result.retryable
-                    )
-                )
-                for target in self.inventory.targets
-            )
+            or any(_target_needs_scan(target) for target in self.inventory.targets)
         )
 
     async def refresh_inventory(self) -> bool:
@@ -339,13 +337,7 @@ class Boundary:
         eligible = tuple(
             target
             for target in self.inventory.targets
-            if (
-                target.result.status in {"pending", "running"}
-                or (
-                    target.result.status in {"failed", "partial"}
-                    and target.result.retryable
-                )
-            )
+            if _target_needs_scan(target)
         )
         LOGGER.info("scanning boundary=%s targets=%d", self.boundary_id, len(eligible))
         for target in eligible:

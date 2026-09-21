@@ -3,8 +3,10 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
+from cred_scan.backend.adapters.artifactory.models import (
+    ArtifactoryRepository,
+    DockerImageScanScope,
+)
 from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import (
     ScanTarget,
@@ -71,4 +73,3 @@ def test_target_does_not_repeat_document_ownership() -> None:
     ).model_dump(mode="json")
 
     assert set(payload["targets"][0]) == {"id", "scope", "result"}
-

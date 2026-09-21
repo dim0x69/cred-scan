@@ -2,10 +2,12 @@ import asyncio
 from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock
 
-from cred_scan.backend.models import (
+from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository,
-    ContentLocation,
     DockerImageScanScope,
+)
+from cred_scan.backend.models import (
+    ContentLocation,
     ScanTarget,
     ScanTargetInventory,
     target_id_for,
@@ -95,6 +97,44 @@ def test_dedup_uses_backend_resolved_locations_and_path_exclusions(
     credential = next(iter(document.credentials.values()))
     assert credential.paths == (raw_path,)
     assert credential.occurrences[0].locator == raw_path
+
+
+def test_dedup_preserves_first_seen_occurrence_order(monkeypatch) -> None:
+    inventory, scan_target = target()
+    first = "docker://registry/repo/image@sha256:manifest/sha256:layer:first.env"
+    second = "docker://registry/repo/image@sha256:manifest/sha256:layer:second.env"
+    report = TitusReport(
+        boundary_id=inventory.boundary.id,
+        generated_at="2026-01-01T00:00:00+00:00",
+        findings=(
+            {
+                "ID": "finding-1",
+                "RuleID": "np.github.1",
+                "Groups": ["c2VjcmV0"],
+                "Matches": [
+                    {"file_path": first},
+                    {"file_path": second},
+                    {"file_path": first},
+                ],
+            },
+        ),
+    )
+    resolver = AsyncMock()
+    resolver.resolve_location.side_effect = [
+        _resolved(scan_target.id, first, "first.env", "first.env"),
+        _resolved(scan_target.id, second, "second.env", "second.env"),
+        _resolved(scan_target.id, first, "first.env", "first.env"),
+    ]
+    monkeypatch.setattr(
+        credentials_module,
+        "get_exclusions",
+        lambda: ExclusionPolicy(path_file="paths.list"),
+    )
+
+    document = asyncio.run(deduplicate_report(report, inventory, resolver))
+
+    credential = next(iter(document.credentials.values()))
+    assert credential.paths == (first, second)
 
 
 def test_dedup_omits_credential_when_all_locations_are_excluded(monkeypatch) -> None:

@@ -3,8 +3,10 @@
 import json
 from datetime import UTC, datetime
 
-from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
+from cred_scan.backend.adapters.artifactory.models import (
+    ArtifactoryRepository,
+    DockerImageScanScope,
+)
 from cred_scan.backend.models import (
     BoundaryRecord,
     ScanTarget,

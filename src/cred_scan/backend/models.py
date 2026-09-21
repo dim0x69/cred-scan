@@ -8,8 +8,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from cred_scan.backend.adapters.artifactory.models import ArtifactoryRepository
-from cred_scan.backend.adapters.artifactory.docker import DockerImageScanScope
+from cred_scan.backend.adapters.artifactory.models import (
+    ArtifactoryRepository,
+    DockerImageScanScope,
+)
 from cred_scan.backend.adapters.artifactory.package import PackageScanScope
 from cred_scan.backend.adapters.ghes import GitOrganization, GitRepositoryScanScope
 
