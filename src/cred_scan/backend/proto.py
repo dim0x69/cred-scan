@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -35,7 +35,7 @@ class BackendAdapter(ABC):
     async def aclose(self) -> None: ...
 
     @abstractmethod
-    async def discover_boundaries(self) -> tuple[str, ...]: ...
+    def discover_boundaries(self) -> AsyncIterator[str]: ...
 
     @abstractmethod
     def titus_scan_arguments(
@@ -51,7 +51,9 @@ class BackendAdapter(ABC):
         ...
 
     @abstractmethod
-    async def inventory(self, boundary_id: str) -> ScanTargetInventory: ...
+    async def inventory(
+        self, boundary_id: str
+    ) -> ScanTargetInventory | None: ...
 
 
 class ContentReader(Protocol):

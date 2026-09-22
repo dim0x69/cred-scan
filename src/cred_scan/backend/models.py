@@ -23,6 +23,13 @@ ScanBoundaryRef = ArtifactoryRepository | GitOrganization
 ScanScopeRef = DockerImageScanScope | PackageScanScope | GitRepositoryScanScope
 
 
+class BackendWorkspaceRecord(BaseModel):
+    """Durable identity for one backend workspace."""
+
+    schema_version: Literal[1] = 1
+    name: str = Field(min_length=1)
+
+
 class BoundaryRecord(BaseModel):
     """Durable boundary enrollment and current backend availability."""
 

@@ -141,6 +141,20 @@ def test_repeated_pagination_links_fail_without_repeating_the_request():
     assert [request.url.params.get("page") for request in seen] == [None, "2"]
 
 
+def test_missing_repository_inventory_returns_none():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/repo/v2/_catalog")
+        return httpx.Response(404, text="repository missing")
+
+    backend = make_backend(handler)
+    try:
+        assert run(
+            backend.inventory("artifactory:artifactory_docker:repo")
+        ) is None
+    finally:
+        run(backend.aclose())
+
+
 def test_manifest_parses_digest_and_timestamp():
     timestamp = datetime(2026, 1, 1, tzinfo=UTC)
 

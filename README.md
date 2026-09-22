@@ -1,7 +1,7 @@
 # Credential scanner
 
 A design-stage credential scanner with backend-owned source locators,
-one-backend workspaces, boundary-scoped Titus datastores, judgment, and evidence retention. Commands process
+backend-scoped workspaces, boundary-scoped Titus datastores, judgment, and evidence retention. Commands process
 boundaries concurrently; each boundary scans its targets sequentially with one
 Titus scanner. Titus internal parallelism is configured through `internal_workers`.
 
@@ -17,7 +17,8 @@ artifact and must be kept synchronized with code changes.
 uv sync --locked
 uv run pytest
 cred-scan --help
-cred-scan inventory
+cred-scan inventory add
+cred-scan inventory update
 cred-scan scan
 cred-scan judge
 cred-scan extract

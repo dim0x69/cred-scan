@@ -38,6 +38,12 @@ def test_migrates_inventory_to_boundary_record_and_scan_targets(tmp_path):
     )
     boundary_path = tmp_path / "artifactory%3Aartifactory_docker%3Arepo"
     boundary_path.mkdir()
+    migrated_boundary_path = (
+        tmp_path
+        / "artifactory_docker"
+        / "boundaries"
+        / "artifactory%3Aartifactory_docker%3Arepo"
+    )
     legacy = boundary_path / "inventory.json"
     legacy_payload = document.model_dump(mode="json")
     legacy_payload["schema_version"] = 10
@@ -57,6 +63,7 @@ def test_migrates_inventory_to_boundary_record_and_scan_targets(tmp_path):
     assert not (boundary_path / "boundary.json").exists()
 
     assert migrate_workspace(tmp_path, apply=True) == 1
+    boundary_path = migrated_boundary_path
 
     assert not legacy.exists()
     restored = ScanTargetInventory.model_validate_json(
@@ -79,6 +86,8 @@ def test_migrates_inventory_to_boundary_record_and_scan_targets(tmp_path):
         / "inventory.json"
     )
     assert json.loads(backup.read_text()) == legacy_payload
-    assert datastore.read_bytes() == b"historical datastore"
-    assert evidence.read_bytes() == b"historical evidence"
+    assert (boundary_path / "titus.ds").read_bytes() == b"historical datastore"
+    assert (boundary_path / "evidence" / "credential" / "app.env").read_bytes() == (
+        b"historical evidence"
+    )
     assert migrate_workspace(tmp_path) == 0

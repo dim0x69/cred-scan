@@ -14,6 +14,7 @@ from cred_scan.backend.adapters.artifactory.models import (
     DockerImageScanScope,
 )
 from cred_scan.backend.models import (
+    BackendWorkspaceRecord,
     BoundaryRecord,
     ScanTargetInventory,
     ScanTarget,
@@ -93,12 +94,25 @@ def configured_workspace(tmp_path, monkeypatch, backend) -> Workspace:
         "ArtifactoryDockerBackend",
         Mock(return_value=backend),
     )
-    return Workspace()
+    return Workspace(
+        backend,
+        tmp_path / "artifactory_docker",
+        create=True,
+    )
 
 
 def write_boundary(tmp_path, document: ScanTargetInventory):
-    path = tmp_path / document.boundary.id.replace(":", "%3A")
+    path = (
+        tmp_path
+        / "artifactory_docker"
+        / "boundaries"
+        / document.boundary.id.replace(":", "%3A")
+    )
     path.mkdir(parents=True)
+    backend_dir = path.parents[1]
+    (backend_dir / "backend.json").write_text(
+        BackendWorkspaceRecord(name="artifactory_docker").model_dump_json()
+    )
     (path / "boundary.json").write_text(
         BoundaryRecord(
             backend_id="artifactory_docker",
@@ -123,17 +137,31 @@ def test_inventory_enrolls_initial_and_new_boundaries(tmp_path, monkeypatch):
 
     async def scenario():
         async with workspace:
-            assert await workspace.inventory() == 1
-            backend.discover_boundaries.return_value = (first_id, second_id)
-            assert await workspace.inventory() == 2
+            async def first_discovery():
+                yield first_id
+
+            backend.discover_boundaries = Mock(return_value=first_discovery())
+            assert await workspace.add() == 1
+
+            async def second_discovery():
+                yield first_id
+                yield second_id
+
+            backend.discover_boundaries = Mock(return_value=second_discovery())
+            assert await workspace.add() == 1
 
     run(scenario())
 
     assert {
-        path.parent.name for path in tmp_path.glob("*/scantargets.json")
+        path.parent.name
+        for path in tmp_path.glob(
+            "artifactory_docker/boundaries/*/scantargets.json"
+        )
     } == {first_id.replace(":", "%3A"), second_id.replace(":", "%3A")}
-    assert len(tuple(tmp_path.glob("*/boundary.json"))) == 2
-    assert (tmp_path / "backend.json").is_file()
+    assert len(
+        tuple(tmp_path.glob("artifactory_docker/boundaries/*/boundary.json"))
+    ) == 2
+    assert (tmp_path / "artifactory_docker/backend.json").is_file()
 
 
 def test_boundary_discovery_failure_preserves_existing_inventory(
@@ -145,41 +173,41 @@ def test_boundary_discovery_failure_preserves_existing_inventory(
     before = targets_path.read_bytes()
     backend = Mock(name="backend")
     backend.name = "artifactory_docker"
-    backend.discover_boundaries = AsyncMock(
-        side_effect=ArtifactoryError("repository discovery failed")
-    )
+    async def failed_discovery():
+        raise ArtifactoryError("repository discovery failed")
+        yield "unreachable"
+
+    backend.discover_boundaries = failed_discovery
     workspace = configured_workspace(tmp_path, monkeypatch, backend)
 
     with pytest.raises(ArtifactoryError, match="repository discovery failed"):
-        run(workspace.inventory())
+        run(workspace.add())
 
     assert targets_path.read_bytes() == before
     backend.inventory.assert_not_called()
 
 
-def test_persisted_boundary_missing_from_discovery_is_still_refreshed(
+def test_update_checks_registered_boundary_existence(
     tmp_path, monkeypatch
 ):
     boundary_id = "artifactory:artifactory_docker:missing"
     boundary_path = write_boundary(tmp_path, inventory(boundary_id))
     backend = Mock(name="backend")
     backend.name = "artifactory_docker"
-    backend.discover_boundaries = AsyncMock(return_value=())
-    backend.inventory = AsyncMock()
+    backend.inventory = AsyncMock(return_value=None)
     workspace = configured_workspace(tmp_path, monkeypatch, backend)
 
-    assert run(workspace.inventory()) == 1
+    assert run(workspace.update()) == 1
 
     record = BoundaryRecord.model_validate_json(
         (boundary_path / "boundary.json").read_text()
     )
     assert record.availability == "absent"
     assert not (boundary_path / "scantargets.json").exists()
-    backend.inventory.assert_not_called()
+    backend.inventory.assert_awaited_once_with(boundary_id)
 
-    backend.discover_boundaries.return_value = (boundary_id,)
     backend.inventory.return_value = inventory(boundary_id)
-    assert run(workspace.inventory()) == 1
+    assert run(workspace.update()) == 1
     restored = BoundaryRecord.model_validate_json(
         (boundary_path / "boundary.json").read_text()
     )
@@ -265,14 +293,14 @@ def test_only_valid_empty_catalog_can_clear_selected_targets(
     workspace = configured_workspace(tmp_path, monkeypatch, backend)
     try:
         if catalog:
-            assert run(workspace.inventory()) == 1
+            assert run(workspace.update()) == 1
             saved = ScanTargetInventory.model_validate_json(
                 targets_path.read_text()
             )
             assert saved.targets == ()
         else:
             with pytest.raises(ExceptionGroup) as raised:
-                run(workspace.inventory())
+                run(workspace.update())
             assert any(
                 isinstance(error, ArtifactoryError)
                 for error in raised.value.exceptions
@@ -295,8 +323,17 @@ def test_discovers_supported_local_docker_boundaries():
         )
 
     backend = http_backend(handler)
+
+    async def collect():
+        return tuple(
+            [
+                boundary_id
+                async for boundary_id in backend.discover_boundaries()
+            ]
+        )
+
     try:
-        assert run(backend.discover_boundaries()) == (
+        assert run(collect()) == (
             "artifactory:artifactory_docker:docker-local",
         )
     finally:
@@ -331,7 +368,7 @@ def test_pagination_failure_preserves_previous_inventory(tmp_path, monkeypatch):
     workspace = configured_workspace(tmp_path, monkeypatch, backend)
     try:
         with pytest.raises(ExceptionGroup) as raised:
-            run(workspace.inventory())
+            run(workspace.update())
     finally:
         run(backend.aclose())
 
@@ -432,7 +469,7 @@ def test_timestamp_discovery_failure_preserves_previous_inventory(
     workspace = configured_workspace(tmp_path, monkeypatch, backend)
     try:
         with pytest.raises(ExceptionGroup) as raised:
-            run(workspace.inventory())
+            run(workspace.update())
     finally:
         run(backend.aclose())
 

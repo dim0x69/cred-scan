@@ -262,7 +262,34 @@ class Boundary:
                         "boundary scan targets do not match boundary path: "
                         f"{self.paths.scan_targets}"
                     )
+                existing = self._read(self.paths.record, BoundaryRecord)
+                if existing is not None:
+                    if existing.boundary.id != self.boundary_id:
+                        raise ValueError(
+                            "boundary record does not match boundary path: "
+                            f"{self.paths.record}"
+                        )
+                    if existing.backend_id != self.backend.name:
+                        raise ValueError(
+                            "boundary record belongs to another backend: "
+                            f"{self.paths.record}"
+                        )
+
                 discovered = await self.backend.inventory(self.boundary_id)
+                if discovered is None:
+                    if existing is None:
+                        return False
+                    absent = existing.model_copy(update={"availability": "absent"})
+                    self._write(
+                        self.paths.record,
+                        absent,
+                        BoundaryRecord,
+                    )
+                    self.paths.scan_targets.unlink(missing_ok=True)
+                    fsync_directory(self.paths.boundary_dir)
+                    self.record = absent
+                    return True
+
                 if discovered.boundary.id != self.boundary_id:
                     raise ValueError("backend returned inventory for another boundary")
                 merged = merge_inventory(current, discovered)

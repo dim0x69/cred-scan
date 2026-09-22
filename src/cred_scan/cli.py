@@ -1,4 +1,4 @@
-"""Thin local CLI for concurrent boundary workflow operations."""
+"""Thin local CLI for backend and boundary workflow operations."""
 
 from __future__ import annotations
 
@@ -20,6 +20,12 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+inventory_app = typer.Typer(
+    help="Enroll or refresh backend boundary inventories.",
+    add_completion=False,
+    no_args_is_help=True,
+)
+app.add_typer(inventory_app, name="inventory")
 
 
 def _configure_logging() -> None:
@@ -56,68 +62,91 @@ def _run(
     try:
         asyncio.run(execute())
     except Exception:
-        LOGGER.exception("command failed command=%s config=%s", command, config)
+        LOGGER.exception("command failed command=%s", command)
         raise typer.Exit(1)
 
 
-@app.command()
-def inventory(
-    config: Annotated[
-        Path, typer.Option("--config", "-c", help="Central configuration file.")
-    ] = Path("config.yml"),
+ConfigOption = Annotated[
+    Path, typer.Option("--config", "-c", help="Central configuration file.")
+]
+BackendOption = Annotated[
+    str | None, typer.Option("--backend", help="Backend name.")
+]
+
+
+@inventory_app.command("add")
+def inventory_add(
+    backend: BackendOption = None,
+    new_count: Annotated[
+        int | None,
+        typer.Option("--new-count", min=0, help="Maximum new boundaries to add."),
+    ] = None,
+    config: ConfigOption = Path("config.yml"),
 ) -> None:
-    """Refresh persisted boundary inventories concurrently."""
+    """Enroll new backend boundaries without refreshing existing ones."""
     _run(
-        "inventory",
+        "inventory add",
         config,
-        lambda runtime: runtime.inventory(),
-        "refreshed inventory for {count} boundary(ies)",
+        lambda runtime: runtime.inventory_add(backend, new_count),
+        "added {count} boundary(ies)",
+    )
+
+
+@inventory_app.command("update")
+def inventory_update(
+    backend: BackendOption = None,
+    config: ConfigOption = Path("config.yml"),
+) -> None:
+    """Refresh registered boundaries and reconcile their availability."""
+    _run(
+        "inventory update",
+        config,
+        lambda runtime: runtime.inventory_update(backend),
+        "updated {count} boundary(ies)",
     )
 
 
 @app.command()
 def scan(
-    config: Annotated[
-        Path, typer.Option("--config", "-c", help="Central configuration file.")
-    ] = Path("config.yml"),
+    backend: BackendOption = None,
+    config: ConfigOption = Path("config.yml"),
 ) -> None:
-    """Scan boundaries concurrently, with sequential targets per boundary."""
+    """Scan persisted boundaries, optionally restricted to one backend."""
     _run(
         "scan",
         config,
-        lambda runtime: runtime.scan(),
+        lambda runtime: runtime.scan(backend),
         "scanned {count} boundary(ies)",
     )
 
 
 @app.command()
 def judge(
-    config: Annotated[
-        Path, typer.Option("--config", "-c", help="Central configuration file.")
-    ] = Path("config.yml"),
+    backend: BackendOption = None,
+    config: ConfigOption = Path("config.yml"),
 ) -> None:
-    """Judge pending credentials across boundaries concurrently."""
+    """Judge pending credentials, optionally restricted to one backend."""
     _run(
         "judge",
         config,
-        lambda runtime: runtime.judge(),
+        lambda runtime: runtime.judge(backend),
         "judged {count} credential(s)",
     )
 
 
 @app.command()
 def extract(
-    config: Annotated[
-        Path, typer.Option("--config", "-c", help="Central configuration file.")
-    ] = Path("config.yml"),
+    backend: BackendOption = None,
+    config: ConfigOption = Path("config.yml"),
 ) -> None:
-    """Extract eligible evidence across boundaries concurrently."""
+    """Extract eligible evidence, optionally restricted to one backend."""
     _run(
         "extract",
         config,
-        lambda runtime: runtime.extract(),
+        lambda runtime: runtime.extract(backend),
         "extracted {count} credential(s)",
     )
+
 
 if __name__ == "__main__":
     app()

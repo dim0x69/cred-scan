@@ -18,6 +18,8 @@ def app_config() -> AppConfig:
     [
         ["--help"],
         ["inventory", "--help"],
+        ["inventory", "add", "--help"],
+        ["inventory", "update", "--help"],
         ["scan", "--help"],
         ["judge", "--help"],
         ["extract", "--help"],
@@ -41,28 +43,50 @@ def test_help_does_not_load_configuration_or_start_runtime(
 def test_missing_config_is_rejected(tmp_path) -> None:
     result = CliRunner().invoke(
         cli.app,
-        ["inventory", "--config", str(tmp_path / "missing.yml")],
+        [
+            "inventory",
+            "add",
+            "--config",
+            str(tmp_path / "missing.yml"),
+        ],
     )
 
     assert result.exit_code != 0
     assert "config file not found" in result.output
 
 
-def test_inventory_command_displays_returned_count(
+def test_inventory_add_command_displays_returned_count(
     monkeypatch, app_config: AppConfig
 ) -> None:
     loader = Mock(load=AsyncMock(return_value=app_config))
-    runtime = Mock(inventory=AsyncMock(return_value=2))
+    runtime = Mock(inventory_add=AsyncMock(return_value=2))
     monkeypatch.setattr(cli, "YamlConfigLoader", Mock(return_value=loader))
     runtime_constructor = Mock(return_value=runtime)
     monkeypatch.setattr(cli, "LocalRuntime", runtime_constructor)
 
-    result = CliRunner().invoke(cli.app, ["inventory"])
+    result = CliRunner().invoke(cli.app, ["inventory", "add"])
 
     assert result.exit_code == 0
-    assert "refreshed inventory for 2 boundary(ies)" in result.output
+    assert "added 2 boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.inventory.assert_awaited_once()
+    runtime.inventory_add.assert_awaited_once_with(None, None)
+
+
+def test_inventory_update_command_displays_returned_count(
+    monkeypatch, app_config: AppConfig
+) -> None:
+    loader = Mock(load=AsyncMock(return_value=app_config))
+    runtime = Mock(inventory_update=AsyncMock(return_value=2))
+    monkeypatch.setattr(cli, "YamlConfigLoader", Mock(return_value=loader))
+    runtime_constructor = Mock(return_value=runtime)
+    monkeypatch.setattr(cli, "LocalRuntime", runtime_constructor)
+
+    result = CliRunner().invoke(cli.app, ["inventory", "update"])
+
+    assert result.exit_code == 0
+    assert "updated 2 boundary(ies)" in result.output
+    runtime_constructor.assert_called_once_with(app_config)
+    runtime.inventory_update.assert_awaited_once_with(None)
 
 
 def test_judge_command_displays_returned_count(
@@ -79,7 +103,7 @@ def test_judge_command_displays_returned_count(
     assert result.exit_code == 0
     assert "judged 3 credential(s)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.judge.assert_awaited_once()
+    runtime.judge.assert_awaited_once_with(None)
 
 
 def test_scan_command_displays_returned_count(
@@ -96,7 +120,7 @@ def test_scan_command_displays_returned_count(
     assert result.exit_code == 0
     assert "scanned 2 boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.scan.assert_awaited_once()
+    runtime.scan.assert_awaited_once_with(None)
 
 
 def test_extract_command_displays_returned_count(
@@ -113,7 +137,7 @@ def test_extract_command_displays_returned_count(
     assert result.exit_code == 0
     assert "extracted 4 credential(s)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.extract.assert_awaited_once()
+    runtime.extract.assert_awaited_once_with(None)
 
 
 def test_task_group_error_is_reported_as_command_failure(

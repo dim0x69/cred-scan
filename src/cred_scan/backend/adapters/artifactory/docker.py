@@ -22,7 +22,11 @@ import aiofiles
 import httpx
 from pydantic import BaseModel
 
-from cred_scan.backend.adapters.artifactory.common import ArtifactoryBackend, ArtifactoryError
+from cred_scan.backend.adapters.artifactory.common import (
+    ArtifactoryBackend,
+    ArtifactoryError,
+    ArtifactoryNotFoundError,
+)
 from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository,
     DockerImageScanScope,
@@ -556,13 +560,18 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             "local-repo",
         }
 
-    async def discover_boundaries(self) -> tuple[str, ...]:
-        boundary_ids = {
-            self._repository(self._repository_name(metadata)).id
-            for metadata in await self.repositories()
-            if self._is_supported_repository(metadata)
-        }
-        return tuple(sorted(boundary_ids))
+    async def discover_boundaries(self) -> AsyncIterator[str]:
+        seen: set[str] = set()
+        for metadata in await self.repositories():
+            if not self._is_supported_repository(metadata):
+                continue
+            boundary_id = self._repository(
+                self._repository_name(metadata)
+            ).id
+            if boundary_id in seen:
+                continue
+            seen.add(boundary_id)
+            yield boundary_id
 
     async def _platform_manifest(
         self, repository: str, image: str, reference: str, platform: str
@@ -643,41 +652,42 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
             manifest_timestamp=newest_timestamp,
         )
 
-    async def inventory(self, boundary_id: str) -> ScanTargetInventory:
+    async def inventory(
+        self, boundary_id: str
+    ) -> ScanTargetInventory | None:
         generated_at = datetime.now(UTC)
-        repositories = await self.repositories()
-        for metadata in repositories:
-            name = self._repository_name(metadata)
-            repository = self._repository(name)
-            if repository.id != boundary_id:
-                continue
-            if not self._is_supported_repository(metadata):
-                LOGGER.warning(
-                    "skipping unsupported Artifactory repository %s",
-                    name,
-                )
-                continue
+        prefix = f"artifactory:{self.name}:"
+        if not boundary_id.startswith(prefix):
+            raise ArtifactoryError(
+                f"boundary ID does not belong to backend {self.name}: {boundary_id}"
+            )
+        name = boundary_id.removeprefix(prefix)
+        if not name:
+            raise ArtifactoryError(f"boundary ID has no repository name: {boundary_id}")
+        repository = self._repository(name)
+        try:
             images = sorted(await self.list_images(name))
-            if not images:
-                LOGGER.info("skipping empty Artifactory repository %s", name)
-                return ScanTargetInventory(
-                    generated_at=generated_at,
-                    boundary=repository,
-                )
-            targets: list[ScanTarget] = []
-            for image_name in images:
-                scope = await self._select_latest(name, image_name, self.platform)
-                if scope is None:
-                    continue
-                targets.append(
-                    ScanTarget(
-                        id=target_id_for(scope),
-                        scope=scope,
-                    )
-                )
+        except ArtifactoryNotFoundError:
+            return None
+        if not images:
+            LOGGER.info("skipping empty Artifactory repository %s", name)
             return ScanTargetInventory(
                 generated_at=generated_at,
                 boundary=repository,
-                targets=tuple(targets),
             )
-        raise KeyError(f"boundary not found: {boundary_id}")
+        targets: list[ScanTarget] = []
+        for image_name in images:
+            scope = await self._select_latest(name, image_name, self.platform)
+            if scope is None:
+                continue
+            targets.append(
+                ScanTarget(
+                    id=target_id_for(scope),
+                    scope=scope,
+                )
+            )
+        return ScanTargetInventory(
+            generated_at=generated_at,
+            boundary=repository,
+            targets=tuple(targets),
+        )

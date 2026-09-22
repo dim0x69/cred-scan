@@ -8,7 +8,7 @@ import pytest
 from cred_scan.orch import global_config
 from cred_scan.orch.models import AppConfig, TitusConfig, WorkspaceConfig
 from cred_scan.orch.runtime import LocalRuntime
-from cred_scan.orch.workspace import Workspace
+from cred_scan.orch.workspace import Workspace, load_configured_backend
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.backend.models import ContentLocation
 from cred_scan.scan.credentials import deduplicate_report
@@ -58,7 +58,11 @@ def test_exclusions_load_lazily_once_and_reload_for_next_run(resolved_config):
 
 def test_services_read_global_settings_and_secrets(resolved_config):
     LocalRuntime(resolved_config)
-    workspace = Workspace()
+    workspace = Workspace(
+        load_configured_backend("artifactory_docker"),
+        resolved_config.workspace.workspace_dir / "artifactory_docker",
+        create=True,
+    )
     try:
         assert workspace.workspace_dir == resolved_config.workspace.workspace_dir
         assert workspace.backend.session.headers["Authorization"] == (

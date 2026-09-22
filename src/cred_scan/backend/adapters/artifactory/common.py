@@ -13,6 +13,10 @@ class ArtifactoryError(RuntimeError):
     """An Artifactory transport or response error."""
 
 
+class ArtifactoryNotFoundError(ArtifactoryError):
+    """The requested Artifactory resource does not exist."""
+
+
 class ArtifactoryBackend(BackendAdapter):
     """Common authenticated Artifactory backend behavior."""
 
@@ -67,7 +71,12 @@ class ArtifactoryBackend(BackendAdapter):
             detail = response.text[:200]
         finally:
             await response.aclose()
-        raise ArtifactoryError(
+        error_type = (
+            ArtifactoryNotFoundError
+            if response.status_code == 404
+            else ArtifactoryError
+        )
+        raise error_type(
             f"GET {url} failed with HTTP {response.status_code}: {detail}"
         )
 
