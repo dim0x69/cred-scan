@@ -466,6 +466,7 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
         values: set[str] = set()
         next_url: str | None = url
         visited_urls: set[str] = set()
+        first_page = True
         while next_url:
             request_url = str(next_url)
             if request_url in visited_urls:
@@ -474,7 +475,17 @@ class ArtifactoryDockerBackend(ArtifactoryBackend):
                     f"{request_url}"
                 )
             visited_urls.add(request_url)
-            response = await self._get(request_url)
+            try:
+                response = await self._get(request_url)
+            except ArtifactoryNotFoundError as error:
+                # Only an initial-page 404 confirms absence; continuation failure does not.
+                if first_page:
+                    raise
+                raise ArtifactoryError(
+                    f"Artifactory {response_name} continuation page returned 404: "
+                    f"{request_url}"
+                ) from error
+            first_page = False
             try:
                 try:
                     payload = response.json()

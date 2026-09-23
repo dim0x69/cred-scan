@@ -508,6 +508,49 @@ def test_discovers_supported_local_docker_boundaries():
         run(backend.aclose())
 
 
+def test_continuation_404_preserves_previous_inventory(tmp_path, monkeypatch):
+    boundary_id = "artifactory:artifactory_docker:repo"
+    boundary_path = write_boundary(tmp_path, inventory(boundary_id, with_target=True))
+    record_path = boundary_path / "boundary.json"
+    targets_path = boundary_path / "scantargets.json"
+    before_record = record_path.read_bytes()
+    before_targets = targets_path.read_bytes()
+
+    async def handler(request):
+        if request.url.path == "/artifactory/api/repositories":
+            return httpx.Response(
+                200,
+                json=[
+                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
+                ],
+            )
+        if request.url.path.endswith("/v2/_catalog"):
+            if request.url.params.get("page") == "2":
+                return httpx.Response(404, text="continuation missing")
+            return httpx.Response(
+                200,
+                json={"repositories": ["image"]},
+                headers={"Link": '<?page=2>; rel="next"'},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    backend = http_backend(handler)
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+    try:
+        with pytest.raises(ExceptionGroup) as raised:
+            run(workspace.update())
+    finally:
+        run(backend.aclose())
+
+    assert any(
+        isinstance(error, ArtifactoryError)
+        and "continuation page returned 404" in str(error)
+        for error in raised.value.exceptions
+    )
+    assert record_path.read_bytes() == before_record
+    assert targets_path.read_bytes() == before_targets
+
+
 def test_pagination_failure_preserves_previous_inventory(tmp_path, monkeypatch):
     boundary_id = "artifactory:artifactory_docker:repo"
     boundary_path = write_boundary(tmp_path, inventory(boundary_id, with_target=True))

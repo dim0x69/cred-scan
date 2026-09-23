@@ -40,16 +40,14 @@ documented implementation limitation. Source references below are relative to
   and HTTPS-to-HTTP links. This exposes a gap in the intended Artifactory
   authorization boundary; existing redirect tests do not cover pagination.
 
-- [ ] **P1 — Do not treat a later catalog-page 404 as confirmed absence.**
-  `backend/adapters/artifactory/docker.py:671` catches `ArtifactoryNotFoundError`
-  around the entire paginated `list_images` call. A successful first page followed
-  by a missing continuation URL therefore returns `None`.
-  `orch/boundary.py:278` then marks the boundary absent and deletes
-  `scantargets.json`. Reproduced through `Workspace.update()` with an existing
-  target: the command reported one update and removed the inventory. Distinguish
-  failure to fetch a continuation from an authoritative absence result; preserve
-  both existing documents when pagination fails. This violates the confirmed
-  rule that discovery failures leave boundary records and scan targets unchanged.
+- [x] **P1 — Do not treat a later catalog-page 404 as confirmed absence.**
+  `ArtifactoryDockerBackend._paginated_names()` preserves a first-page
+  `ArtifactoryNotFoundError` for confirmed absence, but converts a continuation
+  page 404 to an `ArtifactoryError` with the original exception chained.
+  `inventory()` therefore cannot mistake a failed page for absence; `Boundary`
+  leaves `boundary.json` and `scantargets.json` unchanged. Adapter and
+  `Workspace.update()` regressions verify both documents remain byte-for-byte
+  unchanged on continuation failure.
 
 - [ ] **P2 — Persist backend enrollment before successful boundaries can become
   undiscoverable.** `orch/workspace.py:341-346` writes `backend.json` only after

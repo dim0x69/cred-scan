@@ -7,6 +7,7 @@ import pytest
 from cred_scan.backend.adapters.artifactory.common import (
     ArtifactoryBackend,
     ArtifactoryError,
+    ArtifactoryNotFoundError,
 )
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
 
@@ -139,6 +140,34 @@ def test_repeated_pagination_links_fail_without_repeating_the_request():
 
     assert len(seen) == 2
     assert [request.url.params.get("page") for request in seen] == [None, "2"]
+
+
+def test_catalog_continuation_404_is_a_discovery_error():
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.params.get("page") == "2":
+            return httpx.Response(404, text="continuation missing")
+        return httpx.Response(
+            200,
+            json={"repositories": ["team/api"]},
+            headers={"Link": '<?page=2>; rel="next"'},
+        )
+
+    backend = make_backend(handler)
+    try:
+        with pytest.raises(
+            ArtifactoryError,
+            match="continuation page returned 404",
+        ) as raised:
+            run(backend.list_images("docker-local"))
+    finally:
+        run(backend.aclose())
+
+    assert not isinstance(raised.value, ArtifactoryNotFoundError)
+    assert isinstance(raised.value.__cause__, ArtifactoryNotFoundError)
+    assert len(seen) == 2
 
 
 def test_missing_repository_inventory_returns_none():
