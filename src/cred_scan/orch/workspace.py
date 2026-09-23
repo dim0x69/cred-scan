@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 from urllib.parse import quote, unquote
 
 from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBackend
@@ -19,31 +15,16 @@ from cred_scan.backend.models import (
 )
 from cred_scan.backend.proto import BackendAdapter
 from cred_scan.orch.boundary import Boundary
-from cred_scan.orch.fsync import fsync_directory
 from cred_scan.orch.global_config import get_config
+from cred_scan.orch.json_io import write_json_atomic
 from cred_scan.orch.locking import BoundaryBusyError
 
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class InventoryRequest:
-    operation: Literal["add", "update"]
-    backend: str | None = None
-    new_count: int | None = None
-
-
 def configured_backend_names() -> tuple[str, ...]:
     """Return configured backend names in deterministic order."""
-    names: list[str] = []
-    for backend in get_config().backends:
-        name = backend.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("configured backend has no valid name")
-        if name in names:
-            raise ValueError(f"configured backend name is duplicated: {name}")
-        names.append(name)
-    return tuple(sorted(names))
+    return tuple(sorted(backend.name for backend in get_config().backends))
 
 
 def _backend_record(path: Path) -> BackendWorkspaceRecord:
@@ -64,22 +45,16 @@ def load_configured_backend(backend_name: str) -> BackendAdapter:
     """Construct the configured adapter for one backend identity."""
     config = get_config()
     backend_config = next(
-        (
-            item
-            for item in config.backends
-            if item.get("name") == backend_name
-        ),
+        (item for item in config.backends if item.name == backend_name),
         None,
     )
     if backend_config is None:
         raise ValueError(f"backend is not configured: {backend_name}")
-    if backend_name == "artifactory_docker":
-        return ArtifactoryDockerBackend(
-            name=backend_name,
-            base_url=str(backend_config["base_url"]),
-            platform=str(backend_config.get("platform", "linux/amd64")),
-        )
-    raise ValueError(f"unsupported backend: {backend_name}")
+    return ArtifactoryDockerBackend(
+        name=backend_config.name,
+        base_url=backend_config.base_url,
+        platform=backend_config.platform,
+    )
 
 
 def _persisted_backend_paths(
@@ -134,56 +109,32 @@ def iter_configured_workspaces(
 
 
 def _write_backend_record(path: Path, record: BackendWorkspaceRecord) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(
-                record.model_dump(mode="json"),
-                stream,
-                indent=2,
-                sort_keys=True,
-            )
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-        fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_json_atomic(path, record.model_dump(mode="json"))
 
 
-async def select_boundaries(
-    request: InventoryRequest,
-    boundary_stream: AsyncIterator[str] | None,
+async def _new_boundary_ids(
+    discovered: AsyncIterator[str],
     registered: set[str],
-) -> tuple[str, ...]:
-    """Select boundary IDs for either inventory lifecycle operation."""
-    if request.operation == "update":
-        if request.new_count is not None:
-            raise ValueError("new_count is only valid for inventory add")
-        return tuple(sorted(registered))
-
-    if boundary_stream is None:
-        raise ValueError("inventory add requires boundary discovery")
-    if request.new_count is not None and request.new_count < 0:
-        raise ValueError("new_count must not be negative")
-    if request.new_count == 0:
-        return ()
-
-    selected: list[str] = []
+    limit: int | None,
+) -> AsyncIterator[str]:
+    """Yield unique unregistered IDs and always close backend discovery."""
+    selected = 0
+    seen: set[str] = set()
     try:
-        async for boundary_id in boundary_stream:
-            if boundary_id in registered:
+        if limit == 0:
+            return
+        async for boundary_id in discovered:
+            if boundary_id in registered or boundary_id in seen:
                 continue
-            selected.append(boundary_id)
-            if request.new_count is not None and len(selected) == request.new_count:
+            seen.add(boundary_id)
+            yield boundary_id
+            selected += 1
+            if limit is not None and selected >= limit:
                 break
     finally:
-        close = getattr(boundary_stream, "aclose", None)
+        close = getattr(discovered, "aclose", None)
         if close is not None:
             await close()
-    return tuple(selected)
 
 
 class Workspace:
@@ -327,19 +278,19 @@ class Workspace:
             )
 
     async def add(self, new_count: int | None = None) -> int:
+        if new_count is not None and new_count < 0:
+            raise ValueError("new_count must not be negative")
         registered = self._registered_boundary_ids()
-        request = InventoryRequest(
-            operation="add",
-            backend=self.backend_name,
-            new_count=new_count,
-        )
-        selected = await select_boundaries(
-            request,
-            self.backend.discover_boundaries(),
-            registered,
-        )
+        selected = [
+            boundary_id
+            async for boundary_id in _new_boundary_ids(
+                self.backend.discover_boundaries(),
+                registered,
+                new_count,
+            )
+        ]
         result = await self._run_boundaries(
-            Boundary.refresh_inventory,
+            Boundary.enroll_inventory,
             tuple(self.boundary(boundary_id) for boundary_id in selected),
         )
         if any(self._boundaries_dir.glob("*/boundary.json")):
@@ -347,12 +298,10 @@ class Workspace:
         return result
 
     async def update(self) -> int:
-        registered = self._registered_boundary_ids()
-        request = InventoryRequest(operation="update", backend=self.backend_name)
-        selected = await select_boundaries(request, None, registered)
+        boundary_ids = tuple(sorted(self._registered_boundary_ids()))
         return await self._run_boundaries(
             Boundary.refresh_inventory,
-            tuple(self.boundary(boundary_id) for boundary_id in selected),
+            tuple(self.boundary(boundary_id) for boundary_id in boundary_ids),
         )
 
     async def scan(self) -> int:

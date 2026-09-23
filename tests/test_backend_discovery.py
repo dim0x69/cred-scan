@@ -84,6 +84,7 @@ def configured_workspace(tmp_path, monkeypatch, backend) -> Workspace:
             {
                 "name": "artifactory_docker",
                 "base_url": "https://artifactory.example",
+                "platform": "linux/amd64",
             },
         ),
         artifactory_access_token="synthetic-token",
@@ -121,6 +122,148 @@ def write_boundary(tmp_path, document: ScanTargetInventory):
     )
     (path / "scantargets.json").write_text(document.model_dump_json())
     return path
+
+
+def test_new_boundary_id_iterator_deduplicates_and_closes_on_exhaustion():
+    closed = False
+
+    async def discover():
+        nonlocal closed
+        try:
+            yield "first"
+            yield "second"
+            yield "first"
+        finally:
+            closed = True
+
+    async def collect():
+        return tuple(
+            [
+                boundary_id
+                async for boundary_id in workspace_module._new_boundary_ids(
+                    discover(), set(), None
+                )
+            ]
+        )
+
+    assert run(collect()) == ("first", "second")
+    assert closed
+
+
+def test_inventory_add_limits_streamed_new_ids_and_closes_discovery(
+    tmp_path, monkeypatch
+):
+    existing_id = "artifactory:artifactory_docker:existing"
+    first_id = "artifactory:artifactory_docker:first"
+    second_id = "artifactory:artifactory_docker:second"
+    write_boundary(tmp_path, inventory(existing_id))
+    backend = Mock(name="backend")
+    backend.name = "artifactory_docker"
+    backend.aclose = AsyncMock()
+    backend.content_reader.return_value = Mock(aclose=AsyncMock())
+    backend.inventory = AsyncMock(return_value=inventory(first_id))
+    closed = False
+
+    async def discover():
+        nonlocal closed
+        try:
+            yield existing_id
+            yield first_id
+            yield second_id
+        finally:
+            closed = True
+
+    backend.discover_boundaries = Mock(return_value=discover())
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+
+    assert run(workspace.add(new_count=1)) == 1
+
+    assert closed
+    backend.inventory.assert_awaited_once_with(first_id)
+    assert not (
+        tmp_path
+        / "artifactory_docker"
+        / "boundaries"
+        / second_id.replace(":", "%3A")
+        / "boundary.json"
+    ).exists()
+
+
+def test_inventory_add_zero_limit_closes_discovery_without_inventory(
+    tmp_path, monkeypatch
+):
+    boundary_id = "artifactory:artifactory_docker:unused"
+    backend = Mock(name="backend")
+    backend.name = "artifactory_docker"
+    backend.inventory = AsyncMock(return_value=inventory(boundary_id))
+
+    class Discovery:
+        closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return boundary_id
+
+        async def aclose(self):
+            self.closed = True
+
+    discovery = Discovery()
+    backend.discover_boundaries = Mock(return_value=discovery)
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+
+    assert run(workspace.add(new_count=0)) == 0
+
+    assert discovery.closed
+    backend.inventory.assert_not_awaited()
+
+
+def test_inventory_add_rechecks_enrollment_under_boundary_ownership(
+    tmp_path, monkeypatch
+):
+    boundary_id = "artifactory:artifactory_docker:raced"
+    backend = Mock(name="backend")
+    backend.name = "artifactory_docker"
+    backend.inventory = AsyncMock(return_value=inventory(boundary_id))
+
+    async def discover():
+        yield boundary_id
+
+    backend.discover_boundaries = Mock(return_value=discover())
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+    run_boundaries = workspace._run_boundaries
+
+    async def write_registration_before_ownership(operation, boundaries):
+        boundary_path = boundaries[0].paths.boundary_dir
+        boundary_path.mkdir(parents=True, exist_ok=True)
+        record = BoundaryRecord(
+            backend_id=backend.name,
+            boundary=inventory(boundary_id).boundary,
+            availability="absent",
+        )
+        (boundary_path / "boundary.json").write_text(record.model_dump_json())
+        return await run_boundaries(operation, boundaries)
+
+    monkeypatch.setattr(
+        workspace,
+        "_run_boundaries",
+        write_registration_before_ownership,
+    )
+
+    assert run(workspace.add()) == 0
+
+    saved = BoundaryRecord.model_validate_json(
+        (
+            tmp_path
+            / "artifactory_docker"
+            / "boundaries"
+            / boundary_id.replace(":", "%3A")
+            / "boundary.json"
+        ).read_text()
+    )
+    assert saved.availability == "absent"
+    backend.inventory.assert_not_awaited()
 
 
 def test_inventory_enrolls_initial_and_new_boundaries(tmp_path, monkeypatch):
@@ -185,6 +328,31 @@ def test_boundary_discovery_failure_preserves_existing_inventory(
 
     assert targets_path.read_bytes() == before
     backend.inventory.assert_not_called()
+
+
+def test_update_dispatches_sorted_registered_boundary_ids(tmp_path, monkeypatch):
+    boundary_ids = (
+        "artifactory:artifactory_docker:z-last",
+        "artifactory:artifactory_docker:a-first",
+    )
+    for boundary_id in boundary_ids:
+        write_boundary(tmp_path, inventory(boundary_id))
+    backend = Mock(name="backend")
+    backend.name = "artifactory_docker"
+    workspace = configured_workspace(tmp_path, monkeypatch, backend)
+    captured: list[str] = []
+
+    async def capture(operation, boundaries):
+        assert operation.__name__ == "refresh_inventory"
+        captured.extend(boundary.boundary_id for boundary in boundaries)
+        return len(boundaries)
+
+    monkeypatch.setattr(workspace, "_run_boundaries", capture)
+
+    assert run(workspace.update()) == 2
+
+    assert captured == sorted(boundary_ids)
+    backend.discover_boundaries.assert_not_called()
 
 
 def test_update_checks_registered_boundary_existence(

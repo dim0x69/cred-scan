@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -14,7 +23,32 @@ from pydantic_settings import (
 )
 from cred_scan.scan.models import ExclusionFiles
 
-BackendName = Literal["artifactory_docker"]
+class ArtifactoryDockerBackendConfig(BaseModel):
+    """Validated settings for the implemented Artifactory Docker backend."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Literal["artifactory_docker"]
+    base_url: str
+    platform: str
+
+    @field_validator("base_url")
+    @classmethod
+    def require_https_url(cls, value: str) -> str:
+        parsed = AnyHttpUrl(value)
+        if parsed.scheme != "https":
+            raise ValueError("Artifactory base_url must use HTTPS")
+        return value
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, value: str) -> str:
+        if re.fullmatch(
+            r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+){1,2}",
+            value,
+        ) is None:
+            raise ValueError("platform must be os/architecture[/variant]")
+        return value
 
 
 class WorkspaceConfig(BaseModel):
@@ -88,7 +122,7 @@ class AppConfig(BaseSettings):
     titus: TitusConfig
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     exclusions: ExclusionFiles
-    backends: tuple[dict[str, Any], ...] = Field(min_length=1)
+    backends: tuple[ArtifactoryDockerBackendConfig, ...] = Field(min_length=1)
     artifactory_access_token: SecretStr | None = Field(
         default=None,
         validation_alias="ARTIFACTORY_ACCESS_TOKEN",
@@ -99,6 +133,13 @@ class AppConfig(BaseSettings):
         validation_alias="AZURE_OPENAI_API_KEY",
         repr=False,
     )
+
+    @model_validator(mode="after")
+    def reject_duplicate_backend_names(self) -> AppConfig:
+        names = tuple(backend.name for backend in self.backends)
+        if len(set(names)) != len(names):
+            raise ValueError("configured backend names must be unique")
+        return self
 
     model_config = SettingsConfigDict(
         extra="ignore",

@@ -21,6 +21,7 @@ from cred_scan.backend.models import (
     ScanTargetInventory,
 )
 from cred_scan.orch.fsync import fsync_directory
+from cred_scan.orch.json_io import write_json_atomic
 from cred_scan.orch.locking import boundary_lock
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
@@ -57,17 +58,6 @@ class _WorkspaceStorage:
                 )
             yield boundary_path
 
-    def read(
-        self,
-        path: Path,
-        model_type: type[DocumentT],
-    ) -> DocumentT | None:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        return model_type.model_validate(payload)
-
     def write(
         self,
         path: Path,
@@ -77,23 +67,7 @@ class _WorkspaceStorage:
         validated = model_type.model_validate(
             document.model_dump(mode="json")
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        try:
-            with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(
-                    validated.model_dump(mode="json"),
-                    stream,
-                    indent=2,
-                    sort_keys=True,
-                )
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
-            fsync_directory(path.parent)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_json_atomic(path, validated.model_dump(mode="json"))
 
 
 def _payload(path: Path, versions: set[int]) -> dict[str, Any]:
@@ -114,16 +88,6 @@ def _validate(
         return model.model_validate(payload)
     except ValueError:
         raise ValueError(f"{path}: invalid {model.__name__}") from None
-
-
-def _optional(
-    path: Path,
-    version: int,
-    model: type[DocumentT],
-) -> DocumentT | None:
-    if not path.exists():
-        return None
-    return _validate(path, model, _payload(path, {version}))
 
 
 def _rename_boundary_id(value: str, source_backend: str, target_backend: str) -> str:

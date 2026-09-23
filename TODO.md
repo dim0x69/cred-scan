@@ -152,7 +152,7 @@ These are simplification proposals, not new invariants. Keep the boundary lock,
 complete per-document checkpoints, cumulative Titus datastore, direct model
 mutation, and separate command processes intact.
 
-- [ ] **Use one small atomic JSON writer.** `Boundary._write`
+- [x] **Use one small atomic JSON writer.** `Boundary._write`
   (`orch/boundary.py:143`), `_write_backend_record` (`orch/workspace.py:135`), and
   `_WorkspaceStorage.write` (`tools/migrate_workspace_schema.py:71`) duplicate
   temporary-file creation, JSON serialization, fsync, rename, and cleanup with
@@ -160,14 +160,14 @@ mutation, and separate command processes intact.
   document ownership and checkpoints with Boundary; avoid a generic repository
   or transaction framework.
 
-- [ ] **Simplify inventory dispatch.** `InventoryRequest.backend` is unused,
+- [x] **Simplify inventory dispatch.** `InventoryRequest.backend` is unused,
   and `select_boundaries` dispatches back to add/update after those operations
   were already selected by the caller. Update only needs sorted registered IDs;
   add needs a new-ID iterator and a limit. Keep those two paths explicit and
   place enrollment's ownership check in Boundary. Remove the request wrapper if
   it has no remaining purpose.
 
-- [ ] **Remove unused duplicate helpers.** `Boundary.mark_absent`
+- [x] **Remove unused duplicate helpers.** `Boundary.mark_absent`
   (`orch/boundary.py:314`) has no production or existing-test callers and
   duplicates refresh's record validation and absence persistence.
   `_WorkspaceStorage.read` and `_optional` in the migration tool, and
@@ -175,7 +175,7 @@ mutation, and separate command processes intact.
   or give genuinely shared behavior one implementation. Keep the one-workspace
   migration as an offline tool; do not expand historical compatibility machinery.
 
-- [ ] **Validate backend settings once with a small typed model.**
+- [x] **Validate backend settings once with a small typed model.**
   `AppConfig.backends` (`orch/models.py:91`) contains arbitrary dictionaries,
   requiring scattered `.get`, indexing, string coercion, duplicate-name checks,
   and late platform parsing in runtime code. Model the implemented Docker

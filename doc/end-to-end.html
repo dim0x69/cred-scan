@@ -313,7 +313,7 @@
   → AsyncIterator[boundary_id]
 BackendAdapter.inventory(boundary_id)
   → ScanTargetInventory | None</pre>
-        <p><code>inventory add</code> consumes the streamed boundary IDs and enrolls only unregistered IDs, stopping early for <code>--new-count</code>. <code>inventory update</code> reads registered IDs locally and inventories each one directly. A returned inventory means present; <code>None</code> means confirmed absent. Transport and malformed-response failures remain errors.</p>
+        <p><code>inventory add</code> consumes the streamed boundary IDs, filters its registered-ID snapshot, then rechecks enrollment under each boundary lock before inventorying. It skips IDs enrolled in the meantime and stops candidate discovery at <code>--new-count</code>; its result counts only successful enrollments. <code>inventory update</code> reads sorted registered IDs locally and inventories each one directly. A returned inventory means present; <code>None</code> means confirmed absent. Transport and malformed-response failures remain errors.</p>
         <ol>
           <li>Discover an Artifactory repository boundary and its logical Docker image scopes.</li>
           <li>Select the newest manifest/platform by timestamp in the backend and create immutable <code>ScanTarget</code> values.</li>
@@ -665,8 +665,8 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
             <li><code>exclusions: <span class="type">ExclusionFiles</span></code>
               <ul><li><code>paths: Path</code> · path-pattern file</li><li><code>credentials: Path</code> · credential-value-pattern file</li></ul>
             </li>
-            <li><code>backends: <span class="type">Backend adapter entries[]</span></code>
-              <ul><li><code>name: "artifactory_docker"</code> · adapter identity and Pydantic discriminator</li><li><code>base_url: str</code> · <code>platform: str</code></li></ul>
+            <li><code>backends: <span class="type">ArtifactoryDockerBackendConfig[]</span></code>
+              <ul><li><code>name: "artifactory_docker"</code> · the sole implemented backend</li><li><code>base_url: str</code> · required HTTPS URL, validated at configuration load</li><li><code>platform: str</code> · required <code>os/architecture[/variant]</code>, validated at configuration load</li></ul>
             </li>
             <li><code>artifactory_access_token: str?</code> · <code>azure_openai_api_key: str?</code><span class="hint">Secret inputs, not pipeline observations.</span></li>
           </ul>

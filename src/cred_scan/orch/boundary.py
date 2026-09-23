@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from cred_scan.backend.inventory import merge_inventory
 from cred_scan.backend.models import BoundaryRecord, ScanTargetInventory, ScanTarget
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.orch.fsync import fsync_directory
+from cred_scan.orch.json_io import write_json_atomic
 from cred_scan.orch.locking import boundary_lock
 from cred_scan.orch.models import BoundaryPaths
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
@@ -69,19 +69,9 @@ class Boundary:
 
     def _load(self) -> None:
         """Load the aggregate while holding boundary ownership."""
-        record = self._read(self.paths.record, BoundaryRecord)
+        record = self._read_validated_record()
         if record is None:
             raise ValueError(f"missing boundary record: {self.paths.record}")
-        if record.boundary.id != self.boundary_id:
-            raise ValueError(
-                "boundary record does not match boundary path: "
-                f"{self.paths.record}"
-            )
-        if record.backend_id != self.backend.name:
-            raise ValueError(
-                "boundary record belongs to another backend: "
-                f"{self.paths.record}"
-            )
         if record.availability != "available":
             raise ValueError(f"boundary is not available: {self.boundary_id}")
         inventory = self._read(
@@ -140,6 +130,21 @@ class Boundary:
             return None
         return model_type.model_validate(payload)
 
+    def _read_validated_record(self) -> BoundaryRecord | None:
+        record = self._read(self.paths.record, BoundaryRecord)
+        if record is not None:
+            if record.boundary.id != self.boundary_id:
+                raise ValueError(
+                    "boundary record does not match boundary path: "
+                    f"{self.paths.record}"
+                )
+            if record.backend_id != self.backend.name:
+                raise ValueError(
+                    "boundary record belongs to another backend: "
+                    f"{self.paths.record}"
+                )
+        return record
+
     def _write(
         self,
         path: Path,
@@ -153,26 +158,7 @@ class Boundary:
             )
 
         validated = model_type.model_validate(document.model_dump(mode="json"))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        try:
-            with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(
-                    validated.model_dump(mode="json"),
-                    stream,
-                    indent=2,
-                    sort_keys=True,
-                )
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
-            fsync_directory(path.parent)
-        finally:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+        write_json_atomic(path, validated.model_dump(mode="json"))
 
     async def aclose(self) -> None:
         """Close an active reader, if command cleanup was interrupted."""
@@ -250,91 +236,72 @@ class Boundary:
             or any(_target_needs_scan(target) for target in self.inventory.targets)
         )
 
-    async def refresh_inventory(self) -> bool:
+    async def enroll_inventory(self) -> bool:
+        """Enroll this boundary only if it remains unregistered under ownership."""
         async with self._operation_lock:
             with boundary_lock(self.paths.operation_lock):
-                current = self._read(
-                    self.paths.scan_targets,
-                    ScanTargetInventory,
-                )
-                if current is not None and current.boundary.id != self.boundary_id:
-                    raise ValueError(
-                        "boundary scan targets do not match boundary path: "
-                        f"{self.paths.scan_targets}"
-                    )
-                existing = self._read(self.paths.record, BoundaryRecord)
+                existing = self._read_validated_record()
                 if existing is not None:
-                    if existing.boundary.id != self.boundary_id:
-                        raise ValueError(
-                            "boundary record does not match boundary path: "
-                            f"{self.paths.record}"
-                        )
-                    if existing.backend_id != self.backend.name:
-                        raise ValueError(
-                            "boundary record belongs to another backend: "
-                            f"{self.paths.record}"
-                        )
+                    return False
+                return await self._refresh_inventory_locked(existing)
 
-                discovered = await self.backend.inventory(self.boundary_id)
-                if discovered is None:
-                    if existing is None:
-                        return False
-                    absent = existing.model_copy(update={"availability": "absent"})
-                    self._write(
-                        self.paths.record,
-                        absent,
-                        BoundaryRecord,
-                    )
-                    self.paths.scan_targets.unlink(missing_ok=True)
-                    fsync_directory(self.paths.boundary_dir)
-                    self.record = absent
-                    return True
-
-                if discovered.boundary.id != self.boundary_id:
-                    raise ValueError("backend returned inventory for another boundary")
-                merged = merge_inventory(current, discovered)
-                record = BoundaryRecord(
-                    backend_id=self.backend.name,
-                    boundary=merged.boundary,
-                )
-                self._write(
-                    self.paths.scan_targets,
-                    merged,
-                    ScanTargetInventory,
-                )
-                self._write(
-                    self.paths.record,
-                    record,
-                    BoundaryRecord,
-                )
-                self.record = record
-                self.inventory = merged
-                return True
-
-    async def mark_absent(self) -> bool:
+    async def refresh_inventory(self) -> bool:
+        """Refresh a registered boundary, including one currently absent."""
         async with self._operation_lock:
             with boundary_lock(self.paths.operation_lock):
-                record = self._read(self.paths.record, BoundaryRecord)
-                if record is None:
-                    raise ValueError(f"missing boundary record: {self.paths.record}")
-                if record.boundary.id != self.boundary_id:
-                    raise ValueError(
-                        "boundary record does not match boundary path: "
-                        f"{self.paths.record}"
-                    )
-                if record.backend_id != self.backend.name:
-                    raise ValueError(
-                        "boundary record belongs to another backend: "
-                        f"{self.paths.record}"
-                    )
-                absent = record.model_copy(
-                    update={"availability": "absent"}
-                )
-                self._write(self.paths.record, absent, BoundaryRecord)
-                self.paths.scan_targets.unlink(missing_ok=True)
-                fsync_directory(self.paths.boundary_dir)
-                self.record = absent
-                return True
+                existing = self._read_validated_record()
+                return await self._refresh_inventory_locked(existing)
+
+    async def _refresh_inventory_locked(
+        self,
+        existing: BoundaryRecord | None,
+    ) -> bool:
+        """Discover and persist inventory while both boundary locks are held."""
+        current = self._read(
+            self.paths.scan_targets,
+            ScanTargetInventory,
+        )
+        if current is not None and current.boundary.id != self.boundary_id:
+            raise ValueError(
+                "boundary scan targets do not match boundary path: "
+                f"{self.paths.scan_targets}"
+            )
+
+        discovered = await self.backend.inventory(self.boundary_id)
+        if discovered is None:
+            if existing is None:
+                return False
+            absent = existing.model_copy(update={"availability": "absent"})
+            self._write(
+                self.paths.record,
+                absent,
+                BoundaryRecord,
+            )
+            self.paths.scan_targets.unlink(missing_ok=True)
+            fsync_directory(self.paths.boundary_dir)
+            self.record = absent
+            return True
+
+        if discovered.boundary.id != self.boundary_id:
+            raise ValueError("backend returned inventory for another boundary")
+        merged = merge_inventory(current, discovered)
+        record = BoundaryRecord(
+            backend_id=self.backend.name,
+            boundary=merged.boundary,
+        )
+        self._write(
+            self.paths.scan_targets,
+            merged,
+            ScanTargetInventory,
+        )
+        self._write(
+            self.paths.record,
+            record,
+            BoundaryRecord,
+        )
+        self.record = record
+        self.inventory = merged
+        return True
 
     async def scan(self) -> bool:
         async with self.operation():

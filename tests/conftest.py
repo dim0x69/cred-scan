@@ -74,6 +74,7 @@ def app_config(tmp_path: Path) -> AppConfig:
             {
                 "name": "artifactory_docker",
                 "base_url": "https://example.invalid/artifactory",
+                "platform": "linux/amd64",
             },
         ),
     )

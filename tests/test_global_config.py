@@ -29,7 +29,13 @@ def resolved_config(tmp_path, monkeypatch):
         workspace=WorkspaceConfig(workspace_dir=tmp_path / "workspace"),
         titus=TitusConfig(executable="synthetic-titus"),
         exclusions=ExclusionFiles(paths=paths, credentials=credentials),
-        backends=({"name": "artifactory_docker", "base_url": "https://example.invalid"},),
+        backends=(
+            {
+                "name": "artifactory_docker",
+                "base_url": "https://example.invalid",
+                "platform": "linux/amd64",
+            },
+        ),
         artifactory_access_token="synthetic-token",
         azure_openai_api_key="synthetic-judge-token",
         judge={"base_url": "https://example.invalid/azure"},

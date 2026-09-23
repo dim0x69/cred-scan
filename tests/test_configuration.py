@@ -36,7 +36,7 @@ backends:
         encoding="utf-8",
     )
     config = asyncio.run(YamlConfigLoader().load(config_path))
-    assert config.backends[0]["name"] == "artifactory_docker"
+    assert config.backends[0].name == "artifactory_docker"
     assert config.workspace.workspace_dir == (tmp_path / "workspace").resolve()
     assert config.exclusions.paths == (tmp_path / "path-exclusions.list").resolve()
     assert config.artifactory_access_token is None
@@ -65,6 +65,7 @@ exclusions:
 backends:
   - name: artifactory_docker
     base_url: https://example/artifactory
+    platform: linux/amd64
 """,
         encoding="utf-8",
     )
@@ -98,7 +99,7 @@ def test_workspace_root_is_config_relative(
         f"workspace:\n  workspace-dir: {workspace}\n"
         "titus:\n  executable: ./titus\n"
         "exclusions:\n  paths: paths.list\n  credentials: values.list\n"
-        "backends:\n  - name: artifactory_docker\n    base_url: https://example/artifactory\n",
+        "backends:\n  - name: artifactory_docker\n    base_url: https://example/artifactory\n    platform: linux/amd64\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -116,7 +117,11 @@ def runtime_settings():
         "titus": {"executable": "titus"},
         "exclusions": {"paths": "paths.list", "credentials": "values.list"},
         "backends": [
-            {"name": "artifactory_docker", "base_url": "https://example.invalid"}
+            {
+                "name": "artifactory_docker",
+                "base_url": "https://example.invalid",
+                "platform": "linux/amd64",
+            }
         ],
     }
 
@@ -160,3 +165,86 @@ def test_standard_sources_can_supply_runtime_settings(
     path.write_text(yaml.safe_dump(runtime_settings))
     config = asyncio.run(YamlConfigLoader().load(path))
     assert config.judge.model == "synthetic-model"
+
+
+@pytest.mark.parametrize(
+    ("backend", "message"),
+    [
+        ({"name": "artifactory_docker", "platform": "linux/amd64"}, "base_url"),
+        (
+            {"name": "artifactory_docker", "base_url": "https://example.invalid"},
+            "platform",
+        ),
+        (
+            {
+                "name": "artifactory_docker",
+                "base_url": "http://example.invalid",
+                "platform": "linux/amd64",
+            },
+            "HTTPS",
+        ),
+        (
+            {
+                "name": "artifactory_docker",
+                "base_url": "not a URL",
+                "platform": "linux/amd64",
+            },
+            "base_url",
+        ),
+        (
+            {
+                "name": "artifactory_docker",
+                "base_url": "https://example.invalid",
+                "platform": "linux//amd64",
+            },
+            "platform",
+        ),
+        (
+            {
+                "name": "unsupported_backend",
+                "base_url": "https://example.invalid",
+                "platform": "linux/amd64",
+            },
+            "artifactory_docker",
+        ),
+    ],
+)
+def test_invalid_backend_settings_fail_during_configuration_load(
+    tmp_path, runtime_settings, backend, message
+):
+    runtime_settings["backends"] = [backend]
+    path = tmp_path / "config.yml"
+    path.write_text(yaml.safe_dump(runtime_settings))
+
+    with pytest.raises(ValidationError, match=message):
+        asyncio.run(YamlConfigLoader().load(path))
+
+
+def test_duplicate_backend_names_fail_during_configuration_load(
+    tmp_path, runtime_settings
+):
+    backend = runtime_settings["backends"][0]
+    runtime_settings["backends"] = [backend, backend]
+    path = tmp_path / "config.yml"
+    path.write_text(yaml.safe_dump(runtime_settings))
+
+    with pytest.raises(ValidationError, match="unique"):
+        asyncio.run(YamlConfigLoader().load(path))
+
+
+def test_yaml_backend_settings_keep_precedence_over_environment(
+    tmp_path, monkeypatch, runtime_settings
+):
+    environment_backend = {
+        "name": "artifactory_docker",
+        "base_url": "https://environment.invalid",
+        "platform": "linux/arm64",
+    }
+    monkeypatch.setenv("BACKENDS", json.dumps([environment_backend]))
+    path = tmp_path / "config.yml"
+    path.write_text(yaml.safe_dump(runtime_settings))
+
+    config = asyncio.run(YamlConfigLoader().load(path))
+
+    assert config.backends[0].base_url == "https://example.invalid"
+    assert config.backends[0].platform == "linux/amd64"
