@@ -128,7 +128,9 @@ def normalize_titus_layer_path(value: str) -> str:
 
 
 def parse_provenance(value: str) -> DockerProvenance:
-    raw_path = value.strip()
+    if not value:
+        raise LayerEvidenceError("invalid empty Docker provenance path")
+    raw_path = value
     metadata = _METADATA_PROVENANCE_RE.fullmatch(raw_path)
     if metadata is not None:
         path = cast(Literal["manifest.json", "config.json"], metadata["path"])
@@ -344,7 +346,7 @@ class ArtifactoryDockerReader(ContentReader):
         return result
 
     async def resolve_location(self, raw_path: str) -> ContentLocation:
-        key = raw_path.strip()
+        key = raw_path
         try:
             provenance = parse_provenance(key)
         except LayerEvidenceError:
