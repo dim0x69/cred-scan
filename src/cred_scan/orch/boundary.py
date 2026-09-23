@@ -61,19 +61,25 @@ class Boundary:
         )
 
         self.backend = backend
+        self.workspace_lock_fd: int | None = None
         self.reader: ContentReader | None = None
         self.judge_service: DspyFindingJudge | None = None
         self.scanner: TitusCliScanner | None = None
         self._operation_lock = asyncio.Lock()
         self.extractor: EvidenceExtractor | None = None
 
-    def _load(self) -> None:
-        """Load the aggregate while holding boundary ownership."""
+    def _load(self) -> bool:
+        """Load available state while holding boundary ownership.
+
+        Return false for a registered but absent boundary; its scan-target
+        document is intentionally absent and no source state should be loaded.
+        """
         record = self._read_validated_record()
         if record is None:
             raise ValueError(f"missing boundary record: {self.paths.record}")
-        if record.availability != "available":
-            raise ValueError(f"boundary is not available: {self.boundary_id}")
+        self.record = record
+        if record.availability == "absent":
+            return False
         inventory = self._read(
             self.paths.scan_targets,
             ScanTargetInventory,
@@ -118,6 +124,7 @@ class Boundary:
         )
         self._has_report = report is not None
         self._has_credentials = credentials is not None
+        return True
 
     @staticmethod
     def _read(
@@ -181,27 +188,35 @@ class Boundary:
                 pass
 
     @asynccontextmanager
-    async def operation(self) -> AsyncIterator[Boundary]:
+    async def operation(self) -> AsyncIterator[Boundary | None]:
         """Own one boundary from state load through command cleanup."""
         async with self._operation_lock:
             with boundary_lock(self.paths.operation_lock) as descriptor:
-                self._load()
+                if not self._load():
+                    yield None
+                    return
                 try:
-                    self._start_services(descriptor)
+                    self._start_services(descriptor, self.workspace_lock_fd)
                     yield self
                 finally:
                     await self._stop_services()
 
-    def _start_services(self, descriptor: int) -> None:
+    def _start_services(
+        self,
+        descriptor: int,
+        workspace_lock_fd: int | None,
+    ) -> None:
         self.reader = self.backend.content_reader(self.scratch_dir)
         self.scanner = TitusCliScanner(self.inventory, self.backend)
         self.scanner.lock_fd = descriptor
+        self.scanner.workspace_lock_fd = workspace_lock_fd
         self.judge_service = DspyFindingJudge()
         self.extractor = EvidenceExtractor(self.paths.boundary_dir)
 
     async def _stop_services(self) -> None:
         if self.scanner is not None:
             self.scanner.lock_fd = None
+            self.scanner.workspace_lock_fd = None
         if self.reader is not None:
             await self.reader.aclose()
         self.reader = None
@@ -304,8 +319,8 @@ class Boundary:
         return True
 
     async def scan(self) -> bool:
-        async with self.operation():
-            if not self.needs_scan():
+        async with self.operation() as owned:
+            if owned is None or not self.needs_scan():
                 return False
             await self._scan()
             return True
@@ -407,7 +422,9 @@ class Boundary:
                 target.result.status = "running"
 
     async def judge(self) -> int:
-        async with self.operation():
+        async with self.operation() as owned:
+            if owned is None:
+                return 0
             return await self._judge()
 
     async def _judge(self) -> int:
@@ -444,7 +461,9 @@ class Boundary:
         return len(selected)
 
     async def extract(self) -> int:
-        async with self.operation():
+        async with self.operation() as owned:
+            if owned is None:
+                return 0
             return await self._extract()
 
     async def _extract(self) -> int:

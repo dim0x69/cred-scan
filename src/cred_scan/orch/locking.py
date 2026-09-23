@@ -1,13 +1,35 @@
-"""Process ownership using a persistent, OS-managed boundary lock file."""
+"""Process ownership using persistent, OS-managed workspace and boundary locks."""
 
+import asyncio
 import fcntl
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 
 class BoundaryBusyError(RuntimeError):
     """Another command currently owns the boundary."""
+
+
+@asynccontextmanager
+async def workspace_lock(path: Path, *, shared: bool) -> AsyncIterator[int]:
+    """Hold a cross-process workspace gate, waiting without blocking the event loop.
+
+    Inventory commands take an exclusive gate; source commands take a shared gate.
+    The descriptor is inherited by Titus so a surviving child retains the gate.
+    Do not explicitly unlock: closing the parent's descriptor releases the lock
+    only after every inherited descriptor has also been closed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        while True:
+            try:
+                fcntl.flock(stream.fileno(), operation | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.05)
+        yield stream.fileno()
 
 
 @contextmanager

@@ -5,17 +5,17 @@ The intended inventory workflow is documented in `AGENTS.md` and
 are recorded below; the review identifies remaining implementation gaps.
 
 - [x] **Backend-scoped workspace layout.** Store each backend in
-  `<workspace>/<backend>/` with `backend.json` and enrolled boundaries below
-  `boundaries/`.
+      `<workspace>/<backend>/` with `backend.json` and enrolled boundaries below
+      `boundaries/`.
 - [x] **Separate inventory lifecycle operations.** `inventory add` enrolls new
-  boundaries; `inventory update` refreshes registered boundaries and handles
-  confirmed absence without backend-wide discovery.
+      boundaries; `inventory update` refreshes registered boundaries and handles
+      confirmed absence without backend-wide discovery.
 - [x] **Bounded enrollment.** `inventory add --new-count N` streams backend
-  discovery and stops after N newly discovered boundaries.
+      discovery and stops after N newly discovered boundaries.
 - [x] **Backend selection.** Inventory can target one backend; source commands
-  process persisted backends sequentially when no backend is selected.
+      process persisted backends sequentially when no backend is selected.
 - [x] **Workspace migration.** The existing workspace was migrated while
-  preserving scan targets, reports, credentials, evidence, and Titus datastores.
+      preserving scan targets, reports, credentials, evidence, and Titus datastores.
 
 ## Deep bug and KISS review — 2026-09-23
 
@@ -28,7 +28,7 @@ documented implementation limitation. Source references below are relative to
 
 ### Bugs and invariant gaps
 
-- [ ] **P1 — Prevent bearer-token disclosure through pagination links.**
+- [ ignore ] **P1 — Prevent bearer-token disclosure through pagination links.**
   `backend/adapters/artifactory/docker.py:477,502` follows arbitrary `Link`
   destinations through `_get`; `common.py:43` installs Authorization as a client
   default. A link to another HTTPS host starts a fresh authenticated request, so
@@ -41,108 +41,103 @@ documented implementation limitation. Source references below are relative to
   authorization boundary; existing redirect tests do not cover pagination.
 
 - [x] **P1 — Do not treat a later catalog-page 404 as confirmed absence.**
-  `ArtifactoryDockerBackend._paginated_names()` preserves a first-page
-  `ArtifactoryNotFoundError` for confirmed absence, but converts a continuation
-  page 404 to an `ArtifactoryError` with the original exception chained.
-  `inventory()` therefore cannot mistake a failed page for absence; `Boundary`
-  leaves `boundary.json` and `scantargets.json` unchanged. Adapter and
-  `Workspace.update()` regressions verify both documents remain byte-for-byte
-  unchanged on continuation failure.
+      `ArtifactoryDockerBackend._paginated_names()` now preserves a first-page
+      `ArtifactoryNotFoundError` for the existing confirmed-absence handling, but
+      converts a continuation-page 404 to an `ArtifactoryError` with the original
+      exception chained. `inventory()` therefore cannot mistake a failed page for
+      absence; `Boundary` leaves `boundary.json` and `scantargets.json` unchanged.
+      Adapter and `Workspace.update()` regressions cover the distinction and verify
+      both existing documents remain byte-for-byte unchanged on continuation failure.
 
-- [ ] **P2 — Persist backend enrollment before successful boundaries can become
-  undiscoverable.** `orch/workspace.py:341-346` writes `backend.json` only after
-  every enrollment task succeeds. On a first add, one boundary can persist before
-  another raises; TaskGroup then bypasses marker creation. Reproduced: a valid
-  `boundary.json` remains on disk, but persisted workspace enumeration raises
-  `no persisted backend workspaces`. Scan, judge, extract, and update cannot use
-  that work until add succeeds again. Establish the backend record before
-  enrollment writes, and cover partial failure and cancellation. This violates
-  the backend-workspace layout invariant; it does not require a multi-document
-  transaction.
+- [x] **P2 — Persist backend enrollment before successful boundaries can become
+      undiscoverable.** `Workspace.add()` now ensures `backend.json` after complete
+      discovery and before starting enrollment tasks whenever there are selected or
+      already registered boundaries. Partial enrollment failure or cancellation can
+      leave valid boundary documents, but the backend workspace remains enumerable.
+      Regressions cover partial success followed by failure, cancellation during
+      enrollment, discovery failure, empty discovery, and repair of an existing
+      registered boundary without its backend marker. The fix does not require a
+      multi-document transaction.
 
-- [ ] **P2 — Recheck new-only enrollment while holding the boundary lock.**
-  `orch/workspace.py:329-343` takes a registered-ID snapshot before discovery,
-  then uses the same `Boundary.refresh_inventory` path as update. At
-  `orch/boundary.py:265-278`, finding an existing record does not prevent refresh.
-  If another command enrolls a selected ID before this command acquires its lock,
-  add changes the now-existing boundary. A controlled interleaving reproduced an
-  absent enrolled boundary being made available by add. Give enrollment an
-  explicit new-only check under ownership, before backend inventory is called;
-  count only actual new enrollments. This violates add's confirmed lifecycle
-  rule even though the two owners never hold the lock simultaneously.
+- [x] **P2 — Recheck new-only enrollment while holding the boundary lock.**
+      `Workspace.add()` uses `Boundary.enroll_inventory()`, which rechecks for an
+      existing record under both boundary locks and skips it before calling the
+      backend. `Boundary.refresh_inventory()` remains the update path. The race
+      regression verifies that an intervening absent registration stays absent,
+      backend inventory is not called, and the raced boundary is not counted as a
+      new enrollment.
 
-- [ ] **P2 — Decide availability under ownership and skip newly absent boundaries.**
-  `orch/workspace.py:275-290` reads availability without the boundary lock.
-  `orch/boundary.py:85` later raises if an intervening inventory update marked
-  the boundary absent. Reproduced by selecting available boundaries, completing
-  an absence update, then running the selected scan operations: TaskGroup raises
-  and would cancel other active boundary work. Keep enumeration based on paths
-  or identities, then load state and decide whether to skip under the operation
-  lock. This closes the load-before-lock gap and preserves the rule that absent
-  boundaries do not run source operations.
+- [x] **P2 — Coordinate inventory with source commands and skip absent boundaries.**
+      `LocalRuntime._run_workspaces()` now takes a shared per-backend workspace gate
+      for scan/judge/extract and an exclusive gate for inventory add/update, before
+      boundary enumeration and through resource cleanup. Workspace enumeration uses
+      registered paths; `Boundary.operation()` decides availability under its lock
+      and treats absence as a normal skip before source services start. Titus inherits
+      both lock descriptors. Regressions cover cross-process exclusion, shared source
+      access, absent-boundary TaskGroup behavior, and lock descriptor inheritance.
 
 - [ ] **P2 — Preserve significant whitespace in occurrence locators.**
-  `backend/adapters/artifactory/docker.py:131,347` calls `.strip()` on the full
-  locator. A layer containing both `app.env` and `app.env ` demonstrates the
-  consequence: a locator for the second file returns the first file's bytes.
-  This can feed the judge incorrect context and retain incorrect evidence.
-  Preserve the exact locator and restrict Titus-compatible cleaning to archive
-  matching; reject empty input without trimming valid filename characters.
-  Add a regression using both filenames. This violates raw-locator preservation
-  and exact source-read invariants.
+      `backend/adapters/artifactory/docker.py:131,347` calls `.strip()` on the full
+      locator. A layer containing both `app.env` and `app.env ` demonstrates the
+      consequence: a locator for the second file returns the first file's bytes.
+      This can feed the judge incorrect context and retain incorrect evidence.
+      Preserve the exact locator and restrict Titus-compatible cleaning to archive
+      matching; reject empty input without trimming valid filename characters.
+      Add a regression using both filenames. This violates raw-locator preservation
+      and exact source-read invariants.
 
 - [ ] **P2 — Reject malformed manifests before replacing selected targets.**
-  `backend/adapters/artifactory/docker.py:423-435` only validates that a manifest
-  is an object; `:582-589` treats absent, empty, or wrongly typed `manifests` as
-  an ordinary image manifest. Both `{}` and an OCI index with an empty descriptor
-  list were accepted as scan scopes when supplied with a timestamp. Arbitrary
-  response bytes can receive a computed digest and replace a previously usable
-  target. Validate the supported manifest/index shapes, required descriptors,
-  and selected child before returning inventory. Cover malformed roots and
-  children and assert the previous inventory survives. This violates the rule
-  that malformed discovery responses leave persisted selection unchanged.
+      `backend/adapters/artifactory/docker.py:423-435` only validates that a manifest
+      is an object; `:582-589` treats absent, empty, or wrongly typed `manifests` as
+      an ordinary image manifest. Both `{}` and an OCI index with an empty descriptor
+      list were accepted as scan scopes when supplied with a timestamp. Arbitrary
+      response bytes can receive a computed digest and replace a previously usable
+      target. Validate the supported manifest/index shapes, required descriptors,
+      and selected child before returning inventory. Cover malformed roots and
+      children and assert the previous inventory survives. This violates the rule
+      that malformed discovery responses leave persisted selection unchanged.
 
 - [ ] **P2 — Reject malformed Titus export entries instead of publishing a clean
-  empty report.** `scan/titus.py:237-242` checks the outer array but silently
-  filters non-object entries. A successful mocked export of `[42]` produced
-  `findings=()` and `incomplete=False`; publication can then finish without
-  exposing the discarded data. `scan/credentials.py:125` repeats the filter,
-  while malformed Matches can also disappear without diagnostics. Validate the
-  consumed export structure at one boundary and fail publication or explicitly
-  record incompleteness. Cover mixed valid/invalid entries and malformed matches,
-  retaining the pending-publication retry path on export failure.
+      empty report.** `scan/titus.py:237-242` checks the outer array but silently
+      filters non-object entries. A successful mocked export of `[42]` produced
+      `findings=()` and `incomplete=False`; publication can then finish without
+      exposing the discarded data. `scan/credentials.py:125` repeats the filter,
+      while malformed Matches can also disappear without diagnostics. Validate the
+      consumed export structure at one boundary and fail publication or explicitly
+      record incompleteness. Cover mixed valid/invalid entries and malformed matches,
+      retaining the pending-publication retry path on export failure.
 
 - [ ] **P2 — Make Titus use the same once-per-run exclusion contents as
-  deduplication.** `orch/global_config.py:25` freezes the loaded patterns, but
-  `scan/titus.py:138` passes the original mutable file to every subprocess.
-  After loading `old-pattern` and editing the file to `new-pattern`, the mock
-  launch still referenced the changed file while `get_exclusions()` returned
-  the old pattern. Later scans in one invocation can therefore use different
-  exclusions from each other and from deduplication. Provide Titus a run-owned
-  snapshot of the already-loaded path patterns and retain it through subprocess
-  cleanup. This is an implementation gap in the confirmed once-per-run policy;
-  saved credential history must remain untouched.
+      deduplication.** `orch/global_config.py:25` freezes the loaded patterns, but
+      `scan/titus.py:138` passes the original mutable file to every subprocess.
+      After loading `old-pattern` and editing the file to `new-pattern`, the mock
+      launch still referenced the changed file while `get_exclusions()` returned
+      the old pattern. Later scans in one invocation can therefore use different
+      exclusions from each other and from deduplication. Provide Titus a run-owned
+      snapshot of the already-loaded path patterns and retain it through subprocess
+      cleanup. This is an implementation gap in the confirmed once-per-run policy;
+      saved credential history must remain untouched.
 
 - [ ] **P3 — Remove or invalidate the stale boundary-object cache after add.**
-  `orch/workspace.py:247-257,293-301` caches the pre-enrollment boundary tuple;
-  newly constructed boundaries are not inserted and add never invalidates it.
-  Reproduced: add returns one, `_registered_boundary_ids()` sees one, but
-  `workspace.boundaries` remains empty. Reusing that Workspace for source work
-  skips the new boundary. Separate CLI processes reduce the immediate impact,
-  but the public aggregate is internally inconsistent. Prefer fresh lightweight
-  enumeration, or maintain one explicit identity map with clear invalidation.
+      `orch/workspace.py:247-257,293-301` caches the pre-enrollment boundary tuple;
+      newly constructed boundaries are not inserted and add never invalidates it.
+      Reproduced: add returns one, `_registered_boundary_ids()` sees one, but
+      `workspace.boundaries` remains empty. Reusing that Workspace for source work
+      skips the new boundary. Separate CLI processes reduce the immediate impact,
+      but the public aggregate is internally inconsistent. Prefer fresh lightweight
+      enumeration, or maintain one explicit identity map with clear invalidation.
 
 - [ ] **P3 — Reconcile the claimed paged discovery with the actual adapter.**
-  `backend/adapters/artifactory/common.py:83-101` downloads and decodes the entire
-  repository list; `docker.py:563-574` only then yields IDs.
-  `orch/workspace.py:174-186` also accumulates selected IDs before enrollment.
-  A first-yield check confirmed discovery fetches the whole `/api/repositories`
-  response. `--new-count` bounds selected work, but cannot bound the initial
-  repository download. The confirmed paged-stream discovery invariant and the
-  guide's implementation claim are therefore not fully implemented. Check the
-  source's supported discovery API before designing pagination; if that endpoint
-  is inherently unpaged, explicitly resolve the limitation with the user rather
-  than claiming that an async iterator makes it paged.
+      `backend/adapters/artifactory/common.py:83-101` downloads and decodes the entire
+      repository list; `docker.py:563-574` only then yields IDs.
+      `orch/workspace.py:174-186` also accumulates selected IDs before enrollment.
+      A first-yield check confirmed discovery fetches the whole `/api/repositories`
+      response. `--new-count` bounds selected work, but cannot bound the initial
+      repository download. The confirmed paged-stream discovery invariant and the
+      guide's implementation claim are therefore not fully implemented. Check the
+      source's supported discovery API before designing pagination; if that endpoint
+      is inherently unpaged, explicitly resolve the limitation with the user rather
+      than claiming that an async iterator makes it paged.
 
 ### KISS follow-ups
 
@@ -151,35 +146,35 @@ complete per-document checkpoints, cumulative Titus datastore, direct model
 mutation, and separate command processes intact.
 
 - [x] **Use one small atomic JSON writer.** `Boundary._write`
-  (`orch/boundary.py:143`), `_write_backend_record` (`orch/workspace.py:135`), and
-  `_WorkspaceStorage.write` (`tools/migrate_workspace_schema.py:71`) duplicate
-  temporary-file creation, JSON serialization, fsync, rename, and cleanup with
-  slightly different validation. Share the mechanical writer while leaving
-  document ownership and checkpoints with Boundary; avoid a generic repository
-  or transaction framework.
+      (`orch/boundary.py:143`), `_write_backend_record` (`orch/workspace.py:135`), and
+      `_WorkspaceStorage.write` (`tools/migrate_workspace_schema.py:71`) duplicate
+      temporary-file creation, JSON serialization, fsync, rename, and cleanup with
+      slightly different validation. Share the mechanical writer while leaving
+      document ownership and checkpoints with Boundary; avoid a generic repository
+      or transaction framework.
 
 - [x] **Simplify inventory dispatch.** `InventoryRequest.backend` is unused,
-  and `select_boundaries` dispatches back to add/update after those operations
-  were already selected by the caller. Update only needs sorted registered IDs;
-  add needs a new-ID iterator and a limit. Keep those two paths explicit and
-  place enrollment's ownership check in Boundary. Remove the request wrapper if
-  it has no remaining purpose.
+      and `select_boundaries` dispatches back to add/update after those operations
+      were already selected by the caller. Update only needs sorted registered IDs;
+      add needs a new-ID iterator and a limit. Keep those two paths explicit and
+      place enrollment's ownership check in Boundary. Remove the request wrapper if
+      it has no remaining purpose.
 
 - [x] **Remove unused duplicate helpers.** `Boundary.mark_absent`
-  (`orch/boundary.py:314`) has no production or existing-test callers and
-  duplicates refresh's record validation and absence persistence.
-  `_WorkspaceStorage.read` and `_optional` in the migration tool, and
-  `BackendName` in `orch/models.py`, also have no callers. Remove unused paths
-  or give genuinely shared behavior one implementation. Keep the one-workspace
-  migration as an offline tool; do not expand historical compatibility machinery.
+      (`orch/boundary.py:314`) has no production or existing-test callers and
+      duplicates refresh's record validation and absence persistence.
+      `_WorkspaceStorage.read` and `_optional` in the migration tool, and
+      `BackendName` in `orch/models.py`, also have no callers. Remove unused paths
+      or give genuinely shared behavior one implementation. Keep the one-workspace
+      migration as an offline tool; do not expand historical compatibility machinery.
 
 - [x] **Validate backend settings once with a small typed model.**
-  `AppConfig.backends` (`orch/models.py:91`) contains arbitrary dictionaries,
-  requiring scattered `.get`, indexing, string coercion, duplicate-name checks,
-  and late platform parsing in runtime code. Model the implemented Docker
-  backend's required URL and platform fields at configuration load and report
-  errors there. Avoid a dynamic plugin registry for the single implemented
-  backend, and preserve standard configuration source precedence.
+      `AppConfig.backends` (`orch/models.py:91`) contains arbitrary dictionaries,
+      requiring scattered `.get`, indexing, string coercion, duplicate-name checks,
+      and late platform parsing in runtime code. Model the implemented Docker
+      backend's required URL and platform fields at configuration load and report
+      errors there. Avoid a dynamic plugin registry for the single implemented
+      backend, and preserve standard configuration source precedence.
 
 ### Verification and limits
 

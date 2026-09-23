@@ -9,6 +9,7 @@ from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.backend.proto import UnsupportedTitusTargetError
 from cred_scan.orch import global_config
 from cred_scan.orch.models import AppConfig
+from cred_scan.scan import titus as titus_module
 from cred_scan.scan.titus import TitusCliScanner, _is_permanent_titus_error
 
 
@@ -27,6 +28,36 @@ def test_registry_errors_are_permanent(line: str) -> None:
 
 def test_transient_titus_errors_are_retryable() -> None:
     assert not _is_permanent_titus_error("connection reset by peer")
+
+
+def test_titus_inherits_workspace_and_boundary_lock_descriptors(
+    app_config: AppConfig,
+    repository_inventory: ScanTargetInventory,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
+    workspace_lock_path = tmp_path / ".workspace.lock"
+    boundary_lock_path = tmp_path / ".operation.lock"
+    workspace_lock_path.touch()
+    boundary_lock_path.touch()
+    process = Mock(returncode=0, communicate=AsyncMock(return_value=(b"[]", b"")))
+    spawn = AsyncMock(return_value=process)
+    monkeypatch.setattr(titus_module, "_spawn", spawn)
+    scanner = TitusCliScanner(repository_inventory, Mock())
+
+    async def scenario() -> None:
+        with workspace_lock_path.open("rb") as workspace_lock_file:
+            with boundary_lock_path.open("rb") as boundary_lock_file:
+                scanner.workspace_lock_fd = workspace_lock_file.fileno()
+                scanner.lock_fd = boundary_lock_file.fileno()
+                await scanner.export_report(tmp_path / "titus.ds")
+                assert spawn.await_args.kwargs["pass_fds"] == (
+                    workspace_lock_file.fileno(),
+                    boundary_lock_file.fileno(),
+                )
+
+    asyncio.run(scenario())
 
 
 def test_unsupported_target_becomes_failed_without_starting_titus(

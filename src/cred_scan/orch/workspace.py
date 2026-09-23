@@ -108,10 +108,6 @@ def iter_configured_workspaces(
         )
 
 
-def _write_backend_record(path: Path, record: BackendWorkspaceRecord) -> None:
-    write_json_atomic(path, record.model_dump(mode="json"))
-
-
 async def _new_boundary_ids(
     discovered: AsyncIterator[str],
     registered: set[str],
@@ -178,6 +174,7 @@ class Workspace:
         self._boundaries_dir.mkdir(parents=True, exist_ok=True)
 
         self._boundaries: tuple[Boundary, ...] | None = None
+        self.workspace_lock_fd: int | None = None
         self._closed = False
 
     async def __aenter__(self) -> "Workspace":
@@ -193,6 +190,10 @@ class Workspace:
     @property
     def backend_workspace_dir(self) -> Path:
         return self._backend_dir
+
+    @property
+    def workspace_lock_path(self) -> Path:
+        return self._backend_dir / ".workspace.lock"
 
     @property
     def boundaries(self) -> tuple[Boundary, ...]:
@@ -223,24 +224,6 @@ class Workspace:
             boundary_ids.add(boundary_id)
         return boundary_ids
 
-    def _available_boundaries(self) -> tuple[Boundary, ...]:
-        available = []
-        for boundary in self.boundaries:
-            record = Boundary._read(boundary.paths.record, BoundaryRecord)
-            if record is None or record.boundary.id != boundary.boundary_id:
-                raise ValueError(
-                    "boundary record does not match boundary path: "
-                    f"{boundary.paths.record}"
-                )
-            if record.backend_id != self.backend.name:
-                raise ValueError(
-                    "boundary record belongs to another backend: "
-                    f"{boundary.paths.record}"
-                )
-            if record.availability == "available":
-                available.append(boundary)
-        return tuple(available)
-
     def boundary(self, boundary_id: str) -> Boundary:
         """Return one unloaded boundary aggregate."""
         for boundary in self.boundaries:
@@ -259,23 +242,19 @@ class Workspace:
         """Run one command operation across boundaries concurrently."""
 
         async def run(boundary: Boundary) -> int:
+            boundary.workspace_lock_fd = self.workspace_lock_fd
             try:
-                return int(await operation(boundary))
-            except BoundaryBusyError as error:
-                LOGGER.warning("skipping boundary: %s", error)
-                return 0
+                try:
+                    return int(await operation(boundary))
+                except BoundaryBusyError as error:
+                    LOGGER.warning("skipping boundary: %s", error)
+                    return 0
+            finally:
+                boundary.workspace_lock_fd = None
 
         async with asyncio.TaskGroup() as group:
             tasks = [group.create_task(run(boundary)) for boundary in boundaries]
         return sum(task.result() for task in tasks)
-
-    def _ensure_backend_record(self) -> None:
-        marker = self._backend_dir / "backend.json"
-        if not marker.exists():
-            _write_backend_record(
-                marker,
-                BackendWorkspaceRecord(name=self.backend_name),
-            )
 
     async def add(self, new_count: int | None = None) -> int:
         if new_count is not None and new_count < 0:
@@ -289,13 +268,20 @@ class Workspace:
                 new_count,
             )
         ]
-        result = await self._run_boundaries(
+        if selected or registered:
+            # Make the workspace enumerable before enrollment can persist boundaries.
+            marker = self._backend_dir / "backend.json"
+            if not marker.exists():
+                write_json_atomic(
+                    marker,
+                    BackendWorkspaceRecord(name=self.backend_name).model_dump(
+                        mode="json"
+                    ),
+                )
+        return await self._run_boundaries(
             Boundary.enroll_inventory,
             tuple(self.boundary(boundary_id) for boundary_id in selected),
         )
-        if any(self._boundaries_dir.glob("*/boundary.json")):
-            self._ensure_backend_record()
-        return result
 
     async def update(self) -> int:
         boundary_ids = tuple(sorted(self._registered_boundary_ids()))
@@ -307,19 +293,19 @@ class Workspace:
     async def scan(self) -> int:
         return await self._run_boundaries(
             Boundary.scan,
-            self._available_boundaries(),
+            self.boundaries,
         )
 
     async def judge(self) -> int:
         return await self._run_boundaries(
             Boundary.judge,
-            self._available_boundaries(),
+            self.boundaries,
         )
 
     async def extract(self) -> int:
         return await self._run_boundaries(
             Boundary.extract,
-            self._available_boundaries(),
+            self.boundaries,
         )
 
     async def close(self) -> None:

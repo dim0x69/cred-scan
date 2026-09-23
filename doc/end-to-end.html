@@ -297,7 +297,7 @@
         <p class="stage-foot">For RETAINED records, check file existence only and report missing files without automatic replacement. For missing/error extraction, retrieve exact source bytes; never overwrite an existing conflicting artifact.</p>
       </li>
     </ol>
-    <div class="gate"><strong>Operator sequence:</strong> invoke <code>inventory add</code>, <code>inventory update</code>, <code>scan</code>, <code>judge</code>, or <code>extract</code>. Without a backend selector, inventory add processes configured backends and the other commands process persisted backends sequentially; boundaries within each backend may run concurrently. For each boundary, the operation acquires the boundary-local OS lock before loading documents and holds it through cleanup. A competing command cannot work on the same boundary. Judge never extracts evidence; Extract only consumes saved VALID or UNKNOWN judgments.</div>
+    <div class="gate"><strong>Operator sequence:</strong> inventory is followed by the sequential source stages <code>scan</code> → <code>judge</code> → <code>extract</code>. These are separate command invocations, not three concurrent workers or pipeline stages. Within each stage command, different boundaries may run concurrently. A per-backend workspace gate excludes inventory add/update from scan/judge/extract: inventory takes it exclusively, source commands share it. Each boundary also has its own exclusive OS lock before state loading; competing commands cannot work on the same boundary. Without a backend selector, commands process backend workspaces sequentially. Judge never extracts evidence; Extract only consumes saved VALID or UNKNOWN judgments.</div>
     <p class="port">The Boundary is the mutable aggregate. Its inventory, report, and credentials are checkpointed together; there is no scheduler checkpoint or cross-boundary handoff.</p>
     <p class="port">Shared context, not additional pipeline payloads: <code>AppConfig</code> configures services; the Boundary derives its own storage paths from its directory; <code>BackendAdapter</code> and <code>ContentReader</code> are service ports, not serialized models. Artifactory requires HTTPS and uses Bearer authorization; same-origin redirects retain it while cross-origin downloads proceed without credentials.</p>
   </section>
@@ -320,7 +320,7 @@ BackendAdapter.inventory(boundary_id)
           <li>Merge by canonical target ID; save current targets to <code>scantargets.json</code> and enrollment/availability to <code>boundary.json</code>.</li>
         </ol>
         <p><strong>Implemented:</strong> inventory keeps only the latest selected scan targets. Successful discovery replaces the selected list; absent scopes and old versions are removed. An unchanged scan target reuses its result; a newly selected scan target starts pending. Historical credentials, occurrence paths, judgments, and evidence survive inventory replacement. The boundary keeps one cumulative Titus datastore across scan runs; inventory replacement does not reset past scan data. Occurrence reads are independent of inventory: the ContentReader interprets each immutable path directly.</p>
-        <p><strong>Implemented:</strong> <code>inventory add</code> streams backend boundary IDs and enrolls only previously unregistered boundaries; existing records, including absent records, are not changed. <code>inventory update</code> does not enumerate the full backend catalog. It checks only registered boundaries directly, refreshes present ones, and marks confirmed-absent ones absent while retaining their historical report, credentials, evidence, and datastore. Backend failures leave affected records and scan targets unchanged.</p>
+        <p><strong>Implemented:</strong> <code>inventory add</code> streams backend boundary IDs and enrolls only previously unregistered boundaries; existing records, including absent records, are not changed. After discovery completes and before enrollment starts, it ensures <code>backend.json</code> exists whenever boundaries are selected or already registered, so partial failure or cancellation cannot leave boundary records undiscoverable. <code>inventory update</code> does not enumerate the full backend catalog. It checks only registered boundaries directly, refreshes present ones, and marks confirmed-absent ones absent while retaining their historical report, credentials, evidence, and datastore. Backend failures leave affected records and scan targets unchanged.</p>
         <p><strong>Implemented:</strong> catalog and tag-list pagination completes before target selection. Their payloads must be objects containing arrays of non-empty names; malformed JSON or shapes raise. A catalog continuation-page 404 is a discovery failure, not confirmed absence. Explicit empty arrays are successful discovery and may produce an inventory with no targets.</p>
         <p class="port">Owner: <code>backend/</code> boundary and target discovery plus merge rules, coordinated by <code>orch/workspace.py</code> and <code>orch/boundary.py</code>. An available empty repository has an empty <code>scantargets.json</code>; an absent repository has no current scan-target document.</p>
       </article>
@@ -383,14 +383,14 @@ retain_first_evidence(
       </article>
     </div>
     <aside class="note" style="margin-top: 1.25rem">
-      <strong>Return value ≠ persisted output.</strong> Each command runs its requested stage across persisted boundaries concurrently. Inventory returns the refreshed-boundary count; Scan returns the completed-boundary count; Judge and Extract return their selected credential counts. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
+      <strong>Return value ≠ persisted output.</strong> The normal source workflow invokes Scan, then Judge, then Extract as sequential commands. Each command may process different boundaries concurrently. Inventory returns the refreshed-boundary count; Scan returns the completed-boundary count; Judge and Extract return their selected credential counts. Document updates shown in the graph are saved checkpoints, not all CLI return values. Protocol declarations describe contracts and are not themselves implementations.
     </aside>
   </section>
 
   <section id="execution" aria-labelledby="execution-title">
     <p class="eyebrow">Execution / Persisted obligations, exclusive live ownership</p>
     <h2 id="execution-title">One boundary can owe work in several phases.</h2>
-    <p class="section-intro">The runtime <code>Boundary</code> is the mutable aggregate for one exclusively owned boundary. Workspace owns one backend and constructs unloaded Boundaries from persisted <code>boundary.json</code> records; services read resolved global configuration directly and the deduplicator and Titus obtain exclusions directly from global configuration, loaded once per run at first use. Each source-dependent Boundary operation acquires ownership before reading scan targets, report, and credentials. Those documents are changed in memory and written together at Boundary-owned checkpoints. There is no cross-boundary scheduler state.</p>
+    <p class="section-intro">The runtime <code>Boundary</code> is the mutable aggregate for one exclusively owned boundary. Workspace owns one backend and constructs unloaded Boundaries from persisted <code>boundary.json</code> records; services read resolved global configuration directly and the deduplicator and Titus obtain exclusions directly from global configuration, loaded once per run at first use. Runtime takes a per-backend workspace gate before boundary enumeration: inventory is exclusive, while source commands hold shared access. Each source-dependent Boundary operation then acquires its own boundary lock before reading scan targets, report, and credentials. Those documents are changed in memory and written together at Boundary-owned checkpoints. There is no cross-boundary scheduler state.</p>
     <div class="grid-two">
       <article class="panel">
         <h3>Boundary ownership</h3>
@@ -406,22 +406,23 @@ retain_first_evidence(
       </article>
       <article class="panel">
         <h3>Loading is owning</h3>
-        <pre>workspace.boundaries
-  → unloaded Boundary paths sharing one backend
-
-boundary.scan() / judge() / extract()
-  → acquire OS lock
-  → load current documents
-  → run exactly one operation and cleanup
-  → release ownership</pre>
+        <pre>LocalRuntime command
+  → acquire backend workspace gate
+  → enumerate registered Boundary paths
+  → run boundary tasks concurrently
+      → acquire boundary OS lock
+      → load state / skip if absent
+      → run one operation and cleanup
+  → close backend resources
+  → release workspace gate</pre>
         <ol>
-          <li>Construct unloaded <code>Boundary</code> objects from persisted <code>boundary.json</code> records; <code>inventory add</code> discovers new IDs while <code>inventory update</code> checks registered boundaries directly.</li>
-          <li>Acquire the persistent boundary-local <code>.operation.lock</code> with an exclusive OS lock.</li>
-          <li>Load current state only after ownership is acquired, then run exactly one requested operation.</li>
-          <li>Mutate the in-memory aggregate and call <code>Boundary.checkpoint()</code>.</li>
-          <li>Close the reader and release ownership after operation cleanup. The lock file remains; ownership is the OS lock, not file existence.</li>
+          <li>Acquire the backend workspace <code>.workspace.lock</code> before boundary enumeration: inventory add/update take an exclusive lock; scan/judge/extract take shared locks.</li>
+          <li>Construct unloaded <code>Boundary</code> objects from registered <code>boundary.json</code> paths; <code>inventory add</code> discovers new IDs while <code>inventory update</code> checks registered boundaries directly.</li>
+          <li>Each boundary task acquires its persistent <code>.operation.lock</code> exclusively before loading state. An absent record is a normal skip and starts no source services.</li>
+          <li>Mutate the in-memory aggregate and call <code>Boundary.checkpoint()</code>; hold both ownership scopes through operation and resource cleanup.</li>
+          <li>Close backend resources before releasing the workspace gate. Lock files remain; OS lock ownership, not file existence, determines whether a command is active.</li>
         </ol>
-        <p><strong>Implemented execution model:</strong> one invocation may process different boundaries concurrently, but competing commands cannot overlap on the same boundary. Inventory creates no content services. Every Scan, Judge, or Extract operation creates one reader, scanner, judge, and extractor, then the requested command uses the services it needs. The scanner processes targets sequentially with at most one Titus invocation at a time; Titus's internal parallelism remains available. Each target is checkpointed before the next starts.</p>
+        <p><strong>Implemented execution model:</strong> inventory add/update hold the backend workspace gate exclusively; scan/judge/extract hold it shared from before boundary enumeration through backend cleanup. The normal source workflow runs Scan, Judge, and Extract sequentially as separate commands, not concurrently with one another. Within one command, different boundaries may run concurrently, but the per-boundary lock prevents overlapping work on the same boundary. Inventory creates no content services. Every Scan, Judge, or Extract boundary operation creates one reader, scanner, judge, and extractor, then the requested command uses the services it needs. The scanner processes targets sequentially with at most one Titus invocation at a time; Titus's internal parallelism remains available. Each target is checkpointed before the next starts.</p>
       </article>
     </div>
     <div class="panel" style="margin-top: 1.25rem">
@@ -437,7 +438,7 @@ TitusCliScanner: one scanner per owned command, one active invocation at a time
 EvidenceExtractor: one extractor per owned command, first-occurrence retention
 LocalRuntime: runs one command operation across boundaries concurrently</pre>
       <p>The design rule is to keep module responsibilities clear and avoid circular dependencies; specific import directions are implementation choices. In the current implementation, Boundary uses its owner's concrete Workspace, backend content readers receive a scratch context, and Boundary's type-only Workspace reference avoids a runtime cycle. These details describe the current structure rather than prescribing a permanent import hierarchy.</p>
-      <p>Workspace loads one selected backend at a time. <code>inventory add</code> discovers remote boundary IDs; <code>inventory update</code> checks only registered boundaries directly. Source-dependent operations acquire the boundary OS lock before loading state and create the boundary's reader, scanner, judge, and extractor together; the requested command uses only what it needs. Different boundaries may run concurrently, and commands without a backend selector process persisted backends sequentially. Scan targets and retries run sequentially and share the boundary datastore. Titus internal workers remain supported, and Titus inherits the lock descriptor. Scan, judge, and extract commands run in separate Python processes, without a source-content cache.</p>
+      <p>Workspace loads one selected backend at a time. <code>inventory add</code> discovers remote boundary IDs; <code>inventory update</code> checks only registered boundaries directly. Runtime takes the backend workspace gate before discovery or source-boundary enumeration: inventory commands take it exclusively, source commands share it. Each source Boundary then takes its exclusive OS lock before loading state; absent boundaries skip without creating services. The normal Scan → Judge → Extract workflow is sequential across separate command processes, while different boundaries may run concurrently within each command. Commands without a backend selector process persisted backends sequentially. Scan targets and retries run sequentially and share the boundary datastore. Titus internal workers remain supported; Titus inherits both workspace and boundary lock descriptors. Content readers do not cache source content.</p>
     </div>
     <div class="table-scroll" style="margin-top: 1.25rem" role="region" aria-label="Execution transitions" tabindex="0">
       <table>
@@ -474,8 +475,8 @@ LocalRuntime: runs one command operation across boundaries concurrently</pre>
         <h3>Reconciliation and resource recovery</h3>
         <p>At boundary-session entry, validate the selected inventory and document identities. Target, judgment, and extraction status are read from their canonical documents. Invalid schemas, missing required documents, and mismatched identities fail explicitly.</p>
         <p>There is no standalone stage scheduler or READY/IDLE state. A later explicit scan command sees publication intent in inventory and republishes the cumulative datastore without rescanning completed targets.</p>
-        <p>The persistent <code>.operation.lock</code> file is never used as a sentinel and is never removed during normal operation. Exclusive OS locking determines ownership, so process death releases ownership without stale-lock recovery.</p>
-        <p>Titus inherits the lock descriptor. If a child survives its parent, it continues to exclude another command from the boundary until the descriptor closes.</p>
+        <p>The persistent <code>.workspace.lock</code> and <code>.operation.lock</code> files are never used as sentinels and are never removed during normal operation. OS locking determines ownership, so process death releases ownership without stale-lock recovery. Inventory holds the workspace lock exclusively; source commands hold it shared; each boundary lock remains exclusive.</p>
+        <p>Titus inherits both lock descriptors. If a child survives its parent, it continues to exclude inventory from the backend workspace and competing operations from that boundary until the descriptors close.</p>
       </article>
     </div>
   </section>
@@ -484,7 +485,7 @@ LocalRuntime: runs one command operation across boundaries concurrently</pre>
     <p class="eyebrow">Upgrade / Part of each persisted-format change</p>
     <h2 id="upgrade-title">Migrate the one existing workspace with each format change.</h2>
     <p>This is a single-user project with one existing workspace. A change to its persisted format includes migrating that workspace in the same task, preserving accumulated results and evidence. Migration should address the actual workspace; no general compatibility framework for a hypothetical installed user base is required. The commands below describe the current migration utility, which must be adapted when needed.</p>
-    <p><strong>Stop all commands and any surviving old Titus subprocesses before upgrading.</strong> The old workspace is expected to have no lock files. Back up the complete workspace, including the datastore, before applying the upgrade.</p>
+    <p><strong>Stop all commands and any surviving old Titus subprocesses before upgrading.</strong> Persistent lock files may remain; ensure no process owns them. Back up the complete workspace, including the datastore, before applying the upgrade.</p>
     <p>Current contracts are <strong>boundary record 1 · scan targets 11 · report 2 · credentials 8</strong>. Runtime commands do not require an execution checkpoint; boundary availability, target, judgment, extraction, and publication state are the source of truth.</p>
     <pre>uv run --locked python -m cred_scan.tools.migrate_workspace_schema WORKSPACE --dry-run
 # Back up the complete workspace before applying:
@@ -712,6 +713,7 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
         <thead><tr><th scope="col">Artifact</th><th scope="col">Model</th><th scope="col">Written by</th><th scope="col">Lifetime / meaning</th></tr></thead>
         <tbody>
           <tr><td><code>&lt;backend&gt;/backend.json</code></td><td><code>BackendWorkspaceRecord</code></td><td>Inventory add / migration</td><td>Identifies one backend workspace; boundary records live below its <code>boundaries/</code> directory.</td></tr>
+          <tr><td><code>&lt;backend&gt;/.workspace.lock</code></td><td>None — OS lock file</td><td>LocalRuntime</td><td>Shared by source commands and exclusive for inventory commands. Persistent file presence is not ownership; <code>flock</code> determines the active gate. Titus inherits the descriptor if it outlives its parent.</td></tr>
           <tr><td><code>boundary.json</code></td><td><code>BoundaryRecord</code></td><td>Inventory add / update</td><td>Registers boundary identity and whether its backend source is currently available.</td></tr>
           <tr><td><code>scantargets.json</code></td><td><a href="#model-inventory">ScanTargetInventory</a></td><td>Inventory; Boundary checkpoints</td><td>Exists only for available boundaries and stores the latest selected scan target per scope and its scan result.</td></tr>
           <tr><td><code>titus.ds/</code></td><td>None — Titus datastore</td><td>Scan</td><td>Persistent and shared by all scan targets in this boundary; never target scratch.</td></tr>
@@ -726,10 +728,10 @@ Evidence join:       Credential.extraction.output_path ─→ retained file unde
       <article class="panel">
         <h3>Scheduling and handoff</h3>
         <ul>
-          <li>Each per-boundary command operation holds exclusive ownership from state load through cleanup. One invocation may process different boundaries concurrently.</li>
+          <li>Inventory takes the per-backend workspace gate exclusively; Scan/Judge/Extract take it shared before enumeration and through cleanup. Each per-boundary operation then holds its exclusive boundary lock from state load through cleanup.</li>
           <li>Inventory creates no content services. Scan, Judge, and Extract each create the boundary reader, scanner, judge, and extractor together; the requested command uses what it needs. Scan targets and Titus invocations run sequentially; Titus itself may use internal parallelism.</li>
           <li>A single <code>TitusCliScanner</code> serves each boundary. There is no <code>scan_concurrency</code> setting; <code>internal_workers</code> controls Titus internal parallelism. Retry transient scan failures up to three attempts; permanent failures do not retry. Checkpoint each completed scan target before starting the next.</li>
-          <li>Scan, judge, and extract run as separate commands. Completed scan work is skipped; extraction checks retained evidence even when no new extraction is pending.</li>
+          <li>The normal workflow runs Scan, then Judge, then Extract sequentially as separate commands, not concurrently with each other. Completed scan work is skipped; extraction checks retained evidence even when no new extraction is pending.</li>
           <li>Absent boundaries and already-scanned targets do not start new scans. Removed scopes and replaced versions are absent from current scan targets.</li>
         </ul>
       </article>

@@ -95,6 +95,7 @@ class TitusCliScanner(CredentialScanner):
         backend: BackendAdapter,
     ) -> None:
         self.lock_fd: int | None = None
+        self.workspace_lock_fd: int | None = None
         self.config = get_config().titus
         self.inventory = inventory
         self.backend = backend
@@ -105,6 +106,17 @@ class TitusCliScanner(CredentialScanner):
             "ARTIFACTORY_TOKEN": access_token,
             "ARTIFACTORY_API_KEY": access_token,
         }
+
+    def _lock_descriptors(self) -> tuple[int, ...]:
+        # Titus may outlive its command process; inherit both locks so it keeps
+        # owning this boundary and excluding inventory from the backend workspace.
+        return tuple(
+            dict.fromkeys(
+                descriptor
+                for descriptor in (self.workspace_lock_fd, self.lock_fd)
+                if descriptor is not None
+            )
+        )
 
     async def scan(
         self,
@@ -149,7 +161,7 @@ class TitusCliScanner(CredentialScanner):
                 cwd=work_dir,
                 env=environment,
                 stderr=asyncio.subprocess.PIPE,
-                pass_fds=() if self.lock_fd is None else (self.lock_fd,),
+                pass_fds=self._lock_descriptors(),
             )
         except OSError as error:
             LOGGER.exception("Titus process could not start target=%s", target.id)
@@ -207,7 +219,7 @@ class TitusCliScanner(CredentialScanner):
                 "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                pass_fds=() if self.lock_fd is None else (self.lock_fd,),
+                pass_fds=self._lock_descriptors(),
             )
         except OSError:
             LOGGER.exception(
