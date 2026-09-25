@@ -103,7 +103,7 @@ def test_judge_command_displays_returned_count(
     assert result.exit_code == 0
     assert "judged 3 credential(s)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.judge.assert_awaited_once_with(None)
+    runtime.judge.assert_awaited_once_with(None, failed=False)
 
 
 def test_scan_command_displays_returned_count(
@@ -120,7 +120,7 @@ def test_scan_command_displays_returned_count(
     assert result.exit_code == 0
     assert "scanned 2 boundary(ies)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.scan.assert_awaited_once_with(None)
+    runtime.scan.assert_awaited_once_with(None, failed=False)
 
 
 def test_extract_command_displays_returned_count(
@@ -137,7 +137,7 @@ def test_extract_command_displays_returned_count(
     assert result.exit_code == 0
     assert "extracted 4 credential(s)" in result.output
     runtime_constructor.assert_called_once_with(app_config)
-    runtime.extract.assert_awaited_once_with(None)
+    runtime.extract.assert_awaited_once_with(None, failed=False)
 
 
 def test_task_group_error_is_reported_as_command_failure(
@@ -161,3 +161,18 @@ def test_task_group_error_is_reported_as_command_failure(
     assert result.exit_code == 1
     assert "command failed command=scan" in caplog.text
     assert "command error" not in caplog.text
+
+
+@pytest.mark.parametrize("command", ["scan", "judge", "extract"])
+def test_source_failed_flag_is_forwarded(command, monkeypatch, app_config):
+    loader = Mock(load=AsyncMock(return_value=app_config))
+    runtime = Mock()
+    operation = AsyncMock(return_value=0)
+    setattr(runtime, command, operation)
+    monkeypatch.setattr(cli, "YamlConfigLoader", Mock(return_value=loader))
+    monkeypatch.setattr(cli, "LocalRuntime", Mock(return_value=runtime))
+    result = CliRunner().invoke(
+        cli.app, [command, "--failed", "--backend", "artifactory_docker"]
+    )
+    assert result.exit_code == 0, result.output
+    operation.assert_awaited_once_with("artifactory_docker", failed=True)

@@ -9,7 +9,6 @@ from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.backend.proto import UnsupportedTitusTargetError
 from cred_scan.orch import global_config
 from cred_scan.orch.models import AppConfig
-from cred_scan.scan import titus as titus_module
 from cred_scan.scan.titus import TitusCliScanner, _is_permanent_titus_error
 
 
@@ -28,36 +27,6 @@ def test_registry_errors_are_permanent(line: str) -> None:
 
 def test_transient_titus_errors_are_retryable() -> None:
     assert not _is_permanent_titus_error("connection reset by peer")
-
-
-def test_titus_inherits_workspace_and_boundary_lock_descriptors(
-    app_config: AppConfig,
-    repository_inventory: ScanTargetInventory,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(global_config, "CONFIG", app_config)
-    workspace_lock_path = tmp_path / ".workspace.lock"
-    boundary_lock_path = tmp_path / ".operation.lock"
-    workspace_lock_path.touch()
-    boundary_lock_path.touch()
-    process = Mock(returncode=0, communicate=AsyncMock(return_value=(b"[]", b"")))
-    spawn = AsyncMock(return_value=process)
-    monkeypatch.setattr(titus_module, "_spawn", spawn)
-    scanner = TitusCliScanner(repository_inventory, Mock())
-
-    async def scenario() -> None:
-        with workspace_lock_path.open("rb") as workspace_lock_file:
-            with boundary_lock_path.open("rb") as boundary_lock_file:
-                scanner.workspace_lock_fd = workspace_lock_file.fileno()
-                scanner.lock_fd = boundary_lock_file.fileno()
-                await scanner.export_report(tmp_path / "titus.ds")
-                assert spawn.await_args.kwargs["pass_fds"] == (
-                    workspace_lock_file.fileno(),
-                    boundary_lock_file.fileno(),
-                )
-
-    asyncio.run(scenario())
 
 
 def test_unsupported_target_becomes_failed_without_starting_titus(
@@ -85,7 +54,7 @@ def test_unsupported_target_becomes_failed_without_starting_titus(
     target = repository_inventory.targets[0]
     assert target.result.status == "failed"
     assert target.result.errors == ("unsupported source",)
-    assert not target.result.retryable
+    backend.titus_scan_arguments.assert_called_once()
     assert not (tmp_path / "scratch").exists()
 
 
@@ -162,6 +131,7 @@ def test_repeated_cancellation_waits_for_reaping(
     app_config, repository_inventory, tmp_path, monkeypatch, phase
 ):
     monkeypatch.setattr(global_config, "CONFIG", app_config)
+
     async def scenario():
         entered, reaping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         process = Mock(returncode=None)
@@ -222,6 +192,7 @@ def test_cancellation_during_launch_waits_and_reaps(
     app_config, repository_inventory, tmp_path, monkeypatch, phase, launch_fails
 ):
     monkeypatch.setattr(global_config, "CONFIG", app_config)
+
     async def scenario():
         launching, release = asyncio.Event(), asyncio.Event()
         process = Mock(returncode=None)
@@ -266,3 +237,24 @@ def test_cancellation_during_launch_waits_and_reaps(
             process.communicate.assert_awaited_once()
 
     asyncio.run(asyncio.wait_for(scenario(), 3))
+
+
+@pytest.mark.parametrize(
+    "retry,success,attempts", [(True, False, 3), (False, False, 1), (True, True, 1)]
+)
+def test_scanner_bounds_immediate_retries(
+    app_config, repository_inventory, tmp_path, monkeypatch, retry, success, attempts
+):
+    monkeypatch.setattr(global_config, "CONFIG", app_config)
+    scanner = TitusCliScanner(repository_inventory, Mock())
+    target = repository_inventory.targets[0]
+
+    async def attempt(candidate, *_):
+        assert candidate is target
+        candidate.result.status = "scanned" if success else "failed"
+        return retry
+
+    once = AsyncMock(side_effect=attempt)
+    monkeypatch.setattr(scanner, "_scan_once", once)
+    asyncio.run(scanner.scan(target, tmp_path, tmp_path / "titus.ds"))
+    assert once.await_count == attempts

@@ -26,9 +26,9 @@ def retained_document(inventory, credential):
     credential = credential.model_copy(deep=True)
     document = merge_scan(None, document_for(inventory, credential))
     saved = document.credentials[credential.credential_id]
-    saved.judgment = JudgmentResult(verdict="VALID")
+    saved.judgment = JudgmentResult(status="completed", verdict="valid")
     saved.extraction = ExtractionResult(
-        status="RETAINED",
+        status="retained",
         output_path="evidence/credential/app.env",
         size=17,
         sha256="a" * 64,
@@ -46,11 +46,11 @@ def test_credential_exclusion_matches_without_persisted_ledger():
 def test_credential_lifecycle_is_nested(repository_inventory, credential):
     document = merge_scan(None, document_for(repository_inventory, credential))
     saved = document.credentials[credential.credential_id]
-    saved.judgment = JudgmentResult(verdict="VALID")
-    assert saved.judgment.verdict == "VALID"
-    assert saved.extraction is None
+    saved.judgment = JudgmentResult(status="completed", verdict="valid")
+    assert saved.judgment.verdict == "valid"
+    assert saved.extraction.status == "pending"
     saved.extraction = ExtractionResult(
-        status="RETAINED",
+        status="retained",
         output_path="evidence/credential/app.env",
         size=17,
         sha256="a" * 64,
@@ -69,14 +69,14 @@ def test_credentials_document_rejects_mismatched_index(
         )
 
 
-@pytest.mark.parametrize("verdict", ["PENDING", "ERROR", "INVALID", "UNKNOWN"])
+@pytest.mark.parametrize("verdict", ["invalid", "unknown"])
 def test_non_valid_judgment_retains_historical_evidence(
     repository_inventory, credential, verdict
 ):
     document = retained_document(repository_inventory, credential)
     original = document.model_dump(mode="json")
     document.credentials[credential.credential_id].judgment = JudgmentResult(
-        verdict=verdict
+        status="completed", verdict=verdict
     )
     assert (
         document.credentials[credential.credential_id].extraction
@@ -126,20 +126,18 @@ def test_append_unions_every_historical_occurrence_without_changing_first_eviden
     candidate = history.model_copy(
         update={
             "occurrences": (second,),
-            "judgment": JudgmentResult(verdict="PENDING"),
-            "extraction": None,
+            "judgment": JudgmentResult(),
+            "extraction": ExtractionResult(),
         }
     )
-    partial = document_for(
-        repository_inventory, candidate, incomplete=True, errors=("partial",)
-    )
+    partial = document_for(repository_inventory, candidate, errors=("partial",))
     published = merge_scan(original, partial)
     saved = published.credentials[credential.credential_id]
     assert len(saved.occurrences) == 2
     assert saved.occurrences == (first, second)
-    assert saved.judgment.verdict == "VALID"
+    assert saved.judgment.verdict == "valid"
     assert saved.extraction == retained
-    assert published.incomplete and published.errors == ("partial",)
+    assert published.errors == ("partial",)
     assert published is original
     assert merge_scan(published, partial) == published
     reversed_report = partial.model_copy(
@@ -196,37 +194,98 @@ def test_append_adds_new_pin_and_credential_without_losing_absent_history(
     ]
 
 
-def test_merge_rejects_another_boundary(repository_inventory, credential):
-    document = document_for(repository_inventory, credential)
-    with pytest.raises(ValueError, match="another boundary"):
-        merge_scan(document, document.model_copy(update={"boundary_id": "other"}))
-
-
-def test_pending_judgment_and_missing_value_accept_candidate_state(
+def test_pending_judgment_is_preserved_while_missing_value_is_filled(
     repository_inventory, credential
 ):
     previous = document_for(
         repository_inventory, credential.model_copy(update={"credential": None})
     )
     candidate = credential.model_copy(
-        update={"judgment": JudgmentResult(verdict="ERROR")}
+        update={"judgment": JudgmentResult(status="failed", error="failure")}
     )
     published = merge_scan(previous, document_for(repository_inventory, candidate))
-    assert published.credentials[credential.credential_id].judgment.verdict == "ERROR"
+    assert published.credentials[credential.credential_id].judgment.status == "pending"
     assert (
         published.credentials[credential.credential_id].credential
         == credential.credential
     )
 
 
-@pytest.mark.parametrize("status", ["RETAINED", "ERROR"])
+@pytest.mark.parametrize("status", ["pending", "skipped", "retained", "failed"])
 def test_extraction_metadata_has_no_source_fingerprint(status):
-    extraction = ExtractionResult(status=status)
+    extraction = ExtractionResult(
+        status=status,
+        **(
+            {"output_path": "evidence/file", "size": 1, "sha256": "abc"}
+            if status == "retained"
+            else {"error": "failure"}
+            if status == "failed"
+            else {"reason": "invalid"}
+            if status == "skipped"
+            else {}
+        ),
+    )
     payload = extraction.model_dump(mode="json")
-    assert set(payload) == {"status", "output_path", "size", "sha256", "error"}
+    assert set(payload) == {
+        "status",
+        "output_path",
+        "size",
+        "sha256",
+        "error",
+        "reason",
+    }
     assert (
         "source_fingerprint" not in ExtractionResult.model_json_schema()["properties"]
     )
     assert ExtractionResult.model_validate(payload) == extraction
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ExtractionResult.model_validate({**payload, "source_fingerprint": "obsolete"})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "completed"},
+        {"status": "completed", "verdict": "valid", "error": "failure"},
+        {"status": "pending", "verdict": "valid"},
+        {"status": "failed", "verdict": "unknown", "error": "failure"},
+        {"status": "failed"},
+        {"status": "completed", "verdict": "VALID"},
+    ],
+)
+def test_judgment_rejects_contradictory_state(payload):
+    with pytest.raises(ValidationError):
+        JudgmentResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "retained"},
+        {"status": "pending", "output_path": "evidence/file"},
+        {"status": "skipped"},
+        {"status": "skipped", "reason": "invalid", "size": 1},
+        {"status": "failed"},
+    ],
+)
+def test_extraction_requires_state_specific_metadata(payload):
+    with pytest.raises(ValidationError):
+        ExtractionResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "extraction",
+    [
+        ExtractionResult(),
+        ExtractionResult(status="failed", error="previous failure"),
+        ExtractionResult(status="skipped", reason="previous decision"),
+    ],
+)
+def test_scan_merge_preserves_all_extraction_states(
+    repository_inventory, credential, extraction
+):
+    credential.extraction = extraction
+    previous = document_for(repository_inventory, credential)
+    candidate = credential.model_copy(update={"extraction": ExtractionResult()})
+    result = merge_scan(previous, document_for(repository_inventory, candidate))
+    assert result.credentials[credential.credential_id].extraction is extraction

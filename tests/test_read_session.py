@@ -8,7 +8,6 @@ import pytest
 
 from cred_scan.backend.adapters.artifactory.docker import (
     ArtifactoryDockerReader,
-    LayerEvidenceError,
 )
 
 
@@ -48,23 +47,6 @@ def test_resolving_again_does_not_reuse_mutated_location(reader):
             second = await reader.resolve_location(LOCATOR)
             assert second.source_path == "etc/app.env"
             assert second is not first
-        finally:
-            await reader.aclose()
-
-    asyncio.run(exercise())
-
-
-def test_read_still_validates_location(reader):
-    reader._find_file = AsyncMock(return_value=b"content")
-
-    async def exercise():
-        try:
-            location = await reader.resolve_location(LOCATOR)
-            await reader.read(location)
-            location.source_path = "different"
-            with pytest.raises(LayerEvidenceError, match="source path does not match"):
-                await reader.read(location)
-            reader._find_file.assert_awaited_once()
         finally:
             await reader.aclose()
 

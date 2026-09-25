@@ -69,9 +69,7 @@ def _run(
 ConfigOption = Annotated[
     Path, typer.Option("--config", "-c", help="Central configuration file.")
 ]
-BackendOption = Annotated[
-    str | None, typer.Option("--backend", help="Backend name.")
-]
+BackendOption = Annotated[str | None, typer.Option("--backend", help="Backend name.")]
 
 
 @inventory_app.command("add")
@@ -109,13 +107,16 @@ def inventory_update(
 @app.command()
 def scan(
     backend: BackendOption = None,
+    failed: Annotated[
+        bool, typer.Option("--failed", help="Also retry saved failures in this stage.")
+    ] = False,
     config: ConfigOption = Path("config.yml"),
 ) -> None:
     """Scan persisted boundaries, optionally restricted to one backend."""
     _run(
         "scan",
         config,
-        lambda runtime: runtime.scan(backend),
+        lambda runtime: runtime.scan(backend, failed=failed),
         "scanned {count} boundary(ies)",
     )
 
@@ -123,13 +124,16 @@ def scan(
 @app.command()
 def judge(
     backend: BackendOption = None,
+    failed: Annotated[
+        bool, typer.Option("--failed", help="Also retry saved failures in this stage.")
+    ] = False,
     config: ConfigOption = Path("config.yml"),
 ) -> None:
     """Judge pending credentials, optionally restricted to one backend."""
     _run(
         "judge",
         config,
-        lambda runtime: runtime.judge(backend),
+        lambda runtime: runtime.judge(backend, failed=failed),
         "judged {count} credential(s)",
     )
 
@@ -137,13 +141,16 @@ def judge(
 @app.command()
 def extract(
     backend: BackendOption = None,
+    failed: Annotated[
+        bool, typer.Option("--failed", help="Also retry saved failures in this stage.")
+    ] = False,
     config: ConfigOption = Path("config.yml"),
 ) -> None:
     """Extract eligible evidence, optionally restricted to one backend."""
     _run(
         "extract",
         config,
-        lambda runtime: runtime.extract(backend),
+        lambda runtime: runtime.extract(backend, failed=failed),
         "extracted {count} credential(s)",
     )
 

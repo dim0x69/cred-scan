@@ -246,11 +246,9 @@ def test_unavailable_locations_produce_diagnostics(monkeypatch):
         "get_exclusions",
         lambda: ExclusionPolicy(path_file="paths.list"),
     )
-    document = asyncio.run(
-        deduplicate_report(report, inventory, resolver)
-    )
+    document = asyncio.run(deduplicate_report(report, inventory, resolver))
     assert report.model_dump_json() == original
-    assert document.incomplete
+    assert "incomplete" not in document.model_dump()
     assert len(document.credentials) == 1
     credential = next(iter(document.credentials.values()))
     assert credential.paths == ("available",)

@@ -32,7 +32,7 @@ def test_evidence_existence_checks_do_not_read_or_modify_artifacts(
     content = b"retained evidence"
     destination.write_bytes(content)
     metadata = ExtractionResult(
-        status="RETAINED",
+        status="retained",
         output_path=destination.relative_to(boundary).as_posix(),
         size=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
@@ -52,8 +52,10 @@ def test_evidence_existence_checks_do_not_read_or_modify_artifacts(
         destination.symlink_to(outside)
     before = metadata.model_dump(mode="json")
     with monkeypatch.context() as patch:
+
         def forbid_read(*args, **kwargs):
             raise AssertionError("existence check must not read evidence bytes")
+
         patch.setattr(type(destination), "read_bytes", forbid_read)
         assert evidence_exists(boundary, "credential/id", metadata) == (
             damage in {"none", "size", "hash"}

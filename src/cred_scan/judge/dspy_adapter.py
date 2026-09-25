@@ -150,7 +150,7 @@ class DspyFindingJudge(FindingJudge):
                         "appears real rather than an example."
                     )
                 )
-                verdict: Literal["VALID", "INVALID", "UNKNOWN"] = dspy.OutputField()
+                verdict: Literal["valid", "invalid", "unknown"] = dspy.OutputField()
                 reason: str = dspy.OutputField()
 
             input_data, location_registry = _judge_input(credential)
@@ -239,10 +239,11 @@ class DspyFindingJudge(FindingJudge):
                             delay,
                         )
                 assert prediction is not None
-                verdict = str(prediction.verdict).upper()
-                if verdict not in {"VALID", "INVALID", "UNKNOWN"}:
-                    verdict = "UNKNOWN"
+                verdict = str(prediction.verdict).strip().lower()
+                if verdict not in {"valid", "invalid", "unknown"}:
+                    raise ValueError("judge returned an invalid verdict")
                 result = JudgmentResult(
+                    status="completed",
                     verdict=verdict,
                     reasoning=str(prediction.reason),
                 )
@@ -254,7 +255,7 @@ class DspyFindingJudge(FindingJudge):
                 raise FatalJudgeError(str(error)[:500]) from error
             LOGGER.exception("judgment failed credential=%s", credential.credential_id)
             result = JudgmentResult(
-                verdict="ERROR",
-                reasoning=str(error)[:500],
+                status="failed",
+                error=(str(error) or type(error).__name__)[:500],
             )
         return result

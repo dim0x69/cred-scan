@@ -23,6 +23,7 @@ from pydantic_settings import (
 )
 from cred_scan.scan.models import ExclusionFiles
 
+
 class ArtifactoryDockerBackendConfig(BaseModel):
     """Validated settings for the implemented Artifactory Docker backend."""
 
@@ -43,10 +44,13 @@ class ArtifactoryDockerBackendConfig(BaseModel):
     @field_validator("platform")
     @classmethod
     def validate_platform(cls, value: str) -> str:
-        if re.fullmatch(
-            r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+){1,2}",
-            value,
-        ) is None:
+        if (
+            re.fullmatch(
+                r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+){1,2}",
+                value,
+            )
+            is None
+        ):
             raise ValueError("platform must be os/architecture[/variant]")
         return value
 
@@ -74,10 +78,6 @@ class BoundaryPaths(BaseModel):
     @property
     def scan_targets(self) -> Path:
         return self.boundary_dir / "scantargets.json"
-
-    @property
-    def operation_lock(self) -> Path:
-        return self.boundary_dir / ".operation.lock"
 
     @property
     def report(self) -> Path:

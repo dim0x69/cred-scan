@@ -1,326 +1,260 @@
-"""Offline migration to backend-scoped boundary records and scantargets.json.
+"""Offline migration of the existing backend workspaces to boundary phases.
 
-Credentials, reports, cumulative Titus datastores, and evidence are preserved.
-Original inventory.json files are backed up before replacement.
+Run with all commands and Titus children stopped. Document backups are written
+before changes; datastore and evidence files are never opened for writing.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, TypeVar
-from urllib.parse import quote, unquote
+from typing import Any
+from urllib.parse import unquote
 
 from pydantic import BaseModel
 
 from cred_scan.backend.models import (
+    PHASE_ORDER,
     BackendWorkspaceRecord,
+    BoundaryPhase,
     BoundaryRecord,
     ScanTargetInventory,
 )
 from cred_scan.orch.fsync import fsync_directory
 from cred_scan.orch.json_io import write_json_atomic
-from cred_scan.orch.locking import boundary_lock
 from cred_scan.scan.models import CredentialsDocument, TitusReport
 
-DocumentT = TypeVar("DocumentT", bound=BaseModel)
+
+def _read(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path}: expected a document")
+    return payload
 
 
-class _WorkspaceStorage:
-    """Minimal path/storage facade for the offline tool; creates no services."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def boundary(self, boundary_id: str) -> Path:
-        return self.root / quote(boundary_id, safe="")
-
-    def migrated_boundary(self, backend_name: str, boundary_id: str) -> Path:
-        return (
-            self.root
-            / quote(backend_name, safe="")
-            / "boundaries"
-            / quote(boundary_id, safe="")
-        )
-
-    @property
-    def boundaries(self) -> Iterator[Path]:
-        for inventory_path in sorted(
-            self.root.glob("*/inventory.json"),
-            key=lambda path: unquote(path.parent.name),
-        ):
-            boundary_path = self.boundary(unquote(inventory_path.parent.name))
-            if boundary_path / "inventory.json" != inventory_path:
-                raise ValueError(
-                    f"noncanonical boundary directory: {inventory_path.parent}"
-                )
-            yield boundary_path
-
-    def write(
-        self,
-        path: Path,
-        document: DocumentT,
-        model_type: type[DocumentT],
-    ) -> None:
-        validated = model_type.model_validate(
-            document.model_dump(mode="json")
-        )
-        write_json_atomic(path, validated.model_dump(mode="json"))
-
-
-def _payload(path: Path, versions: set[int]) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict) or value.get("schema_version") not in versions:
-        raise ValueError(
-            f"{path}: expected schema version in {sorted(versions)}"
-        )
-    return value
-
-
-def _validate(
-    path: Path,
-    model: type[DocumentT],
-    payload: dict[str, Any],
-) -> DocumentT:
+def _validate(path: Path, model: type[BaseModel], payload: dict[str, Any]) -> BaseModel:
     try:
         return model.model_validate(payload)
     except ValueError:
-        raise ValueError(f"{path}: invalid {model.__name__}") from None
-
-
-def _rename_boundary_id(value: str, source_backend: str, target_backend: str) -> str:
-    source = f"artifactory:{source_backend}:"
-    target = f"artifactory:{target_backend}:"
-    return target + value.removeprefix(source) if value.startswith(source) else value
-
-
-def _migrate_report(
-    path: Path,
-    source_backend: str,
-    target_backend: str,
-) -> TitusReport | None:
-    if not path.exists():
-        return None
-    payload = _payload(path, {2})
-    payload["boundary_id"] = _rename_boundary_id(
-        payload["boundary_id"], source_backend, target_backend
-    )
-    return _validate(path, TitusReport, payload)
-
-
-def _migrate_credentials(
-    path: Path,
-    source_backend: str,
-    target_backend: str,
-) -> CredentialsDocument | None:
-    if not path.exists():
-        return None
-    payload = _payload(path, {7, 8})
-    payload["boundary_id"] = _rename_boundary_id(
-        payload["boundary_id"], source_backend, target_backend
-    )
-    if payload["schema_version"] == 7:
-        for credential in payload["credentials"].values():
-            locations = []
-            for occurrence in credential["occurrences"]:
-                locations.extend(
-                    {"locator": location["locator"]}
-                    for location in occurrence["locations"]
-                )
-            credential["occurrences"] = locations
-        payload["schema_version"] = 8
-    return _validate(path, CredentialsDocument, payload)
-
-
-def migrate_workspace(workspace_dir: Path, *, apply: bool = False) -> int:
-    """Migrate the legacy flat workspace; dry-run by default."""
-    if not workspace_dir.is_dir():
         raise ValueError(
-            f"{workspace_dir}: workspace directory does not exist"
-        )
+            f"{path}: invalid {model.__name__}; inspect the document before migration"
+        ) from None
 
-    marker = workspace_dir / "backend.json"
-    store = _WorkspaceStorage(workspace_dir)
-    if marker.exists():
-        backend_payload = json.loads(marker.read_text(encoding="utf-8"))
-        if not isinstance(backend_payload, dict):
-            raise ValueError(f"{marker}: invalid backend marker")
-        source_backend = backend_payload.get("name")
-        if not isinstance(source_backend, str) or not source_backend:
-            raise ValueError(f"{marker}: invalid backend name")
-        target_backend = source_backend
-    else:
-        # The existing single workspace predates the backend marker. Infer its
-        # source identity from the legacy inventory documents. This is a
-        # one-workspace migration, not a general compatibility mechanism.
-        legacy_paths = tuple(workspace_dir.glob("*/inventory.json"))
-        if not legacy_paths and tuple(workspace_dir.glob("*/backend.json")):
-            return 0
-        if not legacy_paths:
-            raise ValueError(f"missing legacy backend marker: {marker}")
-        source_names = {
-            json.loads(path.read_text(encoding="utf-8"))["backend"]["name"]
-            for path in legacy_paths
-        }
-        if len(source_names) != 1:
-            raise ValueError("legacy workspace contains multiple backend identities")
-        source_backend = source_names.pop()
-        target_backend = (
-            "artifactory_docker"
-            if source_backend == "artifactory-primary"
-            else source_backend
-        )
-    pending: list[
-        tuple[
-            Path,
-            Path,
-            bytes,
-            int,
-            ScanTargetInventory,
-            BoundaryRecord,
-            TitusReport | None,
-            CredentialsDocument | None,
-        ]
-    ] = []
 
-    for boundary_path in store.boundaries:
-        inventory_path = boundary_path / "inventory.json"
-        source_boundary_id = unquote(boundary_path.name)
-        target_boundary_id = _rename_boundary_id(
-            source_boundary_id,
-            source_backend,
-            target_backend,
-        )
-        destination = store.migrated_boundary(
-            target_backend,
-            target_boundary_id,
-        )
-        if destination.exists():
-            raise ValueError(f"migration destination already exists: {destination}")
-        with boundary_lock(boundary_path / ".operation.lock"):
-            original_bytes = inventory_path.read_bytes()
-            original = _payload(inventory_path, {7, 8, 9, 10})
-            original_version = original["schema_version"]
-            payload = dict(original)
-            if original["schema_version"] in {7, 8}:
-                targets = []
-                for target in original["targets"]:
-                    if target.get("lifecycle", "current") != "current":
-                        continue
-                    if target["scope"].get("lifecycle", "active") != "active":
-                        continue
-                    target = dict(target)
-                    target.pop("lifecycle", None)
-                    scope = dict(target["scope"])
-                    scope.pop("lifecycle", None)
-                    scope.pop("pin_id", None)
-                    target["scope"] = scope
-                    targets.append(target)
-                payload["targets"] = targets
-            if original_version in {7, 8, 9}:
-                payload["publication_pending"] = (
-                    boundary_path / "titus.ds"
-                ).exists()
-            if boundary_path.name != quote(source_boundary_id, safe=""):
+def _convert_credentials(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("schema_version") != 8:
+        raise ValueError("expected credentials schema 8")
+    payload["schema_version"] = 9
+    payload.pop("incomplete", None)
+    for credential in payload["credentials"].values():
+        judgment = credential["judgment"]
+        verdict = judgment["verdict"]
+        if verdict in {"VALID", "INVALID", "UNKNOWN"}:
+            judgment.update(status="completed", verdict=verdict.lower(), error=None)
+        elif verdict == "PENDING":
+            judgment.update(status="pending", verdict=None, error=None)
+        elif verdict == "ERROR":
+            judgment.update(
+                status="failed",
+                verdict=None,
+                error=judgment.get("reasoning") or "legacy judgment failed",
+                reasoning="",
+            )
+        else:
+            raise ValueError("unrecognized legacy judgment verdict")
+        extraction = credential.get("extraction")
+        if extraction is None:
+            credential["extraction"] = {"status": "pending"}
+        elif extraction["status"] in {"RETAINED", "ERROR"}:
+            extraction["status"] = {"RETAINED": "retained", "ERROR": "failed"}[
+                extraction["status"]
+            ]
+        else:
+            raise ValueError("unrecognized legacy extraction status")
+    return payload
+
+
+def _initial_phase(
+    record: dict[str, Any],
+    inventory: dict[str, Any] | None,
+    report: dict[str, Any] | None,
+    credentials: dict[str, Any] | None,
+) -> BoundaryPhase:
+    if record["availability"] == "absent":
+        return "scan"  # Restoration inventories the boundary again before work.
+    if inventory is None:
+        raise ValueError("available boundary has no scan targets")
+    if inventory.get("publication_pending") or any(
+        target["result"]["status"] in {"pending", "running"}
+        for target in inventory["targets"]
+    ):
+        return "scan"
+    if report is None and credentials is None:
+        return "scan"
+    if (
+        report is None
+        or credentials is None
+        or report["generated_at"] != credentials["report_generated_at"]
+    ):
+        raise ValueError("ambiguous publication; provide an explicit --phase override")
+    if any(
+        item["judgment"]["status"] == "pending"
+        for item in credentials["credentials"].values()
+    ):
+        return "judge"
+    if any(
+        item["extraction"]["status"] == "pending"
+        for item in credentials["credentials"].values()
+    ):
+        return "extract"
+    return "done"
+
+
+def migrate_workspace(
+    workspace_dir: Path,
+    *,
+    apply: bool = False,
+    phases: dict[str, BoundaryPhase] | None = None,
+) -> int:
+    """Preflight every document; back up originals and migrate records last."""
+    if not workspace_dir.is_dir():
+        raise ValueError(f"workspace directory does not exist: {workspace_dir}")
+    phases = phases or {}
+    known = set()
+    pending: list[list[tuple[Path, bytes, BaseModel]]] = []
+    markers = sorted(workspace_dir.glob("*/backend.json"))
+    if not markers:
+        raise ValueError("no backend workspaces found")
+    for marker in markers:
+        backend = _validate(marker, BackendWorkspaceRecord, _read(marker))
+        backend_name = backend.model_dump()["name"]
+        if unquote(marker.parent.name) != backend_name:
+            raise ValueError(f"{marker}: backend identity mismatch")
+        for record_path in sorted(
+            (marker.parent / "boundaries").glob("*/boundary.json")
+        ):
+            record = _read(record_path)
+            boundary_id = record["boundary"]["id"]
+            known.add(boundary_id)
+            if (
+                boundary_id != unquote(record_path.parent.name)
+                or record["backend_id"] != backend_name
+            ):
+                raise ValueError(f"{record_path}: boundary identity mismatch")
+            if record.get("schema_version") == 2:
+                _validate(record_path, BoundaryRecord, record)
+                continue
+            if record.get("schema_version") != 1:
+                raise ValueError(f"{record_path}: expected boundary schema 1")
+            documents = {}
+            originals = {record_path: record_path.read_bytes()}
+            for name in ("scantargets.json", "report.json", "credentials.json"):
+                path = record_path.parent / name
+                if path.exists():
+                    originals[path] = path.read_bytes()
+                    documents[name] = _read(path)
+                else:
+                    documents[name] = None
+            inventory = documents["scantargets.json"]
+            report = documents["report.json"]
+            credentials = documents["credentials.json"]
+            if record["availability"] == "available" and inventory is None:
                 raise ValueError(
-                    f"{inventory_path}: boundary directory does not match inventory"
+                    f"{record_path}: available boundary is missing inventory"
                 )
-            payload["schema_version"] = 11
-            payload.pop("lifecycle", None)
-            payload.pop("stale_reason", None)
-            boundary_payload = dict(payload["boundary"])
-            boundary_payload["id"] = target_boundary_id
-            payload["boundary"] = boundary_payload
-            inventory = _validate(inventory_path, ScanTargetInventory, payload)
-            report = _migrate_report(
-                boundary_path / "report.json",
-                source_backend,
-                target_backend,
-            )
-            credentials = _migrate_credentials(
-                boundary_path / "credentials.json",
-                source_backend,
-                target_backend,
-            )
-            record = BoundaryRecord(
-                backend_id=target_backend,
-                boundary=inventory.boundary,
-            )
-            pending.append(
+            if record["availability"] == "absent" and inventory is not None:
+                raise ValueError(f"{record_path}: absent boundary still has inventory")
+            if credentials is not None:
+                try:
+                    _convert_credentials(credentials)
+                except (KeyError, ValueError):
+                    raise ValueError(
+                        f"{record_path.parent}: invalid legacy credentials"
+                    ) from None
+            try:
+                phase = phases.get(boundary_id)
+                # An explicit conservative rescan resolves ambiguous publication.
+                if phase != "scan":
+                    required = _initial_phase(record, inventory, report, credentials)
+                    if phase is not None and PHASE_ORDER.index(
+                        phase
+                    ) > PHASE_ORDER.index(required):
+                        raise ValueError("phase override bypasses pending work")
+                    phase = phase or required
+            except (KeyError, ValueError) as error:
+                raise ValueError(f"{record_path.parent}: {error}") from None
+            record.update(schema_version=2, phase=phase)
+            writes = []
+            if inventory is not None:
+                if inventory.get("schema_version") != 11:
+                    raise ValueError(
+                        f"{record_path.parent}: expected scan-target schema 11"
+                    )
+                inventory.update(schema_version=12)
+                inventory.pop("publication_pending", None)
+                for target in inventory["targets"]:
+                    target["result"].pop("retryable", None)
+                    if target["result"]["status"] == "partial":
+                        target["result"]["status"] = "failed"
+            if report is not None:
+                if report.get("schema_version") != 2:
+                    raise ValueError(f"{record_path.parent}: expected report schema 2")
+                report.update(schema_version=3)
+                report.pop("incomplete", None)
+            for name, model in (
+                ("scantargets.json", ScanTargetInventory),
+                ("report.json", TitusReport),
+                ("credentials.json", CredentialsDocument),
+            ):
+                payload = documents[name]
+                if payload is None:
+                    continue
+                identity = (
+                    payload["boundary"]["id"]
+                    if name == "scantargets.json"
+                    else payload["boundary_id"]
+                )
+                if identity != boundary_id:
+                    raise ValueError(
+                        f"{record_path.parent / name}: boundary identity mismatch"
+                    )
+                path = record_path.parent / name
+                writes.append((path, originals[path], _validate(path, model, payload)))
+            writes.append(
                 (
-                    boundary_path,
-                    destination,
-                    original_bytes,
-                    original_version,
-                    inventory,
-                    record,
-                    report,
-                    credentials,
+                    record_path,
+                    originals[record_path],
+                    _validate(record_path, BoundaryRecord, record),
                 )
             )
-
+            pending.append(writes)
+    if phases.keys() - known:
+        raise ValueError("phase override references an unknown boundary")
     if apply:
-        backend_dir = workspace_dir / quote(target_backend, safe="")
-        backend_dir.mkdir(parents=True, exist_ok=True)
-        for (
-            boundary_path,
-            destination,
-            original_bytes,
-            original_version,
-            inventory,
-            record,
-            report,
-            credentials,
-        ) in pending:
-            with boundary_lock(boundary_path / ".operation.lock"):
-                if (boundary_path / "inventory.json").read_bytes() != original_bytes:
-                    raise ValueError(f"inventory changed during migration: {boundary_path}")
-                backup = (
-                    workspace_dir
-                    / f".inventory-v{original_version}-backup"
-                    / boundary_path.name
-                    / "inventory.json"
-                )
+        # No source documents change until all validation and backups succeed.
+        backup_root = workspace_dir / ".phase-migration-backup"
+        for writes in pending:
+            for path, original, _ in writes:
+                if path.read_bytes() != original:
+                    raise ValueError(f"document changed during migration: {path}")
+                backup = backup_root / path.relative_to(workspace_dir)
                 backup.parent.mkdir(parents=True, exist_ok=True)
+                if backup.exists():
+                    if backup.read_bytes() != original:
+                        raise ValueError(
+                            f"backup differs; resolve interrupted migration: {backup}"
+                        )
+                    continue
                 with backup.open("xb") as stream:
-                    stream.write(original_bytes)
+                    stream.write(original)
                     stream.flush()
                     os.fsync(stream.fileno())
                 fsync_directory(backup.parent)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(boundary_path), str(destination))
-                store.write(
-                    destination / "scantargets.json",
-                    inventory,
-                    ScanTargetInventory,
-                )
-                store.write(
-                    destination / "boundary.json",
-                    record,
-                    BoundaryRecord,
-                )
-                if report is not None:
-                    store.write(destination / "report.json", report, TitusReport)
-                if credentials is not None:
-                    store.write(
-                        destination / "credentials.json",
-                        credentials,
-                        CredentialsDocument,
-                    )
-                (destination / "inventory.json").unlink()
-                fsync_directory(destination)
-
-        store.write(
-            backend_dir / "backend.json",
-            BackendWorkspaceRecord(name=target_backend),
-            BackendWorkspaceRecord,
-        )
-        if marker.exists():
-            marker.unlink()
-        fsync_directory(workspace_dir)
-
+        for writes in pending:
+            for path, _, document in writes:
+                write_json_atomic(path, document.model_dump(mode="json"))
     return len(pending)
 
 
@@ -330,10 +264,18 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--phase", action="append", default=[], metavar="BOUNDARY_ID=PHASE"
+    )
     args = parser.parse_args()
-    count = migrate_workspace(args.workspace_dir, apply=args.apply)
-    action = "migrated" if args.apply else "would migrate"
-    print(f"{action} {count} boundary(ies)")
+    phases = {}
+    for item in args.phase:
+        boundary_id, separator, phase = item.rpartition("=")
+        if not separator or phase not in {"scan", "judge", "extract", "done"}:
+            parser.error("--phase requires BOUNDARY_ID=scan|judge|extract|done")
+        phases[boundary_id] = phase
+    count = migrate_workspace(args.workspace_dir, apply=args.apply, phases=phases)
+    print(f"{'migrated' if args.apply else 'would migrate'} {count} boundary(ies)")
     return 0
 
 

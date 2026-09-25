@@ -1,8 +1,7 @@
-"""One exclusively owned boundary's inventory, scan, judgment, and evidence."""
+"""Boundary stage execution and final-write phase handoffs."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator
@@ -16,11 +15,17 @@ from urllib.parse import unquote
 from pydantic import BaseModel
 
 from cred_scan.backend.inventory import merge_inventory
-from cred_scan.backend.models import BoundaryRecord, ScanTargetInventory, ScanTarget
+from cred_scan.backend.models import (
+    BoundaryRecord,
+    ScanTargetInventory,
+    ScanTarget,
+    BoundaryPhase,
+    SourceStage,
+    PHASE_ORDER,
+)
 from cred_scan.backend.proto import BackendAdapter, ContentReader
 from cred_scan.orch.fsync import fsync_directory
 from cred_scan.orch.json_io import write_json_atomic
-from cred_scan.orch.locking import boundary_lock
 from cred_scan.orch.models import BoundaryPaths
 from cred_scan.judge.dspy_adapter import DspyFindingJudge
 from cred_scan.extract.evidence import (
@@ -43,15 +48,8 @@ LOGGER = logging.getLogger(__name__)
 DocumentT = TypeVar("DocumentT", bound=BaseModel)
 
 
-def _target_needs_scan(target: ScanTarget) -> bool:
-    result = target.result
-    return result.status in {"pending", "running"} or (
-        result.status in {"failed", "partial"} and result.retryable
-    )
-
-
 class Boundary:
-    """Mutable aggregate loaded only while its boundary is exclusively owned."""
+    """Mutable aggregate selected by phase under the single-writer operating rule."""
 
     def __init__(self, backend: BackendAdapter, path: Path) -> None:
         self.boundary_id = unquote(path.name)
@@ -61,20 +59,18 @@ class Boundary:
         )
 
         self.backend = backend
-        self.workspace_lock_fd: int | None = None
         self.reader: ContentReader | None = None
         self.judge_service: DspyFindingJudge | None = None
         self.scanner: TitusCliScanner | None = None
-        self._operation_lock = asyncio.Lock()
         self.extractor: EvidenceExtractor | None = None
 
     def _load(self) -> bool:
-        """Load available state while holding boundary ownership.
+        """Load available state after stage selection.
 
         Return false for a registered but absent boundary; its scan-target
         document is intentionally absent and no source state should be loaded.
         """
-        record = self._read_validated_record()
+        record = self._read(self.paths.record, BoundaryRecord)
         if record is None:
             raise ValueError(f"missing boundary record: {self.paths.record}")
         self.record = record
@@ -88,38 +84,28 @@ class Boundary:
             raise ValueError(
                 f"missing boundary scan targets: {self.paths.scan_targets}"
             )
-        if inventory.boundary.id != self.boundary_id:
-            raise ValueError(
-                "boundary scan targets do not match boundary path: "
-                f"{self.paths.scan_targets}"
-            )
         self.record = record
         report = self._read(self.paths.report, TitusReport)
-        if report is not None and report.boundary_id != self.boundary_id:
-            raise ValueError(
-                f"report belongs to another boundary: {self.paths.report}"
-            )
 
         credentials = self._read(
             self.paths.credentials,
             CredentialsDocument,
         )
-        if credentials is not None and credentials.boundary_id != self.boundary_id:
+        if record.phase != "scan" and (report is None or credentials is None):
             raise ValueError(
-                f"credentials belong to another boundary: {self.paths.credentials}"
+                f"phase {record.phase} requires published report and credentials: "
+                f"{self.paths.boundary_dir}"
             )
 
         self.inventory: ScanTargetInventory = inventory
         self.report: TitusReport = report or TitusReport(
             boundary_id=self.boundary_id,
             generated_at="",
-            incomplete=True,
         )
         self.credentials: CredentialsDocument = credentials or (
             CredentialsDocument(
                 boundary_id=self.boundary_id,
                 report_generated_at="",
-                incomplete=True,
             )
         )
         self._has_report = report is not None
@@ -137,28 +123,13 @@ class Boundary:
             return None
         return model_type.model_validate(payload)
 
-    def _read_validated_record(self) -> BoundaryRecord | None:
-        record = self._read(self.paths.record, BoundaryRecord)
-        if record is not None:
-            if record.boundary.id != self.boundary_id:
-                raise ValueError(
-                    "boundary record does not match boundary path: "
-                    f"{self.paths.record}"
-                )
-            if record.backend_id != self.backend.name:
-                raise ValueError(
-                    "boundary record belongs to another backend: "
-                    f"{self.paths.record}"
-                )
-        return record
-
     def _write(
         self,
         path: Path,
         document: DocumentT,
         model_type: type[DocumentT],
     ) -> None:
-        """Atomically write one document while this boundary owns its lock."""
+        """Atomically write one complete boundary document."""
         if not isinstance(document, model_type):
             raise TypeError(
                 f"expected {model_type.__name__}, got {type(document).__name__}"
@@ -187,42 +158,110 @@ class Boundary:
             except OSError:
                 pass
 
-    @asynccontextmanager
-    async def operation(self) -> AsyncIterator[Boundary | None]:
-        """Own one boundary from state load through command cleanup."""
-        async with self._operation_lock:
-            with boundary_lock(self.paths.operation_lock) as descriptor:
-                if not self._load():
-                    yield None
-                    return
-                try:
-                    self._start_services(descriptor, self.workspace_lock_fd)
-                    yield self
-                finally:
-                    await self._stop_services()
+    def eligible(self, stage: SourceStage, *, failed: bool = False) -> bool:
+        """Whether this boundary belongs in the requested command's finite batch.
 
-    def _start_services(
+        Workspace calls this while selecting boundaries once at invocation start;
+        operation() rechecks it before loading the selected boundary's state.
+        Read boundary.json first, so unfinished upstream work is excluded before
+        reading inventory or credentials. Absent boundaries are always excluded.
+
+        A matching phase permits normal processing, even with no pending items:
+        the stage may still need to finish publication or its phase handoff.
+        Extract also includes done boundaries for read-only evidence auditing.
+        With failed=True, saved failures can additionally make a later-phase
+        boundary eligible for explicit re-entry, never an earlier-phase one.
+
+        This only reads persisted state; it creates no services, requeues no
+        items, and changes no phase. operation() handles any requested retries.
+        Eligibility does not acquire ownership: the one-instance-per-stage
+        operating rule and human coordination of explicit re-entry still apply.
+        """
+        record = self._read(self.paths.record, BoundaryRecord)
+        if record is None:
+            raise ValueError(f"missing boundary record: {self.paths.record}")
+        # Historical results remain stored for absent boundaries, but no source
+        # processing or retained-evidence audit runs for them.
+        if record.availability == "absent":
+            return False
+        # Done is included for auditing even without --failed. operation() only
+        # reopens extraction if --failed actually finds failed extraction items.
+        if record.phase == stage or (stage == "extract" and record.phase == "done"):
+            return True
+        # Ordinary commands never reopen a later phase. Even explicit retries
+        # cannot let judge bypass scan, or extract bypass scan/judge.
+        if not failed or PHASE_ORDER.index(record.phase) < PHASE_ORDER.index(stage):
+            return False
+        # Only explicit retries in a later phase reach here. Inspect the owning
+        # document to avoid reopening a boundary with no saved stage failures.
+        if stage == "scan":
+            inventory = self._read(self.paths.scan_targets, ScanTargetInventory)
+            if inventory is None:
+                raise ValueError(f"missing scan targets: {self.paths.scan_targets}")
+            return any(target.result.status == "failed" for target in inventory.targets)
+        # Only judge remains: extract on done already qualified for its audit.
+        # Completed invalid/unknown assessments are decisions, not failed work.
+        credentials = self._read(self.paths.credentials, CredentialsDocument)
+        return credentials is not None and any(
+            credential.judgment.status == "failed"
+            for credential in credentials.credentials.values()
+        )
+
+    @asynccontextmanager
+    async def operation(
         self,
-        descriptor: int,
-        workspace_lock_fd: int | None,
-    ) -> None:
+        stage: SourceStage,
+        *,
+        failed: bool = False,
+    ) -> AsyncIterator[Boundary | None]:
+        """Load selected work, optionally reopen failed work, then own services."""
+        if not self.eligible(stage, failed=failed) or not self._load():
+            yield None
+            return
+        results = (
+            [target.result for target in self.inventory.targets]
+            if stage == "scan"
+            else [
+                getattr(item, "judgment" if stage == "judge" else "extraction")
+                for item in self.credentials.credentials.values()
+            ]
+        )
+        retries = [result for result in results if failed and result.status == "failed"]
+        if retries:
+            # Explicit re-entry happens only while this boundary is idle.
+            self.record.phase = stage
+            self._write(self.paths.record, self.record, BoundaryRecord)
+            for result in retries:
+                result.status = "pending"
+            self.checkpoint()
+        if self.record.phase != stage:
+            # An extract invocation can audit done boundaries without services/writes.
+            yield self
+            return
+        try:
+            self._start_services()
+            yield self
+        finally:
+            await self._stop_services()
+
+    def _start_services(self) -> None:
         self.reader = self.backend.content_reader(self.scratch_dir)
         self.scanner = TitusCliScanner(self.inventory, self.backend)
-        self.scanner.lock_fd = descriptor
-        self.scanner.workspace_lock_fd = workspace_lock_fd
         self.judge_service = DspyFindingJudge()
         self.extractor = EvidenceExtractor(self.paths.boundary_dir)
 
     async def _stop_services(self) -> None:
-        if self.scanner is not None:
-            self.scanner.lock_fd = None
-            self.scanner.workspace_lock_fd = None
         if self.reader is not None:
             await self.reader.aclose()
         self.reader = None
         self.judge_service = None
         self.scanner = None
         self.extractor = None
+
+    def _advance(self, phase: BoundaryPhase) -> None:
+        """Publish readiness after result writes and service cleanup have finished."""
+        self.record.phase = phase
+        self._write(self.paths.record, self.record, BoundaryRecord)
 
     def checkpoint(self) -> None:
         """Persist this boundary's current aggregate."""
@@ -240,53 +279,28 @@ class Boundary:
                 CredentialsDocument,
             )
 
-    def needs_scan(self) -> bool:
-        if self.inventory.publication_pending:
-            return True
-        if not self.inventory.targets:
-            return False
-        return (
-            not self._has_report
-            or not self._has_credentials
-            or any(_target_needs_scan(target) for target in self.inventory.targets)
-        )
-
     async def enroll_inventory(self) -> bool:
-        """Enroll this boundary only if it remains unregistered under ownership."""
-        async with self._operation_lock:
-            with boundary_lock(self.paths.operation_lock):
-                existing = self._read_validated_record()
-                if existing is not None:
-                    return False
-                return await self._refresh_inventory_locked(existing)
+        """Enroll only previously unregistered boundaries; inventory runs alone."""
+        existing = self._read(self.paths.record, BoundaryRecord)
+        if existing is not None:
+            return False
+        return await self._refresh_inventory(existing)
 
     async def refresh_inventory(self) -> bool:
-        """Refresh a registered boundary, including one currently absent."""
-        async with self._operation_lock:
-            with boundary_lock(self.paths.operation_lock):
-                existing = self._read_validated_record()
-                return await self._refresh_inventory_locked(existing)
+        return await self._refresh_inventory(self._read(self.paths.record, BoundaryRecord))
 
-    async def _refresh_inventory_locked(
-        self,
-        existing: BoundaryRecord | None,
-    ) -> bool:
-        """Discover and persist inventory while both boundary locks are held."""
+    async def _refresh_inventory(self, existing: BoundaryRecord | None) -> bool:
         current = self._read(
             self.paths.scan_targets,
             ScanTargetInventory,
         )
-        if current is not None and current.boundary.id != self.boundary_id:
-            raise ValueError(
-                "boundary scan targets do not match boundary path: "
-                f"{self.paths.scan_targets}"
-            )
 
         discovered = await self.backend.inventory(self.boundary_id)
         if discovered is None:
             if existing is None:
                 return False
-            absent = existing.model_copy(update={"availability": "absent"})
+            existing.availability = "absent"
+            absent = existing
             self._write(
                 self.paths.record,
                 absent,
@@ -297,41 +311,53 @@ class Boundary:
             self.record = absent
             return True
 
-        if discovered.boundary.id != self.boundary_id:
-            raise ValueError("backend returned inventory for another boundary")
         merged = merge_inventory(current, discovered)
         record = BoundaryRecord(
             backend_id=self.backend.name,
             boundary=merged.boundary,
+            phase=(
+                existing.phase
+                if existing is not None
+                and current is not None
+                and existing.availability == "available"
+                and {target.id for target in current.targets}
+                == {target.id for target in merged.targets}
+                else "scan"
+            ),
         )
+        reopening = (
+            existing is not None
+            and existing.availability == "available"
+            and existing.phase != record.phase
+        )
+        if reopening:
+            # Inventory runs alone. Revoke downstream readiness before changing
+            # targets, so an interrupted refresh cannot strand new scan work.
+            self._write(self.paths.record, record, BoundaryRecord)
         self._write(
             self.paths.scan_targets,
             merged,
             ScanTargetInventory,
         )
-        self._write(
-            self.paths.record,
-            record,
-            BoundaryRecord,
-        )
+        if not reopening:
+            self._write(self.paths.record, record, BoundaryRecord)
         self.record = record
         self.inventory = merged
         return True
 
-    async def scan(self) -> bool:
-        async with self.operation() as owned:
-            if owned is None or not self.needs_scan():
+    async def scan(self, *, failed: bool = False) -> bool:
+        async with self.operation("scan", failed=failed) as owned:
+            if owned is None:
                 return False
             await self._scan()
-            return True
+        self._advance("judge")
+        return True
 
     async def _scan(self) -> None:
         scanner = self.scanner
         reader = self.reader
         assert scanner is not None
         assert reader is not None
-        self.inventory.publication_pending = True
-        self.checkpoint()
         scanner.inventory = self.inventory
         interrupted = [
             target
@@ -346,7 +372,7 @@ class Boundary:
         eligible = tuple(
             target
             for target in self.inventory.targets
-            if _target_needs_scan(target)
+            if target.result.status == "pending"
         )
         LOGGER.info("scanning boundary=%s targets=%d", self.boundary_id, len(eligible))
         for target in eligible:
@@ -359,19 +385,22 @@ class Boundary:
             await self._scan_target(target)
             self.checkpoint()
             LOGGER.info(
-                "scanned target=%s status=%s retryable=%s",
+                "scanned target=%s status=%s",
                 target.id,
                 target.result.status,
-                target.result.retryable,
             )
             self._log_scan_errors(target)
 
-        incomplete = bool(self.inventory.errors) or any(
-            target.result.status != "scanned" for target in self.inventory.targets
-        )
-
-        report = await scanner.export_report(self.paths.datastore)
-        report.incomplete = report.incomplete or incomplete
+        if self.paths.datastore.exists():
+            report = await scanner.export_report(self.paths.datastore)
+        elif not self.inventory.targets:
+            report = TitusReport(
+                boundary_id=self.boundary_id,
+                generated_at=datetime.now(UTC).isoformat(),
+            )
+        else:
+            # Failure to export remains a stage failure; never publish fake results.
+            report = await scanner.export_report(self.paths.datastore)
         report.errors = tuple(report.errors) + self.inventory.errors
         self.report = report
         self._has_report = True
@@ -386,15 +415,11 @@ class Boundary:
         self.credentials = merge_scan(self.credentials, candidates)
         self._has_credentials = True
         self.checkpoint()
-        # Clear only after the report and merged credentials are durable.
-        self.inventory.publication_pending = False
-        self.checkpoint()
 
         LOGGER.info(
-            "scan complete boundary=%s candidates=%d incomplete=%s",
+            "scan complete boundary=%s candidates=%d",
             self.boundary_id,
             len(self.credentials.credentials),
-            self.credentials.incomplete,
         )
 
     def _log_scan_errors(self, target: ScanTarget) -> None:
@@ -410,22 +435,15 @@ class Boundary:
         scanner = self.scanner
         assert scanner is not None
         with self.scratch_dir() as work_dir:
-            for attempt in range(3):
-                LOGGER.info("scanning target=%s attempt=%d/3", target.id, attempt + 1)
-                await scanner.scan(target, work_dir, self.paths.datastore)
-                if (
-                    target.result.status == "scanned"
-                    or not target.result.retryable
-                    or attempt == 2
-                ):
-                    return
-                target.result.status = "running"
+            await scanner.scan(target, work_dir, self.paths.datastore)
 
-    async def judge(self) -> int:
-        async with self.operation() as owned:
+    async def judge(self, *, failed: bool = False) -> int:
+        async with self.operation("judge", failed=failed) as owned:
             if owned is None:
                 return 0
-            return await self._judge()
+            count = await self._judge()
+        self._advance("extract")
+        return count
 
     async def _judge(self) -> int:
         judge_service = self.judge_service
@@ -435,7 +453,7 @@ class Boundary:
         selected = tuple(
             credential
             for credential in self.credentials.credentials.values()
-            if credential.judgment.verdict in {"PENDING", "ERROR"}
+            if credential.judgment.status == "pending"
         )
         for credential in selected:
             try:
@@ -452,30 +470,33 @@ class Boundary:
                     credential.credential_id,
                 )
                 result = JudgmentResult(
-                    verdict="ERROR",
-                    reasoning=str(error)[:500],
+                    status="failed",
+                    error=(str(error) or type(error).__name__)[:500],
                 )
 
             credential.judgment = result
             self.checkpoint()
         return len(selected)
 
-    async def extract(self) -> int:
-        async with self.operation() as owned:
+    async def extract(self, *, failed: bool = False) -> int:
+        async with self.operation("extract", failed=failed) as owned:
             if owned is None:
                 return 0
-            return await self._extract()
+            self._audit_evidence()
+            if self.record.phase == "done":
+                return 0
+            count = await self._extract()
+        self._advance("done")
+        return count
 
-    async def _extract(self) -> int:
-        extractor = self.extractor
-        reader = self.reader
-        assert extractor is not None
-        assert reader is not None
+    def _audit_evidence(self) -> None:
         credentials = tuple(self.credentials.credentials.values())
         for credential in credentials:
-            if credential.extraction is not None and credential.extraction.status == "RETAINED":
+            if credential.extraction.status == "retained":
                 if not evidence_exists(
-                    self.paths.boundary_dir, credential.credential_id, credential.extraction
+                    self.paths.boundary_dir,
+                    credential.credential_id,
+                    credential.extraction,
                 ):
                     LOGGER.error(
                         "retained evidence missing boundary=%s credential=%s path=%s; "
@@ -485,16 +506,31 @@ class Boundary:
                         credential.extraction.output_path,
                     )
 
+    async def _extract(self) -> int:
+        extractor = self.extractor
+        reader = self.reader
+        assert extractor is not None
+        assert reader is not None
         selected = tuple(
             credential
-            for credential in credentials
-            if credential.judgment.verdict in {"VALID", "UNKNOWN"}
-            and (
-                credential.extraction is None
-                or credential.extraction.status == "ERROR"
-            )
+            for credential in self.credentials.credentials.values()
+            if credential.extraction.status == "pending"
         )
+        attempted = 0
         for credential in selected:
+            if credential.judgment.verdict not in {"valid", "unknown"}:
+                credential.extraction = ExtractionResult(
+                    status="skipped",
+                    reason=(
+                        "judgment failed"
+                        if credential.judgment.status == "failed"
+                        else "credential judged invalid"
+                    ),
+                    error=credential.extraction.error,
+                )
+                self.checkpoint()
+                continue
+            attempted += 1
             try:
                 extraction = await extractor.extract(credential, reader)
             except EvidenceConflictError:
@@ -506,10 +542,9 @@ class Boundary:
                     credential.credential_id,
                 )
                 extraction = ExtractionResult(
-                    status="ERROR",
-                    error=str(error)[:500],
+                    status="failed",
+                    error=(str(error) or type(error).__name__)[:500],
                 )
-
             credential.extraction = extraction
             self.checkpoint()
-        return len(selected)
+        return attempted

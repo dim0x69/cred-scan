@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cred_scan.backend.adapters.artifactory.models import (
     ArtifactoryRepository,
@@ -30,13 +30,19 @@ class BackendWorkspaceRecord(BaseModel):
     name: str = Field(min_length=1)
 
 
+BoundaryPhase = Literal["scan", "judge", "extract", "done"]
+SourceStage = Literal["scan", "judge", "extract"]
+PHASE_ORDER = ("scan", "judge", "extract", "done")
+
+
 class BoundaryRecord(BaseModel):
     """Durable boundary enrollment and current backend availability."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     backend_id: str
     boundary: ScanBoundaryRef
     availability: Literal["available", "absent"] = "available"
+    phase: BoundaryPhase = "scan"
 
 
 def target_id_for(scope: ScanScope) -> str:
@@ -64,9 +70,10 @@ class ContentRead:
 class ScanTargetResult(BaseModel):
     """A replaceable target execution result."""
 
-    status: Literal["pending", "running", "scanned", "partial", "failed"] = "pending"
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["pending", "running", "scanned", "failed"] = "pending"
     errors: tuple[str, ...] = ()
-    retryable: bool = True
     return_code: int | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -89,8 +96,7 @@ class ScanTarget(BaseModel):
 class ScanTargetInventory(BaseModel):
     """The latest selected scan targets and their results for one boundary."""
 
-    schema_version: Literal[11] = 11
-    publication_pending: bool = False
+    schema_version: Literal[12] = 12
     generated_at: datetime
     boundary: ScanBoundaryRef
     targets: tuple[ScanTarget, ...] = ()

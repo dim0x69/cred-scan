@@ -81,8 +81,9 @@ def test_missing_judge_configuration_is_fatal(
     ("raw_bytes", "encoding", "text"),
     [(b"SECRET", "utf-8", "SECRET"), (b"\xff\x00", "base64", "/wA=")],
 )
+@pytest.mark.parametrize("verdict", ["VALID", "unsupported"])
 def test_judge_uses_native_async_dspy_and_content_tools(
-    app_config: AppConfig, credential, monkeypatch, raw_bytes, encoding, text
+    app_config: AppConfig, credential, monkeypatch, raw_bytes, encoding, text, verdict
 ) -> None:
     config = app_config.model_copy(
         update={
@@ -120,7 +121,7 @@ def test_judge_uses_native_async_dspy_and_content_tools(
                 "encoding": encoding,
                 "content": text,
             }
-            return SimpleNamespace(verdict="VALID", reason="synthetic judgment")
+            return SimpleNamespace(verdict=verdict, reason="synthetic judgment")
 
     def make_react(signature, *, tools, max_iters):
         captured["signature"] = signature
@@ -135,8 +136,14 @@ def test_judge_uses_native_async_dspy_and_content_tools(
 
     judged = asyncio.run(DspyFindingJudge().judge(credential, content))
 
-    assert judged.verdict == "VALID"
-    assert judged.reasoning == "synthetic judgment"
+    if verdict == "VALID":
+        assert judged.status == "completed"
+        assert judged.verdict == "valid"
+        assert judged.reasoning == "synthetic judgment"
+    else:
+        assert judged.status == "failed"
+        assert judged.verdict is None
+        assert judged.error
     assert captured["max_iters"] == config.judge.max_iterations
     signature = captured["signature"]
     field = signature.fields["credential_json"]

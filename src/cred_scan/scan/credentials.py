@@ -16,7 +16,12 @@ from cred_scan.backend.models import ScanTargetInventory
 from cred_scan.backend.proto import ContentReader
 from cred_scan.orch.global_config import get_exclusions
 from cred_scan.scan.exclusions import match_credential_exclusion
-from cred_scan.scan.models import Credential, CredentialsDocument, ExclusionPolicy, TitusReport
+from cred_scan.scan.models import (
+    Credential,
+    CredentialsDocument,
+    ExclusionPolicy,
+    TitusReport,
+)
 
 IDENTITY_GROUPS: dict[str, int] = {
     "kingfisher.credentials.1": 1,
@@ -41,7 +46,11 @@ def decode_json_bytes(value: Any) -> Any:
 
 def decoded_groups(finding: dict[str, Any]) -> list[Any]:
     groups = finding.get("Groups", [])
-    return [decode_json_bytes(group) for group in groups] if isinstance(groups, list) else []
+    return (
+        [decode_json_bytes(group) for group in groups]
+        if isinstance(groups, list)
+        else []
+    )
 
 
 def _canonical_identity_bytes(value: str) -> bytes:
@@ -114,13 +123,11 @@ def report_from_export(
     raw_report: list[dict[str, Any]],
     inventory: ScanTargetInventory,
     *,
-    incomplete: bool = False,
     errors: tuple[str, ...] = (),
 ) -> TitusReport:
     return TitusReport(
         boundary_id=inventory.boundary.id,
         generated_at=datetime.now(UTC).isoformat(),
-        incomplete=incomplete,
         errors=tuple(errors) + inventory.errors,
         findings=tuple(item for item in raw_report if isinstance(item, dict)),
     )
@@ -132,8 +139,6 @@ async def deduplicate_report(
     resolver: ContentReader,
 ) -> CredentialsDocument:
     """Resolve all raw locations before producing persisted credentials."""
-    if report.boundary_id != inventory.boundary.id:
-        raise ValueError(f"report boundary is not in inventory: {report.boundary_id}")
     policy = get_exclusions()
     spec = _path_spec(policy)
     conversion_errors: list[str] = []
@@ -195,7 +200,6 @@ async def deduplicate_report(
     return CredentialsDocument(
         boundary_id=inventory.boundary.id,
         report_generated_at=report.generated_at,
-        incomplete=report.incomplete or bool(conversion_errors),
         credentials=active,
         errors=tuple(report.errors) + inventory.errors + tuple(conversion_errors),
     )

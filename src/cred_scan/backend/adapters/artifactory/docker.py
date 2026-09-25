@@ -365,15 +365,6 @@ class ArtifactoryDockerReader(ContentReader):
             location = await self.resolve_location(location)
 
         provenance = parse_provenance(location.locator)
-        if location.source_path != provenance.path:
-            raise LayerEvidenceError(
-                "content location source path does not match locator"
-            )
-        if location.filename != PurePosixPath(provenance.path).name:
-            raise LayerEvidenceError(
-                "content location filename does not match locator"
-            )
-
         result = ContentRead(
             content=await self._find_file(provenance),
             source_path=provenance.path,

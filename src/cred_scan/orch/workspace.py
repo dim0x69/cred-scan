@@ -12,12 +12,12 @@ from cred_scan.backend.adapters.artifactory.docker import ArtifactoryDockerBacke
 from cred_scan.backend.models import (
     BackendWorkspaceRecord,
     BoundaryRecord,
+    SourceStage,
 )
 from cred_scan.backend.proto import BackendAdapter
 from cred_scan.orch.boundary import Boundary
 from cred_scan.orch.global_config import get_config
 from cred_scan.orch.json_io import write_json_atomic
-from cred_scan.orch.locking import BoundaryBusyError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,10 +34,6 @@ def _backend_record(path: Path) -> BackendWorkspaceRecord:
         )
     except (FileNotFoundError, ValueError) as error:
         raise ValueError(f"invalid backend workspace record: {path}") from error
-    if unquote(path.parent.name) != record.name:
-        raise ValueError(
-            f"backend record does not match directory: {path}"
-        )
     return record
 
 
@@ -150,13 +146,10 @@ class Workspace:
         self._boundaries_dir = self._backend_dir / "boundaries"
         self._workspace_dir.mkdir(parents=True, exist_ok=True)
 
-        expected_dir = self._workspace_dir / quote(self.backend_name, safe="")
-        if self._backend_dir != expected_dir:
-            raise ValueError(
-                f"backend directory does not match backend: {self._backend_dir}"
-            )
         if self._backend_dir.exists() and not self._backend_dir.is_dir():
-            raise ValueError(f"backend workspace is not a directory: {self._backend_dir}")
+            raise ValueError(
+                f"backend workspace is not a directory: {self._backend_dir}"
+            )
         if not self._backend_dir.exists():
             if not create:
                 raise ValueError(
@@ -165,16 +158,12 @@ class Workspace:
             self._backend_dir.mkdir(parents=True)
         marker = self._backend_dir / "backend.json"
         if marker.exists():
-            if _backend_record(marker).name != self.backend_name:
-                raise ValueError(
-                    f"backend workspace does not match selected backend: {self._backend_dir}"
-                )
+            _backend_record(marker)
         elif not create:
             raise ValueError(f"missing backend workspace record: {marker}")
         self._boundaries_dir.mkdir(parents=True, exist_ok=True)
 
         self._boundaries: tuple[Boundary, ...] | None = None
-        self.workspace_lock_fd: int | None = None
         self._closed = False
 
     async def __aenter__(self) -> "Workspace":
@@ -190,10 +179,6 @@ class Workspace:
     @property
     def backend_workspace_dir(self) -> Path:
         return self._backend_dir
-
-    @property
-    def workspace_lock_path(self) -> Path:
-        return self._backend_dir / ".workspace.lock"
 
     @property
     def boundaries(self) -> tuple[Boundary, ...]:
@@ -213,14 +198,8 @@ class Workspace:
         for record_path in self._boundaries_dir.glob("*/boundary.json"):
             boundary_id = unquote(record_path.parent.name)
             record = Boundary._read(record_path, BoundaryRecord)
-            if record is None or record.boundary.id != boundary_id:
-                raise ValueError(
-                    f"boundary record does not match directory: {record_path}"
-                )
-            if record.backend_id != self.backend.name:
-                raise ValueError(
-                    f"boundary record belongs to another backend: {record_path}"
-                )
+            if record is None:
+                raise ValueError(f"missing boundary record: {record_path}")
             boundary_ids.add(boundary_id)
         return boundary_ids
 
@@ -242,15 +221,7 @@ class Workspace:
         """Run one command operation across boundaries concurrently."""
 
         async def run(boundary: Boundary) -> int:
-            boundary.workspace_lock_fd = self.workspace_lock_fd
-            try:
-                try:
-                    return int(await operation(boundary))
-                except BoundaryBusyError as error:
-                    LOGGER.warning("skipping boundary: %s", error)
-                    return 0
-            finally:
-                boundary.workspace_lock_fd = None
+            return int(await operation(boundary))
 
         async with asyncio.TaskGroup() as group:
             tasks = [group.create_task(run(boundary)) for boundary in boundaries]
@@ -290,22 +261,41 @@ class Workspace:
             tuple(self.boundary(boundary_id) for boundary_id in boundary_ids),
         )
 
-    async def scan(self) -> int:
-        return await self._run_boundaries(
-            Boundary.scan,
-            self.boundaries,
+    def select(
+        self, stage: SourceStage, *, failed: bool = False
+    ) -> tuple[Boundary, ...]:
+        """Capture ready boundaries once, before starting any stage work."""
+        return tuple(
+            boundary
+            for boundary in self.boundaries
+            if boundary.eligible(stage, failed=failed)
         )
 
-    async def judge(self) -> int:
+    async def run_selected(
+        self,
+        stage: SourceStage,
+        boundaries: tuple[Boundary, ...],
+        *,
+        failed: bool = False,
+    ) -> int:
         return await self._run_boundaries(
-            Boundary.judge,
-            self.boundaries,
+            lambda boundary: getattr(boundary, stage)(failed=failed),
+            boundaries,
         )
 
-    async def extract(self) -> int:
-        return await self._run_boundaries(
-            Boundary.extract,
-            self.boundaries,
+    async def scan(self, *, failed: bool = False) -> int:
+        return await self.run_selected(
+            "scan", self.select("scan", failed=failed), failed=failed
+        )
+
+    async def judge(self, *, failed: bool = False) -> int:
+        return await self.run_selected(
+            "judge", self.select("judge", failed=failed), failed=failed
+        )
+
+    async def extract(self, *, failed: bool = False) -> int:
+        return await self.run_selected(
+            "extract", self.select("extract", failed=failed), failed=failed
         )
 
     async def close(self) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cred_scan.extract.models import ExtractionResult
 
@@ -30,8 +30,23 @@ class CredentialOccurrence(BaseModel):
 
 
 class JudgmentResult(BaseModel):
-    verdict: Literal["PENDING", "VALID", "INVALID", "UNKNOWN", "ERROR"] = "PENDING"
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["pending", "completed", "failed"] = "pending"
+    verdict: Literal["valid", "invalid", "unknown"] | None = None
     reasoning: str = ""
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "JudgmentResult":
+        if self.status == "completed":
+            if self.verdict is None or self.error is not None:
+                raise ValueError("completed judgment requires a verdict and no error")
+        elif self.verdict is not None:
+            raise ValueError("only completed judgments have a verdict")
+        if self.status == "failed" and not self.error:
+            raise ValueError("failed judgment requires an error")
+        return self
 
 
 class Credential(BaseModel):
@@ -41,7 +56,7 @@ class Credential(BaseModel):
     credential: str | None = Field(default=None, repr=False)
     occurrences: tuple[CredentialOccurrence, ...] = Field(min_length=1)
     judgment: JudgmentResult = Field(default_factory=JudgmentResult)
-    extraction: ExtractionResult | None = None
+    extraction: ExtractionResult = Field(default_factory=ExtractionResult)
 
     @property
     def paths(self) -> tuple[str, ...]:
@@ -52,10 +67,9 @@ class Credential(BaseModel):
 class TitusReport(BaseModel):
     """The complete final Titus export for one report boundary."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     boundary_id: str
     generated_at: str
-    incomplete: bool = False
     errors: tuple[str, ...] = ()
     findings: tuple[dict[str, Any], ...] = ()
 
@@ -63,10 +77,9 @@ class TitusReport(BaseModel):
 class CredentialsDocument(BaseModel):
     """The append-only ID-indexed credentials document for one boundary."""
 
-    schema_version: Literal[8] = 8
+    schema_version: Literal[9] = 9
     boundary_id: str
     report_generated_at: str
-    incomplete: bool = False
     credentials: dict[str, Credential] = Field(default_factory=dict)
     errors: tuple[str, ...] = ()
 

@@ -51,7 +51,7 @@ async def retain_first_evidence(
 ) -> tuple[Path, int, str]:
     """Create evidence without overwriting history; adopt matching orphaned bytes.
 
-    RETAINED credentials never call this function. An existing destination here
+    Retained credentials never call this function. An existing destination here
     is the crash window between writing bytes and checkpointing their metadata.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ class EvidenceExtractor:
         )
         _, size, sha256 = await retain_first_evidence(content.content, destination)
         return ExtractionResult(
-            status="RETAINED",
+            status="retained",
             output_path=destination.relative_to(self.boundary_dir).as_posix(),
             size=size,
             sha256=sha256,

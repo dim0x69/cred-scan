@@ -25,7 +25,7 @@ from cred_scan.orch import boundary as boundary_module
 from cred_scan.orch import workspace as workspace_module
 from cred_scan.orch.models import AppConfig, TitusConfig, WorkspaceConfig
 from cred_scan.orch.workspace import Workspace
-from cred_scan.scan.models import ExclusionFiles
+from cred_scan.scan.models import CredentialsDocument, ExclusionFiles, TitusReport
 
 
 def run(coroutine):
@@ -45,9 +45,7 @@ def http_backend(handler) -> ArtifactoryDockerBackend:
     return backend
 
 
-def inventory(
-    boundary_id: str, *, with_target: bool = False
-) -> ScanTargetInventory:
+def inventory(boundary_id: str, *, with_target: bool = False) -> ScanTargetInventory:
     name = boundary_id.rsplit(":", 1)[-1]
     boundary = ArtifactoryRepository(id=boundary_id, name=name)
     targets = ()
@@ -275,11 +273,14 @@ def test_inventory_enrolls_initial_and_new_boundaries(tmp_path, monkeypatch):
     backend.content_reader.return_value = Mock(aclose=AsyncMock())
     backend.discover_boundaries = AsyncMock(return_value=(first_id,))
     documents = {first_id: inventory(first_id), second_id: inventory(second_id)}
-    backend.inventory = AsyncMock(side_effect=lambda boundary_id: documents[boundary_id])
+    backend.inventory = AsyncMock(
+        side_effect=lambda boundary_id: documents[boundary_id]
+    )
     workspace = configured_workspace(tmp_path, monkeypatch, backend)
 
     async def scenario():
         async with workspace:
+
             async def first_discovery():
                 yield first_id
 
@@ -297,13 +298,11 @@ def test_inventory_enrolls_initial_and_new_boundaries(tmp_path, monkeypatch):
 
     assert {
         path.parent.name
-        for path in tmp_path.glob(
-            "artifactory_docker/boundaries/*/scantargets.json"
-        )
+        for path in tmp_path.glob("artifactory_docker/boundaries/*/scantargets.json")
     } == {first_id.replace(":", "%3A"), second_id.replace(":", "%3A")}
-    assert len(
-        tuple(tmp_path.glob("artifactory_docker/boundaries/*/boundary.json"))
-    ) == 2
+    assert (
+        len(tuple(tmp_path.glob("artifactory_docker/boundaries/*/boundary.json"))) == 2
+    )
     assert (tmp_path / "artifactory_docker/backend.json").is_file()
 
 
@@ -361,16 +360,12 @@ def test_inventory_add_partial_enrollment_failure_keeps_backend_discoverable(
         backend_record_path.read_text()
     )
     assert backend_record.name == backend.name
-    assert workspace_module._persisted_backend_paths(tmp_path) == (
-        backend_record_path,
-    )
+    assert workspace_module._persisted_backend_paths(tmp_path) == (backend_record_path,)
     assert (completed_path / "boundary.json").is_file()
     assert (completed_path / "scantargets.json").is_file()
 
 
-def test_inventory_add_cancellation_keeps_backend_discoverable(
-    tmp_path, monkeypatch
-):
+def test_inventory_add_cancellation_keeps_backend_discoverable(tmp_path, monkeypatch):
     boundary_id = "artifactory:artifactory_docker:blocked"
     inventory_started = asyncio.Event()
 
@@ -399,9 +394,7 @@ def test_inventory_add_cancellation_keeps_backend_discoverable(
         return marker_was_written_before_inventory
 
     assert run(cancel_add())
-    assert workspace_module._persisted_backend_paths(tmp_path) == (
-        backend_record_path,
-    )
+    assert workspace_module._persisted_backend_paths(tmp_path) == (backend_record_path,)
     assert not tuple(
         (tmp_path / "artifactory_docker" / "boundaries").glob("*/boundary.json")
     )
@@ -450,9 +443,7 @@ def test_empty_inventory_add_does_not_create_backend_marker(tmp_path, monkeypatc
     backend.inventory.assert_not_awaited()
 
 
-def test_inventory_add_repairs_marker_for_registered_boundaries(
-    tmp_path, monkeypatch
-):
+def test_inventory_add_repairs_marker_for_registered_boundaries(tmp_path, monkeypatch):
     boundary_id = "artifactory:artifactory_docker:registered"
     write_boundary(tmp_path, inventory(boundary_id))
     backend_record_path = tmp_path / "artifactory_docker" / "backend.json"
@@ -469,21 +460,21 @@ def test_inventory_add_repairs_marker_for_registered_boundaries(
 
     assert run(workspace.add()) == 0
 
-    assert BackendWorkspaceRecord.model_validate_json(
-        backend_record_path.read_text()
-    ).name == backend.name
+    assert (
+        BackendWorkspaceRecord.model_validate_json(backend_record_path.read_text()).name
+        == backend.name
+    )
     backend.inventory.assert_not_awaited()
 
 
-def test_boundary_discovery_failure_preserves_existing_inventory(
-    tmp_path, monkeypatch
-):
+def test_boundary_discovery_failure_preserves_existing_inventory(tmp_path, monkeypatch):
     boundary_id = "artifactory:artifactory_docker:existing"
     boundary_path = write_boundary(tmp_path, inventory(boundary_id))
     targets_path = boundary_path / "scantargets.json"
     before = targets_path.read_bytes()
     backend = Mock(name="backend")
     backend.name = "artifactory_docker"
+
     async def failed_discovery():
         raise ArtifactoryError("repository discovery failed")
         yield "unreachable"
@@ -523,9 +514,7 @@ def test_update_dispatches_sorted_registered_boundary_ids(tmp_path, monkeypatch)
     backend.discover_boundaries.assert_not_called()
 
 
-def test_update_checks_registered_boundary_existence(
-    tmp_path, monkeypatch
-):
+def test_update_checks_registered_boundary_existence(tmp_path, monkeypatch):
     boundary_id = "artifactory:artifactory_docker:missing"
     boundary_path = write_boundary(tmp_path, inventory(boundary_id))
     backend = Mock(name="backend")
@@ -624,6 +613,18 @@ def test_absent_boundary_skip_does_not_cancel_sibling_work(tmp_path, monkeypatch
 def test_source_operation_starts_all_boundary_services(tmp_path, monkeypatch):
     boundary_id = "artifactory:artifactory_docker:available"
     write_boundary(tmp_path, inventory(boundary_id))
+    record_path = next(tmp_path.rglob("boundary.json"))
+    record = BoundaryRecord.model_validate_json(record_path.read_text())
+    record.phase = "judge"
+    record_path.write_text(record.model_dump_json())
+    record_path.with_name("report.json").write_text(
+        TitusReport(boundary_id=boundary_id, generated_at="now").model_dump_json()
+    )
+    record_path.with_name("credentials.json").write_text(
+        CredentialsDocument(
+            boundary_id=boundary_id, report_generated_at="now"
+        ).model_dump_json()
+    )
     reader = Mock(aclose=AsyncMock())
     backend = Mock(name="backend")
     backend.name = "artifactory_docker"
@@ -654,9 +655,7 @@ def test_only_valid_empty_catalog_can_clear_selected_targets(
     tmp_path, monkeypatch, catalog
 ):
     boundary_id = "artifactory:artifactory_docker:repo"
-    boundary_path = write_boundary(
-        tmp_path, inventory(boundary_id, with_target=True)
-    )
+    boundary_path = write_boundary(tmp_path, inventory(boundary_id, with_target=True))
     targets_path = boundary_path / "scantargets.json"
     before = targets_path.read_bytes()
 
@@ -664,9 +663,7 @@ def test_only_valid_empty_catalog_can_clear_selected_targets(
         if request.url.path == "/artifactory/api/repositories":
             return httpx.Response(
                 200,
-                json=[
-                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
-                ],
+                json=[{"key": "repo", "packageType": "Docker", "type": "LOCAL"}],
             )
         if request.url.path.endswith("/_catalog"):
             return httpx.Response(200, json=catalog)
@@ -677,16 +674,13 @@ def test_only_valid_empty_catalog_can_clear_selected_targets(
     try:
         if catalog:
             assert run(workspace.update()) == 1
-            saved = ScanTargetInventory.model_validate_json(
-                targets_path.read_text()
-            )
+            saved = ScanTargetInventory.model_validate_json(targets_path.read_text())
             assert saved.targets == ()
         else:
             with pytest.raises(ExceptionGroup) as raised:
                 run(workspace.update())
             assert any(
-                isinstance(error, ArtifactoryError)
-                for error in raised.value.exceptions
+                isinstance(error, ArtifactoryError) for error in raised.value.exceptions
             )
             assert targets_path.read_bytes() == before
     finally:
@@ -709,16 +703,11 @@ def test_discovers_supported_local_docker_boundaries():
 
     async def collect():
         return tuple(
-            [
-                boundary_id
-                async for boundary_id in backend.discover_boundaries()
-            ]
+            [boundary_id async for boundary_id in backend.discover_boundaries()]
         )
 
     try:
-        assert run(collect()) == (
-            "artifactory:artifactory_docker:docker-local",
-        )
+        assert run(collect()) == ("artifactory:artifactory_docker:docker-local",)
     finally:
         run(backend.aclose())
 
@@ -735,9 +724,7 @@ def test_continuation_404_preserves_previous_inventory(tmp_path, monkeypatch):
         if request.url.path == "/artifactory/api/repositories":
             return httpx.Response(
                 200,
-                json=[
-                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
-                ],
+                json=[{"key": "repo", "packageType": "Docker", "type": "LOCAL"}],
             )
         if request.url.path.endswith("/v2/_catalog"):
             if request.url.params.get("page") == "2":
@@ -778,9 +765,7 @@ def test_pagination_failure_preserves_previous_inventory(tmp_path, monkeypatch):
         if request.url.path == "/artifactory/api/repositories":
             return httpx.Response(
                 200,
-                json=[
-                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
-                ],
+                json=[{"key": "repo", "packageType": "Docker", "type": "LOCAL"}],
             )
         if request.url.path.endswith("/v2/_catalog"):
             return httpx.Response(
@@ -799,8 +784,7 @@ def test_pagination_failure_preserves_previous_inventory(tmp_path, monkeypatch):
         run(backend.aclose())
 
     assert any(
-        isinstance(error, ArtifactoryError)
-        and "pagination loop" in str(error)
+        isinstance(error, ArtifactoryError) and "pagination loop" in str(error)
         for error in raised.value.exceptions
     )
     assert record_path.read_bytes() == before_record
@@ -865,9 +849,7 @@ def test_timestamp_discovery_failure_preserves_previous_inventory(
         if request.url.path == "/artifactory/api/repositories":
             return httpx.Response(
                 200,
-                json=[
-                    {"key": "repo", "packageType": "Docker", "type": "LOCAL"}
-                ],
+                json=[{"key": "repo", "packageType": "Docker", "type": "LOCAL"}],
             )
         if request.url.path.endswith("/v2/_catalog"):
             return httpx.Response(200, json={"repositories": ["image"]})

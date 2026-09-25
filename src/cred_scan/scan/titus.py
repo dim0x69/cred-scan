@@ -94,8 +94,6 @@ class TitusCliScanner(CredentialScanner):
         inventory: ScanTargetInventory,
         backend: BackendAdapter,
     ) -> None:
-        self.lock_fd: int | None = None
-        self.workspace_lock_fd: int | None = None
         self.config = get_config().titus
         self.inventory = inventory
         self.backend = backend
@@ -107,23 +105,29 @@ class TitusCliScanner(CredentialScanner):
             "ARTIFACTORY_API_KEY": access_token,
         }
 
-    def _lock_descriptors(self) -> tuple[int, ...]:
-        # Titus may outlive its command process; inherit both locks so it keeps
-        # owning this boundary and excluding inventory from the backend workspace.
-        return tuple(
-            dict.fromkeys(
-                descriptor
-                for descriptor in (self.workspace_lock_fd, self.lock_fd)
-                if descriptor is not None
-            )
-        )
-
     async def scan(
         self,
         target: ScanTarget,
         work_dir: Path,
         datastore: Path,
     ) -> None:
+        for attempt in range(3):
+            LOGGER.info("scanning target=%s attempt=%d/3", target.id, attempt + 1)
+            target.result.status = "running"
+            retry = await self._scan_once(target, work_dir, datastore)
+            if target.result.status == "scanned" or not retry:
+                return
+
+    async def _scan_once(
+        self,
+        target: ScanTarget,
+        work_dir: Path,
+        datastore: Path,
+    ) -> bool:
+        """Return only the immediate retry decision; never persist retry policy."""
+        target.result.return_code = None
+        target.result.started_at = datetime.now(UTC)
+        target.result.finished_at = None
         # Update the boundary-owned target; Boundary checkpoints after retries.
         try:
             source_arguments = self.backend.titus_scan_arguments(self.inventory, target)
@@ -135,8 +139,8 @@ class TitusCliScanner(CredentialScanner):
             )
             target.result.status = "failed"
             target.result.errors = (str(error),)
-            target.result.retryable = False
-            return
+            target.result.finished_at = datetime.now(UTC)
+            return False
         work_dir.mkdir(parents=True, exist_ok=True)
         command = [
             self.config.executable,
@@ -161,7 +165,6 @@ class TitusCliScanner(CredentialScanner):
                 cwd=work_dir,
                 env=environment,
                 stderr=asyncio.subprocess.PIPE,
-                pass_fds=self._lock_descriptors(),
             )
         except OSError as error:
             LOGGER.exception("Titus process could not start target=%s", target.id)
@@ -169,7 +172,7 @@ class TitusCliScanner(CredentialScanner):
             target.result.errors = (str(error),)
             target.result.started_at = started
             target.result.finished_at = datetime.now(UTC)
-            return
+            return True
         warnings = 0
         permanent_failure = False
         try:
@@ -204,9 +207,9 @@ class TitusCliScanner(CredentialScanner):
         target.result.status = "scanned" if not errors else "failed"
         target.result.return_code = return_code
         target.result.errors = errors
-        target.result.retryable = not permanent_failure
         target.result.started_at = started
         target.result.finished_at = datetime.now(UTC)
+        return not permanent_failure
 
     async def export_report(self, datastore: Path) -> TitusReport:
         try:
@@ -219,7 +222,6 @@ class TitusCliScanner(CredentialScanner):
                 "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                pass_fds=self._lock_descriptors(),
             )
         except OSError:
             LOGGER.exception(
